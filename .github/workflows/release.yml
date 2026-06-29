@@ -42,6 +42,7 @@ jobs:
 
   mcp:
     name: Publish MCP server (@kaval/mcp) to npm
+    needs: [npm]
     runs-on: ubuntu-latest
     permissions:
       contents: read

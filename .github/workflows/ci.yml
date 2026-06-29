@@ -20,6 +20,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Release workflow (v* tag → npm + mcp + pypi)
+        run: node scripts/check-release-workflow.mjs
       # `check` builds first (kaval before @kaval/mcp, topological) so the MCP typecheck/test resolve
       # the `kaval` types/runtime, then lints, typechecks, and tests.
       - name: Build, lint, typecheck, test

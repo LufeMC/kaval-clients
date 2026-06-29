@@ -13,7 +13,8 @@
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
     "lint": "pnpm -r run lint",
-    "check": "pnpm run build && pnpm run lint && pnpm run typecheck && pnpm run test"
+    "check": "pnpm run build && pnpm run lint && pnpm run typecheck && pnpm run test",
+    "check:release-workflow": "node scripts/check-release-workflow.mjs"
   },
   "devDependencies": {
     "prettier": "^3.4.2",
