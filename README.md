@@ -12,7 +12,7 @@ key at [usekaval.com](https://usekaval.com).
 | -------------------------------- | ----------------- | -------------------- | ---------------------------- |
 | [`kaval`](sdks/node)             | Node / TypeScript | `npm i kaval`        | [sdks/node](sdks/node)       |
 | [`kaval`](sdks/python)           | Python            | `pip install kaval`  | [sdks/python](sdks/python)   |
-| [`@kaval/mcp`](packages/mcp)     | MCP server        | `npx -y @kaval/mcp`  | [packages/mcp](packages/mcp) |
+| [`@usekaval/mcp`](packages/mcp)     | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
 ## Node
 
@@ -45,7 +45,7 @@ if not decision["act"]:
 ## MCP
 
 ```bash
-KAVAL_API_KEY=kv_live_… npx -y @kaval/mcp
+KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
 Exposes `currentness_verify` (the pre-action gate) plus `currentness_check`, `…_extract_and_check`,

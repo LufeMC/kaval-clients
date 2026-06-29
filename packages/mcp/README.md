@@ -1,4 +1,4 @@
-# @kaval/mcp
+# @usekaval/mcp
 
 The [Kaval](https://usekaval.com) freshness gate as an **MCP server**. It gives your agent a
 pre-action currentness check: hand it a belief the agent already holds — a cached fact, a stored
@@ -12,7 +12,7 @@ engine.
 ## Run it
 
 ```bash
-npx -y @kaval/mcp
+npx -y @usekaval/mcp
 ```
 
 It speaks MCP over stdio. Point any MCP client at it.
@@ -24,7 +24,7 @@ It speaks MCP over stdio. Point any MCP client at it.
   "mcpServers": {
     "kaval": {
       "command": "npx",
-      "args": ["-y", "@kaval/mcp"],
+      "args": ["-y", "@usekaval/mcp"],
       "env": {
         "KAVAL_API_KEY": "kv_live_…",
       },
@@ -60,7 +60,7 @@ relying on it".
 This package is primarily a CLI (`kaval-mcp`). It also exports the server factory for embedding:
 
 ```ts
-import { createMcpServer, createClientFromEnv } from "@kaval/mcp";
+import { createMcpServer, createClientFromEnv } from "@usekaval/mcp";
 
 const server = createMcpServer(createClientFromEnv());
 // connect `server` to your own MCP transport
@@ -69,7 +69,7 @@ const server = createMcpServer(createClientFromEnv());
 Or pass your own configured client:
 
 ```ts
-import { createMcpServer } from "@kaval/mcp";
+import { createMcpServer } from "@usekaval/mcp";
 import { Kaval } from "kaval";
 
 const server = createMcpServer(new Kaval({ apiKey: process.env.KAVAL_API_KEY }));

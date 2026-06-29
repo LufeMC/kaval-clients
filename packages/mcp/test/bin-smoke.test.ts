@@ -15,6 +15,7 @@ const binPath = resolve(pkgRoot, "dist/bin.js");
  * Proves the published artifact works as plain `tsc` output: build, then spawn `dist/bin.js` as a real
  * subprocess and drive it over stdio. `listTools` makes no network call, so a dummy `KAVAL_API_KEY` is
  * enough to start the thin client — this asserts the CLI boots and exposes the tools end-to-end.
+ * Registry-shaped installs (packed tarballs) are covered by published-artifacts.test.ts.
  */
 describe("kaval-mcp bin (smoke)", () => {
   beforeAll(async () => {

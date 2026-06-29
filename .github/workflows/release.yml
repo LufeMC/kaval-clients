@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes the open-source clients on a version tag (e.g. `git tag v0.1.0 && git push --tags`), or
-# manually via the Actions tab: the npm SDK (`kaval`), the MCP server (`@kaval/mcp`), and the PyPI SDK
+# manually via the Actions tab: the npm SDK (`kaval`), the MCP server (`@usekaval/mcp`), and the PyPI SDK
 # (`kaval`). All three are thin clients for the hosted Kaval API.
 
 on:
@@ -41,7 +41,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   mcp:
-    name: Publish MCP server (@kaval/mcp) to npm
+    name: Publish MCP server (@usekaval/mcp) to npm
     needs: [npm]
     runs-on: ubuntu-latest
     permissions:
@@ -59,9 +59,9 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      # @kaval/mcp depends on the `kaval` workspace package — build it first (topological), then test.
+      # @usekaval/mcp depends on the `kaval` workspace package — build it first (topological), then test.
       - name: Build + test the MCP server
-        run: pnpm --filter "@kaval/mcp..." run build && pnpm --filter @kaval/mcp run test
+        run: pnpm --filter "@usekaval/mcp..." run build && pnpm --filter @usekaval/mcp run test
       # pnpm publish (not npm) rewrites the `kaval` workspace:^ dependency to a real semver range.
       - name: Publish to npm
         working-directory: packages/mcp

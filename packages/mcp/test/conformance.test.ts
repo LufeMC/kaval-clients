@@ -3,91 +3,17 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Kaval } from "kaval";
 import { describe, expect, it } from "vitest";
 import { createMcpServer } from "../src/server.js";
+import { fakeKavalFetch, parseToolText } from "./helpers/fake-api.js";
 
 /**
  * MCP is a thin client now: a request goes MCP tool → `kaval` HTTP client → the hosted `/v1/*` API.
  * We inject a fake `fetch` that returns canned `/v1/*` responses, so this exercises the MCP layer
  * and the tool→client arg threading without touching the network or the (private) engine.
+ *
+ * For registry-shaped installs (packed tarballs, not workspace symlinks), see published-artifacts.test.ts.
  */
-const fakeFetch: typeof fetch = async (input, init) => {
-  const url =
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.href
-        : input.url;
-  const path = new URL(url).pathname;
-  const body = init?.body
-    ? (JSON.parse(init.body as string) as Record<string, unknown>)
-    : {};
-
-  let data: unknown;
-  switch (path) {
-    case "/v1/check":
-      data = {
-        id: "chk_1",
-        status: "current",
-        confidence: 0.9,
-        reason: "team page confirms it",
-        checked_at: "2026-06-24T18:04:11.000Z",
-        evidence: [],
-      };
-      break;
-    case "/v1/verify": {
-      const tier = (body.mode as string) ?? "auto";
-      data = {
-        id: "vf_1",
-        status: "current",
-        act: true,
-        confidence: 0.9,
-        reason: "team page confirms it",
-        checked_at: "2026-06-24T18:04:11.000Z",
-        evidence: [],
-        tier,
-        // The deep tier adds a cited synthesis; mirror that so the mode→tier path is observable.
-        ...(tier === "deep"
-          ? {
-              explanation: {
-                content: "Confirmed by the team page [1].",
-                citations: [{ url: "https://acme.com/team" }],
-                confidence: "high",
-              },
-            }
-          : {}),
-      };
-      break;
-    }
-    case "/v1/extract-and-check":
-      data = {
-        beliefs: [
-          {
-            belief: "Jane Doe is at Acme",
-            id: "b1",
-            status: "current",
-            confidence: 0.9,
-          },
-          {
-            belief: "Acme has SOC 2",
-            id: "b2",
-            status: "current",
-            confidence: 0.9,
-          },
-        ],
-      };
-      break;
-    default:
-      return new Response(JSON.stringify({ error: "not found" }), {
-        status: 404,
-      });
-  }
-  return new Response(JSON.stringify(data), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-};
-
 async function connectClient(): Promise<McpClient> {
-  const kaval = new Kaval({ apiKey: "kv_live_test", fetch: fakeFetch });
+  const kaval = new Kaval({ apiKey: "kv_live_test", fetch: fakeKavalFetch });
   const server = createMcpServer(kaval);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -97,18 +23,6 @@ async function connectClient(): Promise<McpClient> {
     client.connect(clientTransport),
   ]);
   return client;
-}
-
-function parse(res: unknown): {
-  status?: string;
-  id?: string;
-  beliefs?: unknown[];
-  tier?: string;
-  explanation?: { confidence?: string; citations?: { url: string }[] };
-} {
-  const content = (res as { content: Array<{ type: string; text: string }> })
-    .content;
-  return JSON.parse(content[0]!.text);
 }
 
 describe("MCP conformance", () => {
@@ -140,7 +54,7 @@ describe("MCP conformance", () => {
         freshness_sla: "14d",
       },
     });
-    const gap = parse(res);
+    const gap = parseToolText(res);
     expect([
       "current",
       "stale",
@@ -161,7 +75,7 @@ describe("MCP conformance", () => {
       name: "currentness_verify",
       arguments: { belief: "Jane Doe is VP Engineering at Acme", mode: "deep" },
     });
-    const out = parse(res);
+    const out = parseToolText(res);
     expect(out.tier).toBe("deep"); // mode survived the MCP schema → client → /v1/verify body
     expect(out.explanation?.confidence).toBe("high"); // deep-only cited synthesis surfaced
     expect(out.explanation?.citations?.[0]?.url).toBe("https://acme.com/team");
@@ -173,7 +87,7 @@ describe("MCP conformance", () => {
       name: "currentness_extract_and_check",
       arguments: { text: "Jane Doe is VP Eng at Acme. Acme has SOC 2." },
     });
-    const out = parse(res);
+    const out = parseToolText(res);
     expect(out.beliefs).toHaveLength(2);
   });
 });
