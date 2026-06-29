@@ -70,7 +70,7 @@ Or pass your own configured client:
 
 ```ts
 import { createMcpServer } from "@usekaval/mcp";
-import { Kaval } from "kaval";
+import { Kaval } from "@usekaval/kaval";
 
 const server = createMcpServer(new Kaval({ apiKey: process.env.KAVAL_API_KEY }));
 ```

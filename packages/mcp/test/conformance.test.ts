@@ -1,6 +1,6 @@
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Kaval } from "kaval";
+import { Kaval } from "@usekaval/kaval";
 import { describe, expect, it } from "vitest";
 import { createMcpServer } from "../src/server.js";
 import { fakeKavalFetch, parseToolText } from "./helpers/fake-api.js";

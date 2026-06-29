@@ -29,7 +29,7 @@ export type PackedInstall = {
   cleanup: () => void;
 };
 
-/** Build, npm-pack, and install `kaval` + `@usekaval/mcp` like a registry consumer (no workspace symlinks). */
+/** Build, npm-pack, and install `@usekaval/kaval` + `@usekaval/mcp` like a registry consumer (no workspace symlinks). */
 export async function installPackedTarballs(): Promise<PackedInstall> {
   await execFileAsync("pnpm", ["exec", "tsc", "-p", "tsconfig.build.json"], {
     cwd: kavalDir,
@@ -47,7 +47,7 @@ export async function installPackedTarballs(): Promise<PackedInstall> {
       cwd: mcpDir,
     });
     const kavalTar = readdirSync(packDir).find(
-      (f) => f.startsWith("kaval-") && f.endsWith(".tgz") && !f.includes("mcp"),
+      (f) => f.startsWith("usekaval-kaval-") && f.endsWith(".tgz"),
     );
     const mcpTar = readdirSync(packDir).find(
       (f) => f.startsWith("usekaval-mcp-") && f.endsWith(".tgz"),
@@ -102,7 +102,7 @@ export async function installPackedTarballs(): Promise<PackedInstall> {
       throw e;
     }
 
-    const kavalPath = join(root, "node_modules/kaval");
+    const kavalPath = join(root, "node_modules/@usekaval/kaval");
     const mcpPath = join(root, "node_modules/@usekaval/mcp");
 
     return {

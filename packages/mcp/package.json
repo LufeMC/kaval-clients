@@ -1,6 +1,6 @@
 {
   "name": "@usekaval/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0",
   "description": "MCP server for kaval — the freshness gate for AI. Pre-action currentness checks (verify/check/scan/monitor) as MCP tools; a thin client over the hosted Kaval API (BYO Kaval API key).",
   "type": "module",
@@ -53,7 +53,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "kaval": "workspace:^",
+    "@usekaval/kaval": "workspace:^",
     "zod": "^3.24.1"
   },
   "devDependencies": {

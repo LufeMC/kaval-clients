@@ -65,7 +65,7 @@ client = KavalClient(base_url="https://staging.api.usekaval.com", api_key="...")
 `verify` · `check` · `extract_and_check` · `scan_store` · `monitor` · `report_outcome` ·
 `kaval` · `kaval_batch` · `health`. Construct with `KavalClient(base_url=?, api_key=?)` —
 `base_url` defaults to `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
-`npm install kaval`.
+`npm install @usekaval/kaval`.
 
 ## Test
 

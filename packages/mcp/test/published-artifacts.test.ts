@@ -1,5 +1,5 @@
 /**
- * Conformance/smoke against npm-packed `kaval` + `@usekaval/mcp` — what registry consumers resolve,
+ * Conformance/smoke against npm-packed `@usekaval/kaval` + `@usekaval/mcp` — what registry consumers resolve,
  * not the pnpm workspace symlink.
  */
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -67,7 +67,7 @@ describe("published tarballs (not workspace-linked kaval)", () => {
   it("conformance: packed kaval + MCP server thread tool args to /v1/verify", async () => {
     const { Kaval } = (await import(
       install.kavalEntry
-    )) as typeof import("kaval");
+    )) as typeof import("@usekaval/kaval");
     const { createMcpServer } = (await import(
       install.mcpServerEntry
     )) as typeof import("../src/server.js");

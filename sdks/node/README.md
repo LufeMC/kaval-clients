@@ -1,17 +1,17 @@
-# kaval
+# @usekaval/kaval
 
 The freshness gate for AI. Give kaval a belief your system already holds — a cached fact, a CRM
 field, an agent memory — and it checks the live world and returns a typed verdict: `current`,
 `stale`, `contradicted`, `unsupported`, `conflicting`, or `insufficient`.
 
 ```bash
-npm install kaval
+npm install @usekaval/kaval
 ```
 
 ## Gate a belief before you act on it
 
 ```ts
-import { Kaval } from "kaval";
+import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
 

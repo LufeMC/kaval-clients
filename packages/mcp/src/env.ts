@@ -1,7 +1,7 @@
 // Build the agent-facing client from env. MCP is a *thin client* over the hosted Kaval API —
 // it carries no engine and no model/search keys; all classification, grounding, and retrieval run
 // server-side. The only secret it needs is a Kaval API key for https://api.usekaval.com.
-import { Kaval } from "kaval";
+import { Kaval } from "@usekaval/kaval";
 
 export function createClientFromEnv(
   env: Record<string, string | undefined> = process.env,

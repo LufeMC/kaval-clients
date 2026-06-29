@@ -10,14 +10,14 @@ key at [usekaval.com](https://usekaval.com).
 
 | Package                          | Language          | Install              | Source                       |
 | -------------------------------- | ----------------- | -------------------- | ---------------------------- |
-| [`kaval`](sdks/node)             | Node / TypeScript | `npm i kaval`        | [sdks/node](sdks/node)       |
+| [`@usekaval/kaval`](sdks/node)   | Node / TypeScript | `npm i @usekaval/kaval` | [sdks/node](sdks/node)       |
 | [`kaval`](sdks/python)           | Python            | `pip install kaval`  | [sdks/python](sdks/python)   |
 | [`@usekaval/mcp`](packages/mcp)     | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
 ## Node
 
 ```ts
-import { Kaval } from "kaval";
+import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
 

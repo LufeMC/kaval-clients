@@ -1,5 +1,5 @@
 /**
- * kaval — the freshness gate for AI. A typed, dependency-light HTTP client for the kaval API.
+ * @usekaval/kaval — the freshness gate for AI. A typed, dependency-light HTTP client for the kaval API.
  * Mirrors the Python SDK (`pip install kaval`). Uses the global `fetch` (Node 18+, browsers, edge).
  */
 

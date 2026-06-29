@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes the open-source clients on a version tag (e.g. `git tag v0.1.0 && git push --tags`), or
-# manually via the Actions tab: the npm SDK (`kaval`), the MCP server (`@usekaval/mcp`), and the PyPI SDK
+# manually via the Actions tab: the npm SDK (`@usekaval/kaval`), the MCP server (`@usekaval/mcp`), and the PyPI SDK
 # (`kaval`). All three are thin clients for the hosted Kaval API.
 
 on:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   npm:
-    name: Publish Node SDK (kaval) to npm
+    name: Publish Node SDK (@usekaval/kaval) to npm
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Build + test the Node SDK
-        run: pnpm --filter kaval run build && pnpm --filter kaval run test
+        run: pnpm --filter @usekaval/kaval run build && pnpm --filter @usekaval/kaval run test
       - name: Publish to npm
         working-directory: sdks/node
         run: npm publish --provenance --access public
@@ -59,10 +59,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      # @usekaval/mcp depends on the `kaval` workspace package — build it first (topological), then test.
+      # @usekaval/mcp depends on the `@usekaval/kaval` workspace package — build it first (topological), then test.
       - name: Build + test the MCP server
         run: pnpm --filter "@usekaval/mcp..." run build && pnpm --filter @usekaval/mcp run test
-      # pnpm publish (not npm) rewrites the `kaval` workspace:^ dependency to a real semver range.
+      # pnpm publish (not npm) rewrites the `@usekaval/kaval` workspace:^ dependency to a real semver range.
       - name: Publish to npm
         working-directory: packages/mcp
         run: pnpm publish --no-git-checks --provenance --access public
