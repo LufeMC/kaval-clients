@@ -36,7 +36,7 @@ jobs:
         run: pnpm --filter @usekaval/kaval run build && pnpm --filter @usekaval/kaval run test
       - name: Publish to npm
         working-directory: sdks/node
-        run: npm publish --provenance --access public
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -65,7 +65,7 @@ jobs:
       # pnpm publish (not npm) rewrites the `@usekaval/kaval` workspace:^ dependency to a real semver range.
       - name: Publish to npm
         working-directory: packages/mcp
-        run: pnpm publish --no-git-checks --provenance --access public
+        run: pnpm publish --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
