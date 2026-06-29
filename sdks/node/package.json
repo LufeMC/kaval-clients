@@ -1,6 +1,6 @@
 {
   "name": "@usekaval/kaval",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "Apache-2.0",
   "description": "The freshness gate for AI — verify a belief your system already holds is still true.",
   "type": "module",
