@@ -1,26 +1,51 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Kaval } from "@usekaval/kaval";
+import { KavalError, type Kaval } from "@usekaval/kaval";
 import { z } from "zod";
 
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
-/** Run a tool body, returning a sanitized error result (never leaking internal text to the agent). */
+function toolError(payload: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    isError: true,
+  };
+}
+
+/** Pull the API's `{ error: { code, message } }` envelope off a KavalError payload (defensively — the
+ *  body may be a string, null, or some other shape if the API ever returns a non-standard error). */
+function apiError(payload: unknown): { code?: string; message?: string } {
+  if (payload && typeof payload === "object" && "error" in payload) {
+    const err = (payload as { error?: unknown }).error;
+    if (err && typeof err === "object") {
+      const { code, message } = err as { code?: unknown; message?: unknown };
+      return {
+        code: typeof code === "string" ? code : undefined,
+        message: typeof message === "string" ? message : undefined,
+      };
+    }
+  }
+  return {};
+}
+
+/** Run a tool body, returning a sanitized error result. An API error (e.g. 402 out-of-credit, 401
+ *  invalid key) is surfaced with its status + code/message so the agent can act on it; anything else
+ *  collapses to a generic message so internal details never leak. */
 async function safe(fn: () => Promise<unknown>) {
   try {
     return json(await fn());
   } catch (e) {
     console.error("[kaval-mcp] tool error:", e);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify({ error: "internal error" }),
-        },
-      ],
-      isError: true,
-    };
+    if (e instanceof KavalError) {
+      const { code, message } = apiError(e.payload);
+      return toolError({
+        error: code ?? "request_failed",
+        ...(message ? { message } : {}),
+        status: e.status,
+      });
+    }
+    return toolError({ error: "internal error" });
   }
 }
 

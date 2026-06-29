@@ -225,3 +225,143 @@ def test_health_raises_on_non_2xx():
         with pytest.raises(KavalError) as exc:
             c.health()
     assert exc.value.status_code == 503
+
+
+def test_kaval_batch_serializes_body_and_returns_list():
+    captured = {}
+    resp = [GAP, {**GAP, "id": "id_2", "status": "current"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/kaval-batch"
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=resp)
+
+    requests = [
+        {"fact_type": "person.works_at", "subject": "Jane", "object": "Acme"},
+        {"fact_type": "person.works_at", "subject": "John", "object": "Acme"},
+    ]
+    with make_client(handler) as c:
+        out = c.kaval_batch(requests, concurrency=4)
+
+    # Body carries both requests + concurrency; the response is a list, returned verbatim.
+    assert captured["body"] == {"requests": requests, "concurrency": 4}
+    assert isinstance(out, list)
+    assert [r["id"] for r in out] == ["id_1", "id_2"]
+
+
+def test_kaval_batch_omits_none_concurrency():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=[GAP])
+
+    with make_client(handler) as c:
+        c.kaval_batch([{"fact_type": "person.works_at", "subject": "Jane", "object": "Acme"}])
+
+    # concurrency=None is dropped (clean body) — only `requests` rides the wire.
+    assert "concurrency" not in captured["body"]
+    assert list(captured["body"].keys()) == ["requests"]
+
+
+def test_health_success_returns_dict():
+    payload = {"status": "ok", "version": "1.2.3"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/health"
+        return httpx.Response(200, json=payload)
+
+    with make_client(handler) as c:
+        out = c.health()
+
+    assert out == payload
+    assert out["version"] == "1.2.3"
+
+
+def test_post_propagates_connect_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    # A transport-level ConnectError surfaces as httpx.ConnectError (a subclass of httpx.HTTPError),
+    # not wrapped in KavalError — KavalError is only for non-2xx HTTP responses.
+    with make_client(handler) as c:
+        with pytest.raises(httpx.ConnectError):
+            c.check("x")
+
+
+def test_health_propagates_timeout_exception():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("timed out", request=request)
+
+    with make_client(handler) as c:
+        with pytest.raises(httpx.TimeoutException):
+            c.health()
+
+
+def test_default_timeout_is_30_seconds():
+    with KavalClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=GAP))) as c:
+        assert c._http.timeout.read == 30.0
+
+
+def test_timeout_is_overridable():
+    with KavalClient(
+        timeout=5.0,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=GAP)),
+    ) as c:
+        assert c._http.timeout.read == 5.0
+
+
+def test_no_automatic_retries_on_http_error():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(503, json={"error": {"code": "unavailable"}})
+
+    with KavalClient(transport=httpx.MockTransport(handler)) as c:
+        with pytest.raises(KavalError) as exc:
+            c.check("x")
+        assert exc.value.status_code == 503
+
+    assert calls == ["/v1/check"]
+
+
+def test_env_defaults_api_key_and_base_url(monkeypatch):
+    monkeypatch.setenv("KAVAL_API_KEY", "kv_live_from_env")
+    monkeypatch.setenv("KAVAL_BASE_URL", "http://env.test")
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("authorization")
+        captured["host"] = str(request.url)
+        return httpx.Response(200, json=GAP)
+
+    with KavalClient(transport=httpx.MockTransport(handler)) as c:
+        c.check("Jane Doe is at Acme")
+
+    assert captured["auth"] == "Bearer kv_live_from_env"
+    assert captured["host"].startswith("http://env.test/v1/check")
+
+
+def test_explicit_args_override_env(monkeypatch):
+    monkeypatch.setenv("KAVAL_API_KEY", "kv_live_from_env")
+    monkeypatch.setenv("KAVAL_BASE_URL", "http://env.test")
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("authorization")
+        captured["host"] = str(request.url)
+        return httpx.Response(200, json=GAP)
+
+    with KavalClient(
+        base_url="http://explicit.test",
+        api_key="kv_live_explicit",
+        transport=httpx.MockTransport(handler),
+    ) as c:
+        c.check("x")
+
+    assert captured["auth"] == "Bearer kv_live_explicit"
+    assert captured["host"].startswith("http://explicit.test/v1/check")

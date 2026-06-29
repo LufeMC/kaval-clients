@@ -8,6 +8,19 @@ field, an agent memory — and it checks the live world and returns a typed verd
 npm install @usekaval/kaval
 ```
 
+## Node and module format
+
+This package is **ESM-first** (`"type": "module"`). Use `import` in ESM projects, or dynamic import
+in CommonJS:
+
+```js
+const { Kaval } = await import("@usekaval/kaval");
+```
+
+**CJS `require("@usekaval/kaval")`** needs Node **≥20.19** or **≥22.12** (Node’s native
+`require(esm)` support). On Node 18, use `import` / `await import()` instead — `engines.node` is
+`>=18` for ESM + `fetch`, not for CJS require.
+
 ## Gate a belief before you act on it
 
 ```ts
@@ -59,4 +72,9 @@ await kaval.monitor({ beliefs, webhook: "https://your-app.com/hooks/stale" });
 `verify` · `check` · `extractAndCheck` · `scanStore` · `monitor` · `reportOutcome` · `kaval` ·
 `kavalBatch` · `health`. Construct with `{ apiKey, baseUrl?, fetch? }` — `baseUrl` defaults to
 `https://api.usekaval.com`. Works in Node 18+, browsers, and edge runtimes (uses the global `fetch`).
+
+**Env vars:** this package does **not** read `KAVAL_BASE_URL` from the environment — pass
+`baseUrl` in the constructor (Python SDK and MCP use `KAVAL_BASE_URL`; the marketing-site proxy
+uses `KAVAL_API_URL`). See the [clients README](../README.md#api-origin-env-vars).
+
 The Python client mirrors this surface: `pip install kaval`.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal, Optional
 
 import httpx
@@ -35,17 +36,19 @@ class KavalClient:
 
     def __init__(
         self,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         *,
         timeout: float = 30.0,
         transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
+        resolved_base = base_url or os.environ.get("KAVAL_BASE_URL") or DEFAULT_BASE_URL
+        resolved_key = api_key if api_key is not None else os.environ.get("KAVAL_API_KEY")
         headers = {"content-type": "application/json"}
-        if api_key:
-            headers["authorization"] = f"Bearer {api_key}"
+        if resolved_key:
+            headers["authorization"] = f"Bearer {resolved_key}"
         self._http = httpx.Client(
-            base_url=base_url.rstrip("/"),
+            base_url=resolved_base.rstrip("/"),
             headers=headers,
             timeout=timeout,
             transport=transport,

@@ -51,6 +51,19 @@ KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 Exposes `currentness_verify` (the pre-action gate) plus `currentness_check`, `…_extract_and_check`,
 `…_scan_store`, `…_monitor`, and `report_outcome` over stdio. See [packages/mcp](packages/mcp).
 
+## API origin env vars
+
+Two names exist on purpose — they are **not** interchangeable:
+
+| Consumer | Variable | Reads env? |
+| -------- | -------- | ---------- |
+| Python SDK / MCP | `KAVAL_BASE_URL` | yes |
+| Node `@usekaval/kaval` | — | pass `baseUrl` in constructor |
+| Marketing site proxy (`apps/web`) | `KAVAL_API_URL` | yes (server only) |
+
+Use the same origin value in both vars when self-hosting (e.g. `http://localhost:8787`). See
+[`SELFHOST.md`](https://github.com/LufeMC/kaval/blob/main/SELFHOST.md) in the core repo.
+
 ## Development
 
 ```bash

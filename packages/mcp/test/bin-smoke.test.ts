@@ -26,6 +26,24 @@ describe("kaval-mcp bin (smoke)", () => {
     expect(existsSync(binPath)).toBe(true);
   }, 60_000);
 
+  it("exits with a clear message when KAVAL_API_KEY is missing", async () => {
+    try {
+      await execFileAsync(process.execPath, [binPath], {
+        env: { PATH: process.env.PATH ?? "" },
+      });
+      expect.fail("expected bin to exit non-zero without KAVAL_API_KEY");
+    } catch (error: unknown) {
+      const execError = error as NodeJS.ErrnoException & { stderr?: string };
+      expect(execError.code).toBe(1);
+      const stderr = execError.stderr ?? "";
+      expect(stderr).toContain("KAVAL_API_KEY is required");
+      expect(stderr).not.toMatch(/\bat createClientFromEnv\b/);
+      expect(stderr.trim()).toBe(
+        "KAVAL_API_KEY is required — create a key at https://usekaval.com and set KAVAL_API_KEY.",
+      );
+    }
+  });
+
   it("starts and exposes the currentness tools over stdio", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,

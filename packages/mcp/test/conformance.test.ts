@@ -3,7 +3,11 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Kaval } from "@usekaval/kaval";
 import { describe, expect, it } from "vitest";
 import { createMcpServer } from "../src/server.js";
-import { fakeKavalFetch, parseToolText } from "./helpers/fake-api.js";
+import {
+  failingKavalFetch,
+  fakeKavalFetch,
+  parseToolText,
+} from "./helpers/fake-api.js";
 
 /**
  * MCP is a thin client now: a request goes MCP tool → `kaval` HTTP client → the hosted `/v1/*` API.
@@ -12,8 +16,10 @@ import { fakeKavalFetch, parseToolText } from "./helpers/fake-api.js";
  *
  * For registry-shaped installs (packed tarballs, not workspace symlinks), see published-artifacts.test.ts.
  */
-async function connectClient(): Promise<McpClient> {
-  const kaval = new Kaval({ apiKey: "kv_live_test", fetch: fakeKavalFetch });
+async function connectClient(
+  fetchImpl: typeof fetch = fakeKavalFetch,
+): Promise<McpClient> {
+  const kaval = new Kaval({ apiKey: "kv_live_test", fetch: fetchImpl });
   const server = createMcpServer(kaval);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -79,6 +85,40 @@ describe("MCP conformance", () => {
     expect(out.tier).toBe("deep"); // mode survived the MCP schema → client → /v1/verify body
     expect(out.explanation?.confidence).toBe("high"); // deep-only cited synthesis surfaced
     expect(out.explanation?.citations?.[0]?.url).toBe("https://acme.com/team");
+  });
+
+  it("surfaces a zero-balance (402) as a clear out-of-credit error, not 'internal error'", async () => {
+    const client = await connectClient(
+      failingKavalFetch(
+        402,
+        "insufficient_balance",
+        "out of credit — top up to continue",
+      ),
+    );
+    const res = await client.callTool({
+      name: "currentness_verify",
+      arguments: { belief: "Jane Doe is VP Engineering at Acme" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    const out = parseToolText(res);
+    expect(out.error).toBe("insufficient_balance");
+    expect(out.message).toContain("out of credit");
+    expect(out.status).toBe(402);
+  });
+
+  it("surfaces a bogus key (401) as a clear invalid-key error, not 'internal error'", async () => {
+    const client = await connectClient(
+      failingKavalFetch(401, "unauthorized", "invalid API key"),
+    );
+    const res = await client.callTool({
+      name: "currentness_check",
+      arguments: { belief: "Jane Doe is VP Engineering at Acme" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    const out = parseToolText(res);
+    expect(out.error).toBe("unauthorized");
+    expect(out.message).toContain("invalid");
+    expect(out.status).toBe(401);
   });
 
   it("extract_and_check finds the checkable beliefs in a paragraph", async () => {

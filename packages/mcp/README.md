@@ -55,6 +55,8 @@ relying on it".
 | `KAVAL_API_KEY`  | yes      | Bearer key for the hosted Kaval API (create one at https://usekaval.com) |
 | `KAVAL_BASE_URL` | no       | Override the API base URL (self-hosted / staging). Defaults to `https://api.usekaval.com` |
 
+The marketing site uses **`KAVAL_API_URL`** for its `/api/verify` proxy — not `KAVAL_BASE_URL`.
+
 ## Programmatic use
 
 This package is primarily a CLI (`kaval-mcp`). It also exports the server factory for embedding:

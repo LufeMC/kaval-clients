@@ -1,3 +1,17 @@
+/** A fake `/v1/*` fetch that always rejects with the given product-API error envelope, so MCP tests can
+ *  exercise the out-of-credit (402) / invalid-key (401) paths without the network or the engine. */
+export function failingKavalFetch(
+  status: number,
+  code: string,
+  message?: string,
+): typeof fetch {
+  return async () =>
+    new Response(
+      JSON.stringify({ error: { code, ...(message ? { message } : {}) } }),
+      { status, headers: { "content-type": "application/json" } },
+    );
+}
+
 /** Canned `/v1/*` responses for MCP conformance without network or the private engine. */
 export const fakeKavalFetch: typeof fetch = async (input, init) => {
   const url =
@@ -76,11 +90,13 @@ export const fakeKavalFetch: typeof fetch = async (input, init) => {
 };
 
 export function parseToolText(res: unknown): {
-  status?: string;
+  status?: string | number;
   id?: string;
   beliefs?: unknown[];
   tier?: string;
   explanation?: { confidence?: string; citations?: { url: string }[] };
+  error?: string;
+  message?: string;
 } {
   const content = (res as { content: Array<{ type: string; text: string }> })
     .content;

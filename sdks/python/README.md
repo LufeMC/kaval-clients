@@ -11,16 +11,29 @@ returns a typed freshness gap: `current` / `stale` / `contradicted` / `unsupport
 pip install kaval
 ```
 
+## Async / concurrency
+
+**Sync-only for now.** `KavalClient` is built on `httpx.Client` (blocking I/O). v0.1.x does not ship
+an `AsyncKavalClient` — if you need `async`/`await`, call the REST API with `httpx.AsyncClient`, wrap
+sync calls in `asyncio.to_thread()`, or use the Node SDK (`@usekaval/kaval`). Native async may land
+in a later release.
+
 ## Gate a belief before you act on it
 
 ```python
 from kaval import KavalClient
 
-# base_url defaults to the hosted cloud (https://api.usekaval.com).
+# Explicit config (always works):
 with KavalClient(api_key="kv_live_...") as client:
     decision = client.verify("Acme's CEO is Jane Doe")
     if not decision["act"]:
         ...  # stale / contradicted — re-fetch before relying on it
+
+# Or set env vars and construct with no args (see below):
+# export KAVAL_API_KEY=kv_live_...
+# export KAVAL_BASE_URL=https://api.usekaval.com   # optional; defaults to prod
+with KavalClient() as client:
+    ...
 ```
 
 `verify()` returns the verdict plus `act` — `True` only when the belief is `current` and confident
@@ -43,7 +56,9 @@ gap["explanation"]["confidence"]  # "high" | "medium" | "low"
 ### Sweep a store for drift
 
 ```python
-report = client.scan_store(["Acme is on the Enterprise plan", "Jane Doe is VP Eng at Acme"])
+beliefs = ["Acme is on the Enterprise plan", "Jane Doe is VP Eng at Acme"]
+
+report = client.scan_store(beliefs)
 for r in report["riskiest"]:
     print(r["belief"], "→", r["status"])
 
@@ -59,6 +74,35 @@ Override the API base URL (e.g. a staging environment or a local proxy):
 ```python
 client = KavalClient(base_url="https://staging.api.usekaval.com", api_key="...")
 ```
+
+## Environment variables
+
+When omitted, constructor args fall back to:
+
+| Variable | Used for | Default |
+|----------|----------|---------|
+| `KAVAL_API_KEY` | Bearer token | none (unauthenticated) |
+| `KAVAL_BASE_URL` | API origin | `https://api.usekaval.com` |
+
+The marketing site (`apps/web`) uses **`KAVAL_API_URL`** for its server-side proxy — not
+`KAVAL_BASE_URL`. Set both when self-hosting the engine and running the web demo against it.
+
+Explicit `api_key=` / `base_url=` always wins over the environment.
+
+## Resilience
+
+**No automatic retries by default — bring your own.** Each API call is a single HTTP round-trip via
+`httpx`; transient failures (timeouts, 502s, rate limits) are not retried. Wrap calls in your own
+retry/backoff (e.g. `tenacity`) if you need that behavior.
+
+**Default timeout: 30 seconds** (connect + read), overridable at construction:
+
+```python
+# deep verify / scan sweeps may run close to the limit — raise for long-running calls:
+client = KavalClient(api_key="...", timeout=60.0)
+```
+
+Timeouts surface as `httpx.TimeoutException` (not `KavalError`).
 
 ## API
 
