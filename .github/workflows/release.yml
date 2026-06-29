@@ -1,0 +1,101 @@
+name: Release
+
+# Publishes the open-source clients on a version tag (e.g. `git tag v0.1.0 && git push --tags`), or
+# manually via the Actions tab: the npm SDK (`kaval`), the MCP server (`@kaval/mcp`), and the PyPI SDK
+# (`kaval`). All three are thin clients for the hosted Kaval API.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    name: Publish Node SDK (kaval) to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build + test the Node SDK
+        run: pnpm --filter kaval run build && pnpm --filter kaval run test
+      - name: Publish to npm
+        working-directory: sdks/node
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  mcp:
+    name: Publish MCP server (@kaval/mcp) to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # @kaval/mcp depends on the `kaval` workspace package — build it first (topological), then test.
+      - name: Build + test the MCP server
+        run: pnpm --filter "@kaval/mcp..." run build && pnpm --filter @kaval/mcp run test
+      # pnpm publish (not npm) rewrites the `kaval` workspace:^ dependency to a real semver range.
+      - name: Publish to npm
+        working-directory: packages/mcp
+        run: pnpm publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  pypi:
+    name: Publish Python SDK (kaval) to PyPI
+    runs-on: ubuntu-latest
+    # Uses PyPI Trusted Publishing (OIDC) — configure a trusted publisher for `kaval` on PyPI first,
+    # pointing at this repo + workflow. No PYPI_TOKEN secret needed. (Set up an environment named `pypi`.)
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Test (hermetic contract tests)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pytest
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdks/python/dist/

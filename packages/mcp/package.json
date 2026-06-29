@@ -1,0 +1,65 @@
+{
+  "name": "@kaval/mcp",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "MCP server for kaval — the freshness gate for AI. Pre-action currentness checks (verify/check/scan/monitor) as MCP tools; a thin client over the hosted Kaval API (BYO Kaval API key).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "kaval-mcp": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "kaval",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "agents",
+    "freshness",
+    "rag",
+    "verification"
+  ],
+  "homepage": "https://github.com/LufeMC/kaval-clients/tree/main/packages/mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LufeMC/kaval-clients.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/LufeMC/kaval-clients/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "kaval": "workspace:^",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,76 @@
+# @kaval/mcp
+
+The [Kaval](https://usekaval.com) freshness gate as an **MCP server**. It gives your agent a
+pre-action currentness check: hand it a belief the agent already holds — a cached fact, a stored
+field, a retrieved RAG chunk, a prior answer — and it independently re-derives the truth and returns
+whether it's still safe to act on.
+
+This package is a **thin client** over the hosted Kaval API. All classification, grounding, and
+retrieval run server-side, so you bring just a Kaval API key — no model or search keys, no local
+engine.
+
+## Run it
+
+```bash
+npx -y @kaval/mcp
+```
+
+It speaks MCP over stdio. Point any MCP client at it.
+
+### Client config
+
+```jsonc
+{
+  "mcpServers": {
+    "kaval": {
+      "command": "npx",
+      "args": ["-y", "@kaval/mcp"],
+      "env": {
+        "KAVAL_API_KEY": "kv_live_…",
+      },
+    },
+  },
+}
+```
+
+## Tools
+
+| Tool                            | What it does                                                                                             |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `currentness_verify`            | Pre-action gate: returns `act` (boolean) + a typed verdict + proof. Call before acting on a held belief. |
+| `currentness_check`             | The raw freshness verdict without the act/don't-act decision.                                            |
+| `currentness_extract_and_check` | Pull the checkable beliefs out of a paragraph and re-ground each.                                        |
+| `currentness_scan_store`        | Sweep a batch of beliefs for drift (summary + the riskiest).                                             |
+| `currentness_monitor`           | Sweep + POST the newly-risky beliefs to a webhook (run on a schedule).                                   |
+| `report_outcome`                | Report what actually happened for a prior check so the service can calibrate.                            |
+
+A verdict status is one of: `current`, `stale`, `contradicted`, `unsupported`, `conflicting`,
+`insufficient`. Treat anything other than `current` (or `act === false`) as "re-research before
+relying on it".
+
+## Environment
+
+| Var              | Required | Purpose                                                                |
+| ---------------- | -------- | --------------------------------------------------------------------- |
+| `KAVAL_API_KEY`  | yes      | Bearer key for the hosted Kaval API (create one at https://usekaval.com) |
+| `KAVAL_BASE_URL` | no       | Override the API base URL (self-hosted / staging). Defaults to `https://api.usekaval.com` |
+
+## Programmatic use
+
+This package is primarily a CLI (`kaval-mcp`). It also exports the server factory for embedding:
+
+```ts
+import { createMcpServer, createClientFromEnv } from "@kaval/mcp";
+
+const server = createMcpServer(createClientFromEnv());
+// connect `server` to your own MCP transport
+```
+
+Or pass your own configured client:
+
+```ts
+import { createMcpServer } from "@kaval/mcp";
+import { Kaval } from "kaval";
+
+const server = createMcpServer(new Kaval({ apiKey: process.env.KAVAL_API_KEY }));
+```

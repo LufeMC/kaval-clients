@@ -1,0 +1,55 @@
+{
+  "name": "kaval",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "The freshness gate for AI — verify a belief your system already holds is still true.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "kaval",
+    "ai",
+    "agents",
+    "freshness",
+    "rag",
+    "verification"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://github.com/LufeMC/kaval-clients/tree/main/sdks/node#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LufeMC/kaval-clients.git",
+    "directory": "sdks/node"
+  },
+  "bugs": {
+    "url": "https://github.com/LufeMC/kaval-clients/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "prepublishOnly": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.turbo/
+
+# python
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+sdks/python/dist/
+
+*.tgz
+.DS_Store
