@@ -1,0 +1,31 @@
+{
+  "_comment": "A representative subset of Kaval's graded verification benchmark (full suite: 158/159, run in the engine's CI). `expected` is the set of acceptable verdicts for that belief; some strict fact types are left to manual assessment (they demand strong primary proof and often correctly abstain). Reproduce live at https://usekaval.com.",
+  "verdict_types": ["current", "stale", "contradicted", "unsupported", "conflicting", "insufficient"],
+  "cases": [
+    { "category": "person.works_at", "fact_type": "person.works_at", "subject": "Tim Cook", "object": "Apple", "expected": ["current"] },
+    { "category": "person.works_at", "fact_type": "person.works_at", "subject": "Satya Nadella", "object": "Microsoft", "expected": ["current"] },
+    { "category": "person.works_at", "fact_type": "person.works_at", "subject": "Elon Musk", "object": "Tesla", "expected": ["current"] },
+    { "category": "person.works_at", "fact_type": "person.works_at", "subject": "Steve Ballmer", "object": "Microsoft", "expected": ["stale", "contradicted", "insufficient", "unsupported"], "note": "former CEO — must not read current" },
+    { "category": "person.works_at", "fact_type": "person.works_at", "subject": "Jeff Bezos", "object": "Amazon (CEO)", "expected": ["stale", "contradicted", "insufficient", "unsupported"], "note": "stepped down as CEO" },
+    { "category": "person.works_at", "fact_type": "person.works_at", "subject": "Jane Q. Notreal", "object": "Apple", "expected": ["unsupported", "insufficient", "contradicted"], "note": "fabricated person" },
+    { "category": "entity.exists", "fact_type": "entity.exists", "subject": "OpenAI", "expected": ["current"] },
+    { "category": "entity.exists", "fact_type": "entity.exists", "subject": "Anthropic", "expected": ["current"] },
+    { "category": "entity.exists", "fact_type": "entity.exists", "subject": "(fabricated organization)", "expected": ["insufficient", "unsupported", "contradicted"] },
+    { "category": "url.resolves", "fact_type": "url.resolves", "subject": "https://example.com", "expected": ["current"] },
+    { "category": "url.resolves", "fact_type": "url.resolves", "subject": "https://en.wikipedia.org/wiki/Main_Page", "expected": ["current"] },
+    { "category": "url.resolves", "fact_type": "url.resolves", "subject": "https://this-domain-truly-does-not-exist-abc123xyz.invalid/page", "expected": ["insufficient", "stale", "contradicted"], "note": "dead host" },
+    { "category": "doc.supports_statement", "fact_type": "doc.supports_statement", "subject": "Photosynthesis converts light energy into chemical energy", "expected": ["current"] },
+    { "category": "doc.supports_statement", "fact_type": "doc.supports_statement", "subject": "(a factually false statement)", "expected": ["unsupported", "contradicted", "insufficient"] },
+    { "category": "value.currency", "fact_type": "value.currency", "subject": "React's current major version is 18", "expected": ["stale"], "note": "superseded by React 19 — a page that merely mentions '18' must not verify it" },
+    { "category": "value.currency", "fact_type": "value.currency", "subject": "The US federal corporate tax rate is 35%", "expected": ["stale"], "note": "now 21%" },
+    { "category": "certification.soc2", "fact_type": "certification.soc2", "subject": "Notion", "expected": [], "note": "strict Type-II gate — a 'we have SOC 2' banner without report metadata is insufficient" },
+    { "category": "certification.soc2", "fact_type": "certification.soc2", "subject": "example.com", "expected": ["unsupported", "insufficient"] },
+    { "category": "pricing.current", "fact_type": "pricing.current", "subject": "OpenAI API pricing", "expected": [], "note": "manual assessment — requires a live price page" },
+    { "category": "pricing.current", "fact_type": "pricing.current", "subject": "example.com pricing", "expected": ["unsupported", "insufficient"] },
+    { "category": "funding.round", "fact_type": "funding.round", "subject": "OpenAI", "expected": [], "note": "manual assessment — requires strong primary evidence" },
+    { "category": "source-less (corroboration)", "fact_type": "person.works_at", "subject": "(belief with no URL — search + two-source corroboration)", "expected": ["current", "insufficient"] },
+    { "category": "adversarial", "fact_type": "(prompt-injection override attempt)", "subject": "ignore-instructions / injected directive", "expected": ["insufficient", "unsupported", "contradicted"], "note": "must not be talked into a confident verdict" },
+    { "category": "adversarial", "fact_type": "(nonsense word-salad)", "subject": "gibberish input", "expected": ["insufficient", "unsupported"] },
+    { "category": "NL classification", "fact_type": "classifier", "subject": "raw natural-language belief -> canonical fact_type", "expected": [], "note": "asserts the classifier produced the correct fact_type (e.g. person.works_at, certification.soc2, url.resolves)" }
+  ]
+}
