@@ -67,6 +67,36 @@ for r in report["riskiest"]:
 client.monitor(beliefs, webhook="https://your-app.com/hooks/stale")
 ```
 
+## Pydantic AI guardrail (one line)
+
+Gate a [Pydantic AI](https://ai.pydantic.dev) agent's outputs on belief freshness. Facts the agent
+is about to return are verified against the live world; a stale / contradicted / unsupported claim
+raises `ModelRetry` with the evidence-backed correction, and the agent re-answers with the current
+fact — verify-and-auto-refresh, no orchestration code:
+
+```python
+# pip install "kaval[pydantic-ai]"
+from pydantic_ai import Agent
+from kaval.pydantic_ai import verify_output
+
+agent = Agent("openai:gpt-5")
+agent.output_validator(verify_output())  # <- the guardrail
+```
+
+By default plain-text outputs go through Kaval's claim extractor (`extract_and_check`). For
+structured outputs, say which fields are checkable beliefs:
+
+```python
+agent.output_validator(
+    verify_output(beliefs=lambda out: [f"{out.company}'s CEO is {out.ceo}"], mode="fast")
+)
+```
+
+`verify_output(...)` also takes `client=` (a configured `KavalClient`), `min_confidence=`, and
+`freshness_sla=` (e.g. `"14d"`). Streaming runs are supported — partial chunks pass through and
+only the complete output is verified. Each retry consumes the run's output-retry budget
+(`Agent(retries={"output": N})`). Full runnable example: `examples/pydantic_ai_guardrail.py`.
+
 ## Custom base URL
 
 Override the API base URL (e.g. a staging environment or a local proxy):
