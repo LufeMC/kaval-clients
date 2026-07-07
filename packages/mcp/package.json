@@ -1,7 +1,7 @@
 {
   "name": "@usekaval/mcp",
   "mcpName": "io.github.LufeMC/kaval",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "description": "MCP server for kaval — the freshness gate for AI. Pre-action currentness checks (verify/check/scan/monitor) as MCP tools; a thin client over the hosted Kaval API (BYO Kaval API key).",
   "type": "module",
