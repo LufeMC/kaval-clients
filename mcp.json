@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kaval": {
+      "command": "npx",
+      "args": ["-y", "@usekaval/mcp"],
+      "env": {
+        "KAVAL_API_KEY": "kv_live_YOUR_KEY"
+      }
+    }
+  }
+}
