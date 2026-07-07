@@ -64,14 +64,16 @@ const setPkg = (file) => {
 };
 
 // pyproject.toml: targeted replace of the version line (no TOML dependency needed).
+// Check the pattern EXISTS with test() rather than comparing before/after — otherwise a no-op
+// replace (bumping to the version already present) would look like "not found" and fail.
 const setPy = (file) => {
   const src = readFileSync(file, "utf8");
-  const out = src.replace(/^(version\s*=\s*")\d+\.\d+\.\d+(")/m, `$1${next}$2`);
-  if (out === src) {
+  const re = /^(version\s*=\s*")\d+\.\d+\.\d+(")/m;
+  if (!re.test(src)) {
     console.error(`could not find a 'version = "X.Y.Z"' line in ${file}`);
     process.exit(1);
   }
-  writeFileSync(file, out);
+  writeFileSync(file, src.replace(re, `$1${next}$2`));
 };
 
 setPkg(NODE_PKG);
