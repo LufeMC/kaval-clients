@@ -1,0 +1,69 @@
+name: Version bump
+
+# One-click release. Trigger from the Actions tab: pick a bump (patch/minor/major) or type an exact
+# version. It bumps all three clients (@usekaval/kaval, @usekaval/mcp, kaval) to ONE version in
+# lockstep, commits to main, tags v<version>, and triggers the Release workflow to publish
+# npm + npm + PyPI. No more editing three files by hand or letting their versions drift.
+#
+# Why it dispatches Release explicitly instead of relying on the tag: a tag pushed with the built-in
+# GITHUB_TOKEN does NOT start other workflows (GitHub's loop-prevention), so we push the tag for the
+# record and then start Release directly. (Release skips its tag-vs-version asserts on a manual run.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (ignored if you set an exact version below)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Exact version, e.g. 0.2.0 (optional — overrides the bump choice)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write # push the release commit + tag
+  actions: write # dispatch the Release workflow
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Bump all three clients in lockstep
+        id: bump
+        run: |
+          ARG="${{ inputs.version != '' && inputs.version || inputs.bump }}"
+          NEW="$(node scripts/bump.mjs "$ARG")"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumped @usekaval/kaval, @usekaval/mcp, and kaval to $NEW"
+
+      - name: Commit, tag, and push
+        env:
+          NEW: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sdks/node/package.json packages/mcp/package.json sdks/python/pyproject.toml
+          git commit -m "chore(release): v$NEW"
+          git tag "v$NEW"
+          git push origin main
+          git push origin "v$NEW"
+
+      - name: Trigger the Release workflow (publish npm + npm + PyPI)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref main
