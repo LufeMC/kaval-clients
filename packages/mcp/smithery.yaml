@@ -1,0 +1,35 @@
+# Smithery configuration: https://smithery.ai/docs/build/project-config/smithery.yaml
+#
+# Kaval MCP server — a thin, bring-your-own-key stdio client over the hosted Kaval API.
+# Smithery does NOT build or host this server; it runs the published npm package
+# (@usekaval/mcp) via npx and injects the user's KAVAL_API_KEY into the process env.
+
+startCommand:
+  type: stdio
+
+  # JSON Schema for the config Smithery collects from the user before starting the server.
+  configSchema:
+    type: object
+    required:
+      - kavalApiKey
+    properties:
+      kavalApiKey:
+        type: string
+        title: Kaval API Key
+        description: >-
+          Your Kaval API key (starts with kv_live_). Create one at
+          https://usekaval.com. Sent to the local MCP process as the
+          KAVAL_API_KEY environment variable; used as a bearer token
+          against the hosted Kaval API.
+
+  # Returns { command, args, env } for the local stdio process.
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', '@usekaval/mcp'],
+      env: { KAVAL_API_KEY: config.kavalApiKey }
+    })
+
+  # Placeholder shown in the Smithery UI / playground (never a real key).
+  exampleConfig:
+    kavalApiKey: kv_live_xxxxxxxxxxxxxxxxxxxxxxxx
