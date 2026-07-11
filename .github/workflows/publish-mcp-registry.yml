@@ -1,0 +1,158 @@
+name: Publish MCP Registry
+
+# This is deliberately separate from npm/PyPI publication: immutable package releases and mutable
+# registry delivery can be retried independently. release.yml calls it for future versions, while
+# workflow_dispatch is the recovery path for an already-published package version.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-registry-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish server metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release metadata and check for an existing version
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="packages/mcp/server.json"
+          package_json="packages/mcp/package.json"
+          name="$(jq -er '.name' "$manifest")"
+          version="$(jq -er '.version' "$manifest")"
+          identifier="$(jq -er '.packages[] | select(.registryType == "npm") | .identifier' "$manifest")"
+          package_version="$(jq -er '.packages[] | select(.identifier == $identifier) | .version' --arg identifier "$identifier" "$manifest")"
+
+          test "$version" = "$package_version"
+          test "$(jq -er '.version' "$package_json")" = "$version"
+          test "$(jq -er '.mcpName' "$package_json")" = "$name"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            test "v$version" = "$GITHUB_REF_NAME"
+          fi
+
+          encoded_name="$(jq -rn --arg value "$name" '$value | @uri')"
+          encoded_version="$(jq -rn --arg value "$version" '$value | @uri')"
+          registry_url="https://registry.modelcontextprotocol.io/v0.1/servers/$encoded_name/versions/$encoded_version"
+          response="$RUNNER_TEMP/registry-version.json"
+          status="$(
+            curl --silent --show-error --location \
+              --output "$response" \
+              --write-out '%{http_code}' \
+              "$registry_url"
+          )"
+
+          case "$status" in
+            200)
+              diff -u <(jq -S . "$manifest") <(jq -S '.server' "$response")
+              published=true
+              ;;
+            404)
+              published=false
+              ;;
+            *)
+              cat "$response" >&2
+              echo "Registry preflight returned HTTP $status" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "identifier=$identifier" >> "$GITHUB_OUTPUT"
+          echo "registry_url=$registry_url" >> "$GITHUB_OUTPUT"
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm the npm package is published
+        if: steps.metadata.outputs.published != 'true'
+        shell: bash
+        env:
+          IDENTIFIER: ${{ steps.metadata.outputs.identifier }}
+          NAME: ${{ steps.metadata.outputs.name }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            package="$(npm view "$IDENTIFIER@$VERSION" version mcpName --json 2>/dev/null || true)"
+            if jq -e --arg version "$VERSION" --arg name "$NAME" \
+              '.version == $version and .mcpName == $name' <<< "$package" >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 12 ]; then sleep 10; fi
+          done
+
+          echo "$IDENTIFIER@$VERSION is unavailable or has mismatched MCP metadata" >&2
+          exit 1
+
+      - name: Install the verified MCP publisher
+        if: steps.metadata.outputs.published != 'true'
+        shell: bash
+        env:
+          MCP_PUBLISHER_VERSION: v1.7.9
+          MCP_PUBLISHER_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/mcp-publisher.tar.gz"
+          curl --fail-with-body --location --retry 3 \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz" \
+            --output "$archive"
+          echo "$MCP_PUBLISHER_SHA256  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" mcp-publisher
+          chmod +x "$RUNNER_TEMP/mcp-publisher"
+          "$RUNNER_TEMP/mcp-publisher" --version
+
+      - name: Validate server metadata
+        if: steps.metadata.outputs.published != 'true'
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" validate packages/mcp/server.json
+
+      - name: Authenticate with GitHub OIDC
+        if: steps.metadata.outputs.published != 'true'
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+
+      - name: Publish to the official MCP Registry
+        if: steps.metadata.outputs.published != 'true'
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" publish packages/mcp/server.json
+
+      - name: Verify the exact published metadata
+        shell: bash
+        env:
+          REGISTRY_URL: ${{ steps.metadata.outputs.registry_url }}
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/registry-version-final.json"
+          for attempt in {1..12}; do
+            status="$(
+              curl --silent --show-error --location \
+                --output "$response" \
+                --write-out '%{http_code}' \
+                "$REGISTRY_URL"
+            )"
+            if [ "$status" = "200" ]; then
+              diff -u <(jq -S . packages/mcp/server.json) <(jq -S '.server' "$response")
+              exit 0
+            fi
+            if [ "$status" != "404" ]; then
+              cat "$response" >&2
+              echo "Registry verification returned HTTP $status" >&2
+              exit 1
+            fi
+            if [ "$attempt" -lt 12 ]; then sleep 5; fi
+          done
+
+          echo "Published MCP metadata did not become readable" >&2
+          exit 1
