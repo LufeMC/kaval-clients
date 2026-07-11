@@ -21,6 +21,53 @@ const { Kaval } = await import("@usekaval/kaval");
 `require(esm)` support). On Node 18, use `import` / `await import()` instead — `engines.node` is
 `>=18` for ESM + `fetch`, not for CJS require.
 
+## Build a proof, then gate the action
+
+```ts
+import { Kaval } from "@usekaval/kaval";
+
+const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
+const proof = await kaval.audit({
+  text: "Acme is eligible for a $12,000 refund",
+  as_of: new Date().toISOString(),
+  intended_action: "Issue Acme a $12,000 refund",
+  materiality: "critical",
+  reversibility: "irreversible",
+  false_allow_cost_usd: 12_000,
+  record: { system: "billing", table: "refunds", id: "acme-2026" },
+});
+const gate = await kaval.gateAction({
+  proof_id: proof.proof_id,
+  material_claim_ids: proof.action_decision.material_claim_ids,
+  threshold: proof.action_decision.threshold,
+  action: proof.research_contract.action,
+});
+if (gate.enforcement?.controlApplied === true) {
+  if (gate.enforcement.executionAllowed !== true) {
+    throw new Error("Kaval blocked the action");
+  }
+} else if (
+  gate.enforcement === undefined &&
+  (gate.state !== "current" || gate.decision.decision !== "ALLOW")
+) {
+  // A direct integration without staged enforcement fails closed.
+  throw new Error("Kaval did not allow the action");
+}
+// controlApplied === false is shadow mode: record wouldAllow, but keep the customer's existing
+// action policy authoritative.
+```
+
+`audit()` returns the complete typed `ProofPacket`: atomic claims, policy bindings, immutable source
+versions, exact evidence spans, lineage families, claim assessments, calibrated/withheld risk,
+provenance, expiry, and signature. `gateAction()` is the cheap action-time check and includes staged
+`enforcement` (`shadow`, `block_only`, or `bounded`) when configured by the deployment.
+Only `enforcement.controlApplied === true` may control execution. Shadow mode returns
+`controlApplied: false`, `executionAllowed: null`, and a counterfactual `wouldAllow` for calibration.
+
+Both methods accept `{ idempotencyKey?, signal?, timeoutMs? }`. The constructor defaults to a
+30-second deadline; override per call or set `timeoutMs: null` to disable it. Cancellation and timeout
+errors retain `error.idempotencyKey`, because an interrupted billable request can be ambiguous.
+
 ## Gate a belief before you act on it
 
 ```ts
@@ -63,7 +110,10 @@ the same operation instead of starting and billing a new one.
 ## Pick a speed/depth tier
 
 ```ts
-const decision = await kaval.verify({ belief: "Acme's CEO is Jane Doe", mode: "deep" });
+const decision = await kaval.verify({
+  belief: "Acme's CEO is Jane Doe",
+  mode: "deep",
+});
 
 decision.tier; // "deep" — the tier that ran (echoes your `mode`)
 decision.explanation?.content; // deep only: a cited, markdown rationale with [n] citations
@@ -92,10 +142,10 @@ await kaval.monitor({ beliefs, webhook: "https://your-app.com/hooks/stale" });
 
 ## API
 
-`verify` · `check` · `extractAndCheck` · `scanStore` · `monitor` · `reportOutcome` · `kaval` ·
-`kavalBatch` · `health`. Billable methods accept a final `{ idempotencyKey? }` request-options
-argument (`kavalBatch` includes it alongside `concurrency`). Construct with `{ apiKey, baseUrl?,
-fetch? }` — `baseUrl` defaults to
+`audit` · `gateAction` (`gate` alias) · `verify` · `check` · `extractAndCheck` · `scanStore` ·
+`monitor` · `reportOutcome` · `kaval` · `kavalBatch` · `health`. Billable methods accept a final
+`{ idempotencyKey?, signal?, timeoutMs? }` request-options argument (`kavalBatch` includes it alongside
+`concurrency`). Construct with `{ apiKey, baseUrl?, fetch?, timeoutMs? }` — `baseUrl` defaults to
 `https://api.usekaval.com`. Works in Node 18+, browsers, and edge runtimes (uses the global `fetch`).
 
 **Env vars:** this package does **not** read `KAVAL_BASE_URL` from the environment — pass

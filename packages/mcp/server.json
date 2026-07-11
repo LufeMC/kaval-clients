@@ -2,19 +2,19 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.LufeMC/kaval",
   "title": "Kaval",
-  "description": "Freshness gate for AI agents: verify a belief is still true against the live world before you act.",
+  "description": "Stop AI agents from acting on bad facts with action-bound proof packets and ALLOW/BLOCK/REVIEW gates.",
   "websiteUrl": "https://usekaval.com",
   "repository": {
     "url": "https://github.com/LufeMC/kaval-clients",
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@usekaval/mcp",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {

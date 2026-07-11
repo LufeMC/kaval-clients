@@ -12,11 +12,11 @@ The Node, Python, and MCP surfaces automatically attach a unique idempotency key
 operations and reuse it for one bounded retry only when the transport outcome is ambiguous or the
 API is still finalizing that operation.
 
-| Package                          | Language          | Install              | Source                       |
-| -------------------------------- | ----------------- | -------------------- | ---------------------------- |
-| [`@usekaval/kaval`](sdks/node)   | Node / TypeScript | `npm i @usekaval/kaval` | [sdks/node](sdks/node)       |
-| [`kaval`](sdks/python)           | Python            | `pip install kaval`  | [sdks/python](sdks/python)   |
-| [`@usekaval/mcp`](packages/mcp)     | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
+| Package                         | Language          | Install                 | Source                       |
+| ------------------------------- | ----------------- | ----------------------- | ---------------------------- |
+| [`@usekaval/kaval`](sdks/node)  | Node / TypeScript | `npm i @usekaval/kaval` | [sdks/node](sdks/node)       |
+| [`kaval`](sdks/python)          | Python            | `pip install kaval`     | [sdks/python](sdks/python)   |
+| [`@usekaval/mcp`](packages/mcp) | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
 ## Node
 
@@ -24,6 +24,33 @@ API is still finalizing that operation.
 import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
+
+const proof = await kaval.audit({
+  text: "Acme is eligible for a $12,000 refund",
+  as_of: new Date().toISOString(),
+  intended_action: "Issue the refund",
+  materiality: "critical",
+  reversibility: "irreversible",
+});
+const gate = await kaval.gateAction({
+  proof_id: proof.proof_id,
+  material_claim_ids: proof.action_decision.material_claim_ids,
+  threshold: proof.action_decision.threshold,
+  action: proof.research_contract.action,
+});
+if (
+  gate.enforcement?.controlApplied === true &&
+  gate.enforcement.executionAllowed !== true
+) {
+  throw new Error("Kaval blocked the action");
+}
+if (
+  gate.enforcement === undefined &&
+  (gate.state !== "current" || gate.decision.decision !== "ALLOW")
+) {
+  throw new Error("Kaval did not allow the action");
+}
+// controlApplied === false is shadow mode: observe wouldAllow without controlling the action.
 
 const { act, status, reason } = await kaval.verify({
   belief: "Acme is on our Enterprise plan",
@@ -52,18 +79,19 @@ if not decision["act"]:
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Exposes `currentness_verify` (the pre-action gate) plus `currentness_check`, `…_extract_and_check`,
-`…_scan_store`, `…_monitor`, and `report_outcome` over stdio. See [packages/mcp](packages/mcp).
+Exposes `proof_audit` + `proof_gate` for the full action-verification protocol, plus
+`currentness_verify`, `currentness_check`, `…_extract_and_check`, `…_scan_store`, `…_monitor`, and
+`report_outcome` over stdio. See [packages/mcp](packages/mcp).
 
 ## API origin env vars
 
 Two names exist on purpose — they are **not** interchangeable:
 
-| Consumer | Variable | Reads env? |
-| -------- | -------- | ---------- |
-| Python SDK / MCP | `KAVAL_BASE_URL` | yes |
-| Node `@usekaval/kaval` | — | pass `baseUrl` in constructor |
-| Marketing site proxy (`apps/web`) | `KAVAL_API_URL` | yes (server only) |
+| Consumer                          | Variable         | Reads env?                    |
+| --------------------------------- | ---------------- | ----------------------------- |
+| Python SDK / MCP                  | `KAVAL_BASE_URL` | yes                           |
+| Node `@usekaval/kaval`            | —                | pass `baseUrl` in constructor |
+| Marketing site proxy (`apps/web`) | `KAVAL_API_URL`  | yes (server only)             |
 
 Use the same origin value in both vars when self-hosting (e.g. `http://localhost:8787`). See
 [`SELFHOST.md`](https://github.com/LufeMC/kaval/blob/main/SELFHOST.md) in the core repo.

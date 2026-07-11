@@ -43,6 +43,8 @@ describe("MCP conformance", () => {
         "currentness_extract_and_check",
         "currentness_scan_store",
         "currentness_monitor",
+        "proof_audit",
+        "proof_gate",
         "report_outcome",
       ]),
     );
@@ -191,5 +193,151 @@ describe("MCP conformance", () => {
     });
     const out = parseToolText(res);
     expect(out.beliefs).toHaveLength(2);
+  });
+
+  it("proof_audit builds an action-bound proof packet", async () => {
+    const client = await connectClient();
+    const res = await client.callTool({
+      name: "proof_audit",
+      arguments: {
+        text: "Acme is eligible for a refund",
+        as_of: "2026-07-10T20:00:00Z",
+        intended_action: "Issue the refund",
+        materiality: "critical",
+        reversibility: "irreversible",
+        false_allow_cost_usd: 12_000,
+        record: { system: "billing", table: "refunds", id: "acme" },
+      },
+    });
+    expect(parseToolText(res)).toMatchObject({
+      proof_id: "proof_1",
+      action_decision: { decision: "REVIEW" },
+    });
+  });
+
+  it("proof_audit rejects credential-bearing origin URLs before network access", async () => {
+    const client = await connectClient(() => {
+      throw new Error("the API must not be called for an invalid tool input");
+    });
+    const res = await client.callTool({
+      name: "proof_audit",
+      arguments: {
+        text: "Acme is eligible for a refund",
+        as_of: "2026-07-10T20:00:00Z",
+        origin_urls: ["https://user:secret@example.com/refund"],
+      },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(
+      (res as { content: Array<{ text: string }> }).content[0]?.text,
+    ).toContain("must be an http(s) URL");
+  });
+
+  it("propagates MCP cancellation into proof_audit's HTTP request", async () => {
+    let calls = 0;
+    let markStarted!: () => void;
+    let markAborted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    const cancellableFetch = (async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      calls += 1;
+      markStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const onAbort = () => {
+          markAborted();
+          reject(signal?.reason ?? new Error("cancelled"));
+        };
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }) as typeof fetch;
+    const client = await connectClient(cancellableFetch);
+    const controller = new AbortController();
+    const pending = client.callTool(
+      {
+        name: "proof_audit",
+        arguments: {
+          text: "Acme is eligible for a refund",
+          as_of: "2026-07-10T20:00:00Z",
+        },
+      },
+      undefined,
+      { signal: controller.signal },
+    );
+
+    await started;
+    controller.abort(new Error("caller cancelled"));
+    await aborted;
+    await pending.catch(() => undefined);
+    expect(calls).toBe(1);
+  });
+
+  it("proof_gate surfaces staged enforcement for a current proof", async () => {
+    const client = await connectClient();
+    const res = await client.callTool({
+      name: "proof_gate",
+      arguments: {
+        proof_id: "proof_1",
+        material_claim_ids: ["claim_1"],
+        threshold: {
+          policy_id: "pricing-current",
+          policy_version: "1.0.0",
+          materiality: "low",
+          maximum_false_allow_risk: 0.01,
+          minimum_evidence_coverage: 0.95,
+        },
+        action: {
+          description: "Display the current price",
+          materiality: "low",
+          reversibility: "reversible",
+        },
+      },
+    });
+    expect(parseToolText(res)).toMatchObject({
+      proofId: "proof_1",
+      decision: { decision: "ALLOW" },
+      enforcement: {
+        mode: "bounded",
+        executionAllowed: true,
+      },
+    });
+  });
+
+  it("proof_gate rejects missing or ambiguous proof locators", async () => {
+    const client = await connectClient();
+    const common = {
+      material_claim_ids: ["claim_1"],
+      threshold: {
+        policy_id: "policy_1",
+        policy_version: "1",
+        materiality: "low",
+        maximum_false_allow_risk: 0.01,
+        minimum_evidence_coverage: 0.9,
+      },
+      action: {
+        description: "Display it",
+        materiality: "low",
+        reversibility: "reversible",
+      },
+    };
+    for (const arguments_ of [
+      common,
+      { ...common, proof_id: "proof_1", proof_key: "proof-key:1" },
+    ]) {
+      const res = await client.callTool({
+        name: "proof_gate",
+        arguments: arguments_,
+      });
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      expect(parseToolText(res)).toMatchObject({ error: "bad_request" });
+    }
   });
 });

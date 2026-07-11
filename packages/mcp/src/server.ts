@@ -16,6 +16,39 @@ const RECOVERABLE_API_CODES = new Set([
   "idempotency_resolution_pending",
   "event_persistence_pending",
 ]);
+const materialityInput = z.enum(["low", "medium", "high", "critical"]);
+const reversibilityInput = z.enum([
+  "reversible",
+  "partially_reversible",
+  "irreversible",
+  "unknown",
+]);
+const actionContextInput = {
+  description: z.string().min(1).max(10_000),
+  materiality: materialityInput,
+  reversibility: reversibilityInput,
+  false_allow_cost_usd: z.number().finite().nonnegative().optional(),
+  false_block_cost_usd: z.number().finite().nonnegative().optional(),
+  wait_cost_usd: z.number().finite().nonnegative().optional(),
+};
+const decisionThresholdInput = {
+  policy_id: z.string().min(1),
+  policy_version: z.string().min(1),
+  materiality: materialityInput,
+  maximum_false_allow_risk: z.number().min(0).max(1),
+  minimum_evidence_coverage: z.number().min(0).max(1),
+};
+const httpUrlInput = z
+  .string()
+  .url()
+  .refine((value) => {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      !parsed.username &&
+      !parsed.password
+    );
+  }, "must be an http(s) URL");
 
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
@@ -25,6 +58,16 @@ function toolError(payload: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(payload) }],
     isError: true,
+  };
+}
+
+function transportOptions(
+  idempotencyKey: string | undefined,
+  signal: AbortSignal,
+) {
+  return {
+    signal,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
   };
 }
 
@@ -79,12 +122,12 @@ async function safe(fn: () => Promise<unknown>) {
 }
 
 /**
- * The agent-facing MCP server (plan.md:359-361). Wraps the thin `kaval` HTTP client and exposes the
- * currentness tools (verify · check · extract_and_check · scan_store · monitor) plus report_outcome.
- * Tool names use underscores for client portability; `currentness.*` is the conceptual namespace.
+ * The agent-facing MCP server. Wraps the thin `kaval` HTTP client and exposes the full proof
+ * audit/gate protocol, compatibility currentness tools, and outcome reporting. Tool names use
+ * underscores for client portability.
  */
 export function createMcpServer(client: Kaval): McpServer {
-  const server = new McpServer({ name: "kaval", version: "0.2.1" });
+  const server = new McpServer({ name: "kaval", version: "0.3.0" });
 
   // THE hero tool: the pre-action gate. Registered first so agents reach for it at the act-moment.
   server.registerTool(
@@ -132,12 +175,9 @@ export function createMcpServer(client: Kaval): McpServer {
         idempotency_key: idempotencyKeyInput,
       },
     },
-    async ({ idempotency_key, ...args }) =>
+    async ({ idempotency_key, ...args }, { signal }) =>
       safe(() =>
-        client.verify(
-          args,
-          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
-        ),
+        client.verify(args, transportOptions(idempotency_key, signal)),
       ),
   );
 
@@ -165,13 +205,8 @@ export function createMcpServer(client: Kaval): McpServer {
         idempotency_key: idempotencyKeyInput,
       },
     },
-    async ({ idempotency_key, ...args }) =>
-      safe(() =>
-        client.check(
-          args,
-          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
-        ),
-      ),
+    async ({ idempotency_key, ...args }, { signal }) =>
+      safe(() => client.check(args, transportOptions(idempotency_key, signal))),
   );
 
   server.registerTool(
@@ -186,12 +221,9 @@ export function createMcpServer(client: Kaval): McpServer {
         idempotency_key: idempotencyKeyInput,
       },
     },
-    async ({ idempotency_key, ...args }) =>
+    async ({ idempotency_key, ...args }, { signal }) =>
       safe(() =>
-        client.extractAndCheck(
-          args,
-          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
-        ),
+        client.extractAndCheck(args, transportOptions(idempotency_key, signal)),
       ),
   );
 
@@ -213,12 +245,9 @@ export function createMcpServer(client: Kaval): McpServer {
         idempotency_key: idempotencyKeyInput,
       },
     },
-    async ({ idempotency_key, ...args }) =>
+    async ({ idempotency_key, ...args }, { signal }) =>
       safe(() =>
-        client.scanStore(
-          args,
-          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
-        ),
+        client.scanStore(args, transportOptions(idempotency_key, signal)),
       ),
   );
 
@@ -250,13 +279,92 @@ export function createMcpServer(client: Kaval): McpServer {
         idempotency_key: idempotencyKeyInput,
       },
     },
-    async ({ idempotency_key, ...args }) =>
+    async ({ idempotency_key, ...args }, { signal }) =>
       safe(() =>
-        client.monitor(
-          args,
-          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
-        ),
+        client.monitor(args, transportOptions(idempotency_key, signal)),
       ),
+  );
+
+  server.registerTool(
+    "proof_audit",
+    {
+      description:
+        "Build the complete action-bound Kaval ProofPacket: compile atomic claims, run support and falsification research, preserve exact evidence and lineage, adjudicate scope/time/conflicts, and return ALLOW, BLOCK, or REVIEW. Apply the result through proof_gate so the configured shadow/block-only/bounded rollout policy remains authoritative.",
+      inputSchema: {
+        text: z.string().min(1).max(10_000),
+        as_of: z
+          .string()
+          .datetime({ offset: true })
+          .describe("RFC 3339 cutoff for what the action may rely on"),
+        materiality: materialityInput.optional(),
+        intended_action: z.string().min(1).max(10_000).optional(),
+        reversibility: reversibilityInput.optional(),
+        false_allow_cost_usd: z.number().finite().nonnegative().optional(),
+        false_block_cost_usd: z.number().finite().nonnegative().optional(),
+        wait_cost_usd: z.number().finite().nonnegative().optional(),
+        domain: z
+          .string()
+          .min(1)
+          .max(256)
+          .optional()
+          .describe(
+            "descriptive metadata only; never expands calibration support",
+          ),
+        subject_hint: z.string().min(1).max(1_000).optional(),
+        jurisdiction: z.string().min(1).max(256).optional(),
+        geography: z.string().min(1).max(256).optional(),
+        units: z.string().min(1).max(128).optional(),
+        context: z.string().min(1).max(4_000).optional(),
+        aliases: z.array(z.string().min(1).max(512)).max(50).optional(),
+        primary_domains: z.array(z.string().min(1).max(512)).max(20).optional(),
+        origin_urls: z.array(httpUrlInput).max(20).optional(),
+        record: z
+          .object({
+            system: z.string(),
+            id: z.string(),
+            table: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        record_field: z.string().min(1).max(512).optional(),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...args }, { signal }) =>
+      safe(() => client.audit(args, transportOptions(idempotency_key, signal))),
+  );
+
+  server.registerTool(
+    "proof_gate",
+    {
+      description:
+        "Apply an existing durable proof to the exact action without repeating research. Supply exactly one of proof_id or proof_key. Only when enforcement.controlApplied is true may Kaval control execution; then honor executionAllowed exactly. controlApplied false is shadow telemetry and must not control the customer's action. If enforcement is absent, fail closed unless state is current and decision.decision is ALLOW.",
+      inputSchema: {
+        proof_id: z.string().min(1).max(512).optional(),
+        proof_key: z.string().min(1).max(512).optional(),
+        expected_dependency_versions: z
+          .record(z.string().min(1), z.string().min(1))
+          .optional(),
+        material_claim_ids: z.array(z.string().min(1).max(512)).min(1).max(100),
+        threshold: z.object(decisionThresholdInput).strict(),
+        action: z.object(actionContextInput).strict(),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...args }, { signal }) => {
+      if ((args.proof_id === undefined) === (args.proof_key === undefined)) {
+        return toolError({
+          error: "bad_request",
+          message: "provide exactly one of proof_id or proof_key",
+        });
+      }
+      return safe(() =>
+        client.gateAction(
+          args as Parameters<Kaval["gateAction"]>[0],
+          transportOptions(idempotency_key, signal),
+        ),
+      );
+    },
   );
 
   server.registerTool(

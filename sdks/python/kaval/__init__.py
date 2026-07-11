@@ -3,8 +3,29 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .client import KavalClient, KavalError
+from .models import (
+    ActionContext,
+    ActionDecision,
+    AuditInput,
+    DecisionThreshold,
+    ProofGateInput,
+    ProofGateResult,
+    ProofPacket,
+    RecordRef,
+)
 
-__all__ = ["KavalClient", "KavalError"]
+__all__ = [
+    "ActionContext",
+    "ActionDecision",
+    "AuditInput",
+    "DecisionThreshold",
+    "KavalClient",
+    "KavalError",
+    "ProofGateInput",
+    "ProofGateResult",
+    "ProofPacket",
+    "RecordRef",
+]
 
 try:
     # Single source of truth: read the installed distribution's version (set in pyproject.toml)

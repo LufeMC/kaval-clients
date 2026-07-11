@@ -90,6 +90,30 @@ export const fakeKavalFetch: typeof fetch = async (input, init) => {
         ],
       };
       break;
+    case "/v1/audit":
+      data = {
+        proof_id: "proof_1",
+        action_decision: { decision: "REVIEW" },
+      };
+      break;
+    case "/v1/gate":
+      data = {
+        proofId: "proof_1",
+        state: "current",
+        decision: { decision: "ALLOW" },
+        billingClass: "action_gate",
+        proofReused: true,
+        researchPerformed: false,
+        latencyMs: 3,
+        enforcement: {
+          mode: "bounded",
+          controlApplied: true,
+          executionAllowed: true,
+          wouldAllow: true,
+          reason: "inside boundary",
+        },
+      };
+      break;
     default:
       return new Response(JSON.stringify({ error: "not found" }), {
         status: 404,
@@ -104,6 +128,11 @@ export const fakeKavalFetch: typeof fetch = async (input, init) => {
 export function parseToolText(res: unknown): {
   status?: string | number;
   id?: string;
+  proof_id?: string;
+  proofId?: string;
+  action_decision?: { decision?: string };
+  decision?: { decision?: string };
+  enforcement?: { mode?: string; executionAllowed?: boolean | null };
   beliefs?: unknown[];
   tier?: string;
   explanation?: { confidence?: string; citations?: { url: string }[] };

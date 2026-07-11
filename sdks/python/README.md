@@ -39,6 +39,48 @@ with KavalClient() as client:
 `verify()` returns the verdict plus `act` — `True` only when the belief is `current` and confident
 (≥ 0.7 by default; override with `min_confidence`).
 
+## Build a proof, then gate the action
+
+```python
+from datetime import datetime, timezone
+from kaval import KavalClient
+
+with KavalClient(api_key="kv_live_...") as client:
+    proof = client.audit(
+        "Acme is eligible for a $12,000 refund",
+        as_of=datetime.now(timezone.utc).isoformat(),
+        intended_action="Issue Acme a $12,000 refund",
+        materiality="critical",
+        reversibility="irreversible",
+        false_allow_cost_usd=12_000,
+        record={"system": "billing", "table": "refunds", "id": "acme-2026"},
+        timeout=45.0,
+    )
+    gate = client.gate_action(
+        proof_id=proof["proof_id"],
+        material_claim_ids=proof["action_decision"]["material_claim_ids"],
+        threshold=proof["action_decision"]["threshold"],
+        action=proof["research_contract"]["action"],
+    )
+    enforcement = gate.get("enforcement")
+    if enforcement is not None and enforcement["controlApplied"]:
+        if enforcement["executionAllowed"] is not True:
+            raise RuntimeError("Kaval blocked the action")
+    elif enforcement is None and not (
+        gate["state"] == "current" and gate["decision"]["decision"] == "ALLOW"
+    ):
+        # A direct integration without staged enforcement fails closed.
+        raise RuntimeError("Kaval did not allow the action")
+    # controlApplied == False is shadow mode: record wouldAllow, but keep the customer's
+    # existing action policy authoritative.
+```
+
+The package exports the primary request/response `TypedDict` models at top level; `kaval.models`
+provides every nested proof object. The sync client cannot be externally cancelled mid-call; use
+constructor or per-call `timeout=` limits. Native cancellation is available in the Node client.
+Only an enforcement result with `controlApplied == True` controls execution. Shadow mode returns
+`controlApplied == False`, `executionAllowed is None`, and `wouldAllow` for calibration.
+
 ### Pick a speed/depth tier
 
 `verify(belief, mode=...)` selects a tier (default `auto`): `instant` (cache / graph-prior only, no
@@ -153,9 +195,9 @@ Timeouts surface as `httpx.TimeoutException` (not `KavalError`).
 
 ## API
 
-`verify` · `check` · `extract_and_check` · `scan_store` · `monitor` · `report_outcome` ·
-`kaval` · `kaval_batch` · `health`. Billable methods accept the optional keyword
-`idempotency_key=`. Construct with `KavalClient(base_url=?, api_key=?)` —
+`audit` · `gate_action` (`gate` alias) · `verify` · `check` · `extract_and_check` · `scan_store` ·
+`monitor` · `report_outcome` · `kaval` · `kaval_batch` · `health`. Billable methods accept the
+optional keyword `idempotency_key=`. Construct with `KavalClient(base_url=?, api_key=?)` —
 `base_url` defaults to `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
 `npm install @usekaval/kaval`.
 

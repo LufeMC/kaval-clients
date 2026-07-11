@@ -9,6 +9,7 @@ import pytest
 
 from kaval import KavalClient, KavalError
 from kaval.client import DEFAULT_BASE_URL
+from kaval.models import CalibrationSupportIdentity, ClaimAssessment
 
 GAP = {
     "id": "id_1",
@@ -19,6 +20,16 @@ GAP = {
     "checked_at": "2026-06-24T18:04:11.000Z",
     "discrepancy": {"kind": "stale", "signals": []},
 }
+
+
+def test_proof_models_retain_required_calibration_support_identity():
+    assert "calibration_support" in ClaimAssessment.__required_keys__
+    assert CalibrationSupportIdentity.__required_keys__ == {
+        "feature_schema_version",
+        "feature_schema_hash",
+        "support_fingerprint",
+        "feature_vector",
+    }
 
 
 def make_client(handler):
@@ -162,6 +173,124 @@ def test_monitor_sends_body_and_parses_result():
     assert out["state"]["riskyKeys"] == ["k1"]
 
 
+def test_audit_sends_exact_proof_body_and_returns_packet():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/audit"
+        captured["body"] = json.loads(request.content)
+        captured["key"] = request.headers["idempotency-key"]
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(
+            200,
+            json={"proof_id": "proof_1", "action_decision": {"decision": "REVIEW"}},
+        )
+
+    with make_client(handler) as c:
+        proof = c.audit(
+            "Acme is eligible for a refund",
+            as_of="2026-07-10T20:00:00Z",
+            intended_action="Issue the refund",
+            materiality="critical",
+            reversibility="irreversible",
+            false_allow_cost_usd=12_000,
+            record={"system": "billing", "table": "refunds", "id": "acme"},
+            idempotency_key="audit-operation-0001",
+            timeout=12.0,
+        )
+
+    assert captured["key"] == "audit-operation-0001"
+    assert captured["body"] == {
+        "text": "Acme is eligible for a refund",
+        "as_of": "2026-07-10T20:00:00Z",
+        "intended_action": "Issue the refund",
+        "materiality": "critical",
+        "reversibility": "irreversible",
+        "false_allow_cost_usd": 12_000,
+        "record": {"system": "billing", "table": "refunds", "id": "acme"},
+    }
+    assert captured["timeout"]["read"] == 12.0
+    assert proof["proof_id"] == "proof_1"
+
+
+def test_gate_action_sends_one_locator_and_returns_enforcement():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/gate"
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "proofId": "proof_1",
+                "state": "current",
+                "decision": {"decision": "ALLOW"},
+                "billingClass": "action_gate",
+                "proofReused": True,
+                "researchPerformed": False,
+                "latencyMs": 4,
+                "enforcement": {
+                    "mode": "bounded",
+                    "controlApplied": True,
+                    "executionAllowed": True,
+                    "wouldAllow": True,
+                    "reason": "inside boundary",
+                },
+            },
+        )
+
+    threshold = {
+        "policy_id": "pricing-current",
+        "policy_version": "1.0.0",
+        "materiality": "low",
+        "maximum_false_allow_risk": 0.01,
+        "minimum_evidence_coverage": 0.95,
+    }
+    action = {
+        "description": "Display the current price",
+        "materiality": "low",
+        "reversibility": "reversible",
+    }
+    with make_client(handler) as c:
+        result = c.gate_action(
+            proof_id="proof_1",
+            material_claim_ids=["claim_1"],
+            threshold=threshold,
+            action=action,
+        )
+
+    assert captured["body"] == {
+        "proof_id": "proof_1",
+        "material_claim_ids": ["claim_1"],
+        "threshold": threshold,
+        "action": action,
+    }
+    assert result["enforcement"]["executionAllowed"] is True
+
+
+def test_gate_action_rejects_missing_or_ambiguous_locator_before_network():
+    with make_client(lambda request: pytest.fail(f"unexpected request: {request.url}")) as c:
+        kwargs = {
+            "material_claim_ids": ["claim_1"],
+            "threshold": {
+                "policy_id": "policy_1",
+                "policy_version": "1",
+                "materiality": "low",
+                "maximum_false_allow_risk": 0.01,
+                "minimum_evidence_coverage": 0.9,
+            },
+            "action": {
+                "description": "Display it",
+                "materiality": "low",
+                "reversibility": "reversible",
+            },
+        }
+        with pytest.raises(ValueError, match="exactly one"):
+            c.gate_action(**kwargs)
+        with pytest.raises(ValueError, match="exactly one"):
+            c.gate_action(**kwargs, proof_id="proof_1", proof_key="proof-key:1")
+
+
 def test_report_outcome():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/report-outcome"
@@ -219,6 +348,24 @@ def test_caller_idempotency_key_reaches_every_billable_method():
         c.extract_and_check("x", idempotency_key=operation_key)
         c.scan_store(["x"], idempotency_key=operation_key)
         c.monitor(["x"], idempotency_key=operation_key)
+        c.audit("x", as_of="2026-07-10T20:00:00Z", idempotency_key=operation_key)
+        c.gate_action(
+            proof_id="proof_1",
+            material_claim_ids=["claim_1"],
+            threshold={
+                "policy_id": "policy_1",
+                "policy_version": "1",
+                "materiality": "low",
+                "maximum_false_allow_risk": 0.01,
+                "minimum_evidence_coverage": 0.9,
+            },
+            action={
+                "description": "Display it",
+                "materiality": "low",
+                "reversibility": "reversible",
+            },
+            idempotency_key=operation_key,
+        )
         c.kaval({"fact_type": "x"}, idempotency_key=operation_key)
         c.kaval_batch([{"fact_type": "x"}], idempotency_key=operation_key)
 
@@ -228,6 +375,8 @@ def test_caller_idempotency_key_reaches_every_billable_method():
         "/v1/extract-and-check",
         "/v1/scan-store",
         "/v1/monitor",
+        "/v1/audit",
+        "/v1/gate",
         "/v1/kaval",
         "/v1/kaval-batch",
     ]
