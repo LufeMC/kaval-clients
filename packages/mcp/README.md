@@ -1,9 +1,9 @@
 # @usekaval/mcp
 
-The [Kaval](https://usekaval.com) freshness gate as an **MCP server**. It gives your agent a
-pre-action currentness check: hand it a belief the agent already holds — a cached fact, a stored
-field, a retrieved RAG chunk, a prior answer — and it independently re-derives the truth and returns
-whether it's still safe to act on.
+The [Kaval](https://usekaval.com) action-verification layer as an **MCP server**. It builds durable,
+action-bound proof packets and returns `ALLOW`, `BLOCK`, or `REVIEW` before an agent sends, quotes,
+approves, updates, grants, or transacts. Compatibility currentness tools remain available for a
+cached fact, stored field, retrieved RAG chunk, or prior answer.
 
 This package is a **thin client** over the hosted Kaval API. All classification, grounding, and
 retrieval run server-side, so you bring just a Kaval API key — no model or search keys, no local
@@ -50,7 +50,16 @@ It speaks MCP over stdio. Point any MCP client at it.
 | `currentness_extract_and_check` | Pull the checkable beliefs out of a paragraph and re-ground each.                                        |
 | `currentness_scan_store`        | Sweep a batch of beliefs for drift (summary + the riskiest).                                             |
 | `currentness_monitor`           | Sweep + POST the newly-risky beliefs to a webhook (run on a schedule).                                   |
+| `proof_audit`                   | Build a complete action-bound ProofPacket with exact evidence, policy, lineage, risk, and expiry.        |
+| `proof_gate`                    | Apply a durable proof to the exact action and return staged enforcement without repeating research.      |
 | `report_outcome`                | Report what actually happened for a prior check so the service can calibrate.                            |
+
+For consequential actions, call `proof_audit`, then `proof_gate` immediately before execution. Only
+when `enforcement.controlApplied` is `true` may Kaval control the action; then honor
+`enforcement.executionAllowed` exactly. In shadow mode `controlApplied` is `false`,
+`executionAllowed` is `null`, and `wouldAllow` is counterfactual telemetry—the customer's existing
+action path remains authoritative. If `enforcement` is absent, a direct integration should fail
+closed unless the proof state is `current` and the decision is `ALLOW`.
 
 A verdict status is one of: `current`, `stale`, `contradicted`, `unsupported`, `conflicting`,
 `insufficient`. Treat anything other than `current` (or `act === false`) as "re-research before

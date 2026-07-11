@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import httpx
+
+from .models import (
+    ActionContext,
+    ActionReversibility,
+    DecisionThreshold,
+    Materiality,
+    ProofGateResult,
+    ProofPacket,
+    RecordRef,
+)
 
 # One of: current_later_contradicted | stale_caught_real | stale_was_false_alarm | relied_and_correct
 OutcomeKind = str
@@ -85,14 +95,19 @@ class KavalClient:
         body: dict[str, Any],
         *,
         idempotency_key: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Any:
         operation_key = idempotency_key or str(uuid.uuid4())
         for attempt in range(MAX_BILLABLE_ATTEMPTS):
             try:
+                request_options: dict[str, Any] = {}
+                if timeout is not None:
+                    request_options["timeout"] = timeout
                 res = self._http.post(
                     path,
                     json=body,
                     headers={"idempotency-key": operation_key},
+                    **request_options,
                 )
             except httpx.TransportError as error:
                 _attach_idempotency_key(error, operation_key)
@@ -263,6 +278,102 @@ class KavalClient:
             ),
             idempotency_key=idempotency_key,
         )
+
+    def audit(
+        self,
+        text: str,
+        *,
+        as_of: str,
+        materiality: Optional[Materiality] = None,
+        intended_action: Optional[str] = None,
+        reversibility: Optional[ActionReversibility] = None,
+        false_allow_cost_usd: Optional[float] = None,
+        false_block_cost_usd: Optional[float] = None,
+        wait_cost_usd: Optional[float] = None,
+        domain: Optional[str] = None,
+        subject_hint: Optional[str] = None,
+        jurisdiction: Optional[str] = None,
+        geography: Optional[str] = None,
+        units: Optional[str] = None,
+        context: Optional[str] = None,
+        aliases: Optional[list[str]] = None,
+        primary_domains: Optional[list[str]] = None,
+        origin_urls: Optional[list[str]] = None,
+        record: Optional[RecordRef] = None,
+        record_field: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> ProofPacket:
+        """Build, sign, and persist a complete action-bound proof packet.
+
+        ``domain`` is descriptive metadata only; it never expands empirical calibration support.
+        ``timeout`` overrides the client's default httpx timeout for this call.
+        """
+        payload = self._billable_post(
+            "/v1/audit",
+            _clean(
+                {
+                    "text": text,
+                    "as_of": as_of,
+                    "materiality": materiality,
+                    "intended_action": intended_action,
+                    "reversibility": reversibility,
+                    "false_allow_cost_usd": false_allow_cost_usd,
+                    "false_block_cost_usd": false_block_cost_usd,
+                    "wait_cost_usd": wait_cost_usd,
+                    "domain": domain,
+                    "subject_hint": subject_hint,
+                    "jurisdiction": jurisdiction,
+                    "geography": geography,
+                    "units": units,
+                    "context": context,
+                    "aliases": aliases,
+                    "primary_domains": primary_domains,
+                    "origin_urls": origin_urls,
+                    "record": record,
+                    "record_field": record_field,
+                }
+            ),
+            idempotency_key=idempotency_key,
+            timeout=timeout,
+        )
+        return cast(ProofPacket, payload)
+
+    def gate_action(
+        self,
+        *,
+        material_claim_ids: list[str],
+        threshold: DecisionThreshold,
+        action: ActionContext,
+        proof_id: Optional[str] = None,
+        proof_key: Optional[str] = None,
+        expected_dependency_versions: Optional[dict[str, str]] = None,
+        idempotency_key: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> ProofGateResult:
+        """Apply one current durable proof to the exact supplied action without researching again."""
+        if (proof_id is None) == (proof_key is None):
+            raise ValueError("provide exactly one of proof_id or proof_key")
+        payload = self._billable_post(
+            "/v1/gate",
+            _clean(
+                {
+                    "proof_id": proof_id,
+                    "proof_key": proof_key,
+                    "expected_dependency_versions": expected_dependency_versions,
+                    "material_claim_ids": material_claim_ids,
+                    "threshold": threshold,
+                    "action": action,
+                }
+            ),
+            idempotency_key=idempotency_key,
+            timeout=timeout,
+        )
+        return cast(ProofGateResult, payload)
+
+    def gate(self, **kwargs: Any) -> ProofGateResult:
+        """Short alias for :meth:`gate_action`."""
+        return self.gate_action(**kwargs)
 
     def report_outcome(
         self, id: str, kind: OutcomeKind, *, note: Optional[str] = None

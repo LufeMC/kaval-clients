@@ -1,8 +1,8 @@
 {
   "name": "@usekaval/kaval",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "license": "Apache-2.0",
-  "description": "The freshness gate for AI — verify a belief your system already holds is still true.",
+  "description": "Action-bound verification for AI agents — signed proof packets plus ALLOW/BLOCK/REVIEW gates.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

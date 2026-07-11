@@ -1,5 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { Kaval, KavalError } from "../src/index.js";
+import type {
+  CalibrationSupportIdentity,
+  ClaimAssessment,
+} from "../src/index.js";
+
+type CalibrationSupportIsRequired = ClaimAssessment extends {
+  calibration_support: CalibrationSupportIdentity;
+}
+  ? true
+  : false;
+const CALIBRATION_SUPPORT_IS_REQUIRED: CalibrationSupportIsRequired = true;
 
 /** A fetch double: the handler decides status + JSON; we capture what the client sent. */
 function mockFetch(
@@ -29,6 +40,10 @@ const DECISION = {
 };
 
 describe("Kaval", () => {
+  it("types issued claim assessments with required calibration support identity", () => {
+    expect(CALIBRATION_SUPPORT_IS_REQUIRED).toBe(true);
+  });
+
   it("verify() posts to /v1/verify with bearer auth and returns the decision", async () => {
     let seen:
       | { url: string; auth?: string; idempotencyKey?: string; body: unknown }
@@ -149,6 +164,105 @@ describe("Kaval", () => {
     expect(report.tier).toBe("deep");
   });
 
+  it("audit() posts the exact proof request and returns a typed proof packet", async () => {
+    let seen: { url: string; key?: string; body: unknown } | undefined;
+    const kaval = new Kaval({
+      fetch: mockFetch((url, init) => {
+        const headers = init?.headers as Record<string, string>;
+        seen = {
+          url,
+          key: headers["idempotency-key"],
+          body: JSON.parse(init?.body as string),
+        };
+        return {
+          json: {
+            proof_id: "proof_1",
+            action_decision: { decision: "REVIEW" },
+          },
+        };
+      }),
+    });
+    const proof = await kaval.audit(
+      {
+        text: "Acme is eligible for a refund",
+        as_of: "2026-07-10T20:00:00Z",
+        intended_action: "Issue the refund",
+        materiality: "critical",
+        reversibility: "irreversible",
+        false_allow_cost_usd: 12_000,
+        record: { system: "billing", table: "refunds", id: "acme" },
+      },
+      { idempotencyKey: "audit-operation-0001" },
+    );
+    expect(seen).toEqual({
+      url: "https://api.usekaval.com/v1/audit",
+      key: "audit-operation-0001",
+      body: {
+        text: "Acme is eligible for a refund",
+        as_of: "2026-07-10T20:00:00Z",
+        intended_action: "Issue the refund",
+        materiality: "critical",
+        reversibility: "irreversible",
+        false_allow_cost_usd: 12_000,
+        record: { system: "billing", table: "refunds", id: "acme" },
+      },
+    });
+    expect(proof.proof_id).toBe("proof_1");
+    expect(proof.action_decision.decision).toBe("REVIEW");
+  });
+
+  it("gateAction() posts one proof locator and exposes staged enforcement", async () => {
+    let seen: { url: string; body: unknown } | undefined;
+    const kaval = new Kaval({
+      fetch: mockFetch((url, init) => {
+        seen = { url, body: JSON.parse(init?.body as string) };
+        return {
+          json: {
+            proofId: "proof_1",
+            state: "current",
+            decision: { decision: "ALLOW" },
+            billingClass: "action_gate",
+            proofReused: true,
+            researchPerformed: false,
+            latencyMs: 4,
+            enforcement: {
+              mode: "bounded",
+              controlApplied: true,
+              executionAllowed: true,
+              wouldAllow: true,
+              reason: "inside boundary",
+            },
+          },
+        };
+      }),
+    });
+    const input = {
+      proof_id: "proof_1",
+      material_claim_ids: ["claim_1"],
+      threshold: {
+        policy_id: "pricing-current",
+        policy_version: "1.0.0",
+        materiality: "low" as const,
+        maximum_false_allow_risk: 0.01,
+        minimum_evidence_coverage: 0.95,
+      },
+      action: {
+        description: "Display the current price",
+        materiality: "low" as const,
+        reversibility: "reversible" as const,
+      },
+    };
+    const result = await kaval.gateAction(input);
+    expect(seen).toEqual({
+      url: "https://api.usekaval.com/v1/gate",
+      body: input,
+    });
+    expect(result.enforcement).toMatchObject({
+      mode: "bounded",
+      executionAllowed: true,
+    });
+  });
+
   it("respects a custom baseUrl and trims the trailing slash", async () => {
     let url: string | undefined;
     const kaval = new Kaval({
@@ -200,6 +314,29 @@ describe("Kaval", () => {
     await kaval.extractAndCheck({ text: "x" }, requestOptions);
     await kaval.scanStore({ beliefs: ["x"] }, requestOptions);
     await kaval.monitor({ beliefs: ["x"] }, requestOptions);
+    await kaval.audit(
+      { text: "x", as_of: "2026-07-10T20:00:00Z" },
+      requestOptions,
+    );
+    await kaval.gateAction(
+      {
+        proof_id: "proof_1",
+        material_claim_ids: ["claim_1"],
+        threshold: {
+          policy_id: "policy_1",
+          policy_version: "1",
+          materiality: "low",
+          maximum_false_allow_risk: 0.01,
+          minimum_evidence_coverage: 0.9,
+        },
+        action: {
+          description: "Display it",
+          materiality: "low",
+          reversibility: "reversible",
+        },
+      },
+      requestOptions,
+    );
     await kaval.kaval({ fact_type: "x" }, requestOptions);
     await kaval.kavalBatch([{ fact_type: "x" }], requestOptions);
 
@@ -209,6 +346,8 @@ describe("Kaval", () => {
       "/v1/extract-and-check",
       "/v1/scan-store",
       "/v1/monitor",
+      "/v1/audit",
+      "/v1/gate",
       "/v1/kaval",
       "/v1/kaval-batch",
     ]);
@@ -338,6 +477,73 @@ describe("Kaval", () => {
     expect(error).toMatchObject({
       idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
+  });
+
+  it("cancels audit immediately without retrying and preserves the recovery key", async () => {
+    let calls = 0;
+    const fetchImpl = (async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      calls += 1;
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const onAbort = () => reject(signal?.reason ?? new Error("aborted"));
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }) as typeof fetch;
+    const controller = new AbortController();
+    const pending = new Kaval({ fetch: fetchImpl, timeoutMs: null }).audit(
+      { text: "x", as_of: "2026-07-10T20:00:00Z" },
+      { signal: controller.signal, idempotencyKey: "cancel-audit-0001" },
+    );
+    controller.abort(new Error("caller cancelled"));
+    await expect(pending).rejects.toMatchObject({
+      message: "caller cancelled",
+      idempotencyKey: "cancel-audit-0001",
+    });
+    expect(calls).toBe(1);
+  });
+
+  it("applies a per-call gate timeout without an ambiguous retry", async () => {
+    let calls = 0;
+    const fetchImpl = (async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      calls += 1;
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const onAbort = () => reject(signal?.reason ?? new Error("aborted"));
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    }) as typeof fetch;
+    const pending = new Kaval({ fetch: fetchImpl }).gateAction(
+      {
+        proof_key: "proof-key:sha256:test",
+        material_claim_ids: ["claim_1"],
+        threshold: {
+          policy_id: "policy_1",
+          policy_version: "1",
+          materiality: "low",
+          maximum_false_allow_risk: 0.01,
+          minimum_evidence_coverage: 0.9,
+        },
+        action: {
+          description: "Display it",
+          materiality: "low",
+          reversibility: "reversible",
+        },
+      },
+      { timeoutMs: 5, idempotencyKey: "timeout-gate-0001" },
+    );
+    await expect(pending).rejects.toMatchObject({
+      message: "kaval request timed out after 5ms",
+      idempotencyKey: "timeout-gate-0001",
+    });
+    expect(calls).toBe(1);
   });
 
   it("does not retry a terminal API response", async () => {

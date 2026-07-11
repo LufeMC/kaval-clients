@@ -3,6 +3,15 @@
  * Mirrors the Python SDK (`pip install kaval`). Uses the global `fetch` (Node 18+, browsers, edge).
  */
 
+import type {
+  AuditInput,
+  ProofGateInput,
+  ProofGateResult,
+  ProofPacket,
+} from "./proof.js";
+
+export type * from "./proof.js";
+
 export type VerdictStatus =
   | "current"
   | "stale"
@@ -179,12 +188,18 @@ export interface KavalOptions {
   baseUrl?: string;
   /** Inject a fetch implementation (tests, custom agents). Defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /** Default deadline for each HTTP operation. Defaults to 30 seconds; set null to disable. */
+  timeoutMs?: number | null;
 }
 
 /** Transport options for one billable API operation. Kaval generates a UUID by default. Supply the
  * same key when coordinating a retry outside this client after an ambiguous/no-response failure. */
 export interface RequestOptions {
   idempotencyKey?: string;
+  /** Cancels the operation and every bounded retry. */
+  signal?: AbortSignal;
+  /** Per-call deadline override. Set null to disable the constructor default. */
+  timeoutMs?: number | null;
 }
 
 export interface KavalBatchOptions extends RequestOptions {
@@ -246,15 +261,53 @@ function apiErrorCode(payload: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+function requestSignal(
+  external: AbortSignal | undefined,
+  timeoutMs: number | null,
+): { signal: AbortSignal | undefined; cleanup(): void } {
+  if (timeoutMs !== null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw new RangeError("timeoutMs must be a positive finite number or null");
+  }
+  if (timeoutMs === null) return { signal: external, cleanup() {} };
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(external?.reason);
+  if (external?.aborted) onAbort();
+  else external?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(
+    () =>
+      controller.abort(
+        new Error(`kaval request timed out after ${timeoutMs}ms`),
+      ),
+    timeoutMs,
+  );
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      external?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 /** The kaval client: a belief your system holds in, a typed freshness verdict out. */
 export class Kaval {
   private readonly base: string;
   private readonly headers: Record<string, string>;
   private readonly f: typeof fetch;
+  private readonly timeoutMs: number | null;
 
   constructor(opts: KavalOptions = {}) {
     this.base = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
     this.f = opts.fetch ?? fetch;
+    this.timeoutMs = opts.timeoutMs === undefined ? 30_000 : opts.timeoutMs;
+    if (
+      this.timeoutMs !== null &&
+      (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0)
+    ) {
+      throw new RangeError(
+        "timeoutMs must be a positive finite number or null",
+      );
+    }
     this.headers = { "content-type": "application/json" };
     if (opts.apiKey) this.headers["authorization"] = `Bearer ${opts.apiKey}`;
   }
@@ -266,43 +319,55 @@ export class Kaval {
   ): Promise<T> {
     const idempotencyKey = options.idempotencyKey ?? generatedIdempotencyKey();
     const headers = { ...this.headers, "idempotency-key": idempotencyKey };
+    const request = requestSignal(
+      options.signal,
+      options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
+    );
 
-    for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
-      let res: Response;
-      try {
-        res = await this.f(`${this.base}${path}`, {
-          method: "POST",
-          headers,
-          // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
-          body: JSON.stringify(body),
-        });
-      } catch (error) {
-        // A fetch rejection is transport-ambiguous: the server may have committed before the
-        // connection failed. Retry once with the SAME key so it replays instead of double-billing.
-        if (attempt + 1 < MAX_BILLABLE_ATTEMPTS) continue;
-        throw attachIdempotencyKey(error, idempotencyKey);
-      }
+    try {
+      for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
+        let res: Response;
+        try {
+          res = await this.f(`${this.base}${path}`, {
+            method: "POST",
+            headers,
+            signal: request.signal,
+            // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
+            body: JSON.stringify(body),
+          });
+        } catch (error) {
+          if (request.signal?.aborted) {
+            throw attachIdempotencyKey(error, idempotencyKey);
+          }
+          // A fetch rejection is transport-ambiguous: the server may have committed before the
+          // connection failed. Retry once with the SAME key so it replays instead of double-billing.
+          if (attempt + 1 < MAX_BILLABLE_ATTEMPTS) continue;
+          throw attachIdempotencyKey(error, idempotencyKey);
+        }
 
-      let payload: unknown;
-      try {
-        payload = await res.json();
-      } catch (error) {
-        // A 2xx without the promised JSON contract is a protocol failure, not a successful null
-        // result. Error responses may legitimately come from a non-Kaval intermediary as text.
-        if (res.ok) throw attachIdempotencyKey(error, idempotencyKey);
-        payload = null;
-      }
-      if (res.ok) return payload as T;
+        let payload: unknown;
+        try {
+          payload = await res.json();
+        } catch (error) {
+          // A 2xx without the promised JSON contract is a protocol failure, not a successful null
+          // result. Error responses may legitimately come from a non-Kaval intermediary as text.
+          if (res.ok) throw attachIdempotencyKey(error, idempotencyKey);
+          payload = null;
+        }
+        if (res.ok) return payload as T;
 
-      const code = apiErrorCode(payload);
-      if (
-        attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
-        code !== undefined &&
-        AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
-      ) {
-        continue;
+        const code = apiErrorCode(payload);
+        if (
+          attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
+          code !== undefined &&
+          AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
+        ) {
+          continue;
+        }
+        throw new KavalError(res.status, payload, idempotencyKey);
       }
-      throw new KavalError(res.status, payload, idempotencyKey);
+    } finally {
+      request.cleanup();
     }
 
     throw new Error("unreachable billable request state");
@@ -367,6 +432,27 @@ export class Kaval {
     options?: RequestOptions,
   ): Promise<MonitorResult> {
     return this.billablePost("/v1/monitor", input, options);
+  }
+
+  /** Build, sign, and persist a complete action-bound proof packet. */
+  audit(input: AuditInput, options?: RequestOptions): Promise<ProofPacket> {
+    return this.billablePost("/v1/audit", input, options);
+  }
+
+  /** Apply a current durable proof to the exact action without repeating research. */
+  gateAction(
+    input: ProofGateInput,
+    options?: RequestOptions,
+  ): Promise<ProofGateResult> {
+    return this.billablePost("/v1/gate", input, options);
+  }
+
+  /** Short alias for gateAction(). */
+  gate(
+    input: ProofGateInput,
+    options?: RequestOptions,
+  ): Promise<ProofGateResult> {
+    return this.gateAction(input, options);
   }
 
   /** Report what actually happened, to calibrate trust over time. */

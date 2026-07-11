@@ -56,6 +56,8 @@ describe("published tarballs (not workspace-linked kaval)", () => {
           "currentness_extract_and_check",
           "currentness_scan_store",
           "currentness_monitor",
+          "proof_audit",
+          "proof_gate",
           "report_outcome",
         ]),
       );
@@ -64,7 +66,7 @@ describe("published tarballs (not workspace-linked kaval)", () => {
     }
   }, 30_000);
 
-  it("conformance: packed kaval + MCP server thread tool args to /v1/verify", async () => {
+  it("conformance: packed kaval + MCP server expose currentness and proof protocols", async () => {
     const { Kaval } = (await import(
       install.kavalEntry
     )) as typeof import("@usekaval/kaval");
@@ -85,12 +87,51 @@ describe("published tarballs (not workspace-linked kaval)", () => {
       client.connect(clientTransport),
     ]);
 
-    const res = await client.callTool({
+    const verifyResult = await client.callTool({
       name: "currentness_verify",
       arguments: { belief: "Jane Doe is VP Engineering at Acme", mode: "deep" },
     });
-    const out = parseToolText(res);
-    expect(out.tier).toBe("deep");
-    expect(out.explanation?.citations?.[0]?.url).toBe("https://acme.com/team");
+    const verify = parseToolText(verifyResult);
+    expect(verify.tier).toBe("deep");
+    expect(verify.explanation?.citations?.[0]?.url).toBe(
+      "https://acme.com/team",
+    );
+
+    const auditResult = await client.callTool({
+      name: "proof_audit",
+      arguments: {
+        text: "Acme is eligible for a refund",
+        as_of: "2026-07-10T20:00:00Z",
+        intended_action: "Issue the refund",
+        materiality: "critical",
+        reversibility: "irreversible",
+      },
+    });
+    const audit = parseToolText(auditResult);
+    expect(audit.proof_id).toBe("proof_1");
+    expect(audit.action_decision?.decision).toBe("REVIEW");
+
+    const gateResult = await client.callTool({
+      name: "proof_gate",
+      arguments: {
+        proof_id: "proof_1",
+        material_claim_ids: ["claim_1"],
+        threshold: {
+          policy_id: "pricing-current",
+          policy_version: "1.0.0",
+          materiality: "low",
+          maximum_false_allow_risk: 0.01,
+          minimum_evidence_coverage: 0.95,
+        },
+        action: {
+          description: "Display the current price",
+          materiality: "low",
+          reversibility: "reversible",
+        },
+      },
+    });
+    const gate = parseToolText(gateResult);
+    expect(gate.proofId).toBe("proof_1");
+    expect(gate.enforcement?.executionAllowed).toBe(true);
   });
 });
