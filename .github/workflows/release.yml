@@ -111,3 +111,11 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdks/python/dist/
+
+  mcp_registry:
+    name: Publish MCP metadata to the official registry
+    needs: [mcp]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-mcp-registry.yml
