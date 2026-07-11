@@ -37,6 +37,29 @@ if (!decision.act) {
 `verify()` returns the verdict plus `act` — `true` only when the belief is `current` and confident
 (≥ 0.7 by default; override with `minConfidence`).
 
+## Safe retries and idempotency
+
+Every billable call automatically sends a fresh UUID `Idempotency-Key`. If the connection fails
+without a trustworthy response, or the API says the operation is still being finalized, the client
+retries once with the same key. It does not retry ordinary API errors, rate limits, or terminal 5xx
+responses.
+
+Pass your own key when an outer job/retry system needs to keep one logical operation stable:
+
+```ts
+const operationId = crypto.randomUUID();
+const decision = await kaval.verify(
+  { belief: "Acme's CEO is Jane Doe" },
+  { idempotencyKey: operationId },
+);
+```
+
+Reuse a key only after an ambiguous/no-response failure. After receiving a terminal response, start
+a new key for any new attempt. `reportOutcome()` and `health()` are not billable and do not send this
+header. If both bounded attempts remain ambiguous, the thrown `KavalError` or transport error exposes
+the generated key as `error.idempotencyKey`; pass it back explicitly after your own delay to resume
+the same operation instead of starting and billing a new one.
+
 ## Pick a speed/depth tier
 
 ```ts
@@ -70,7 +93,9 @@ await kaval.monitor({ beliefs, webhook: "https://your-app.com/hooks/stale" });
 ## API
 
 `verify` · `check` · `extractAndCheck` · `scanStore` · `monitor` · `reportOutcome` · `kaval` ·
-`kavalBatch` · `health`. Construct with `{ apiKey, baseUrl?, fetch? }` — `baseUrl` defaults to
+`kavalBatch` · `health`. Billable methods accept a final `{ idempotencyKey? }` request-options
+argument (`kavalBatch` includes it alongside `concurrency`). Construct with `{ apiKey, baseUrl?,
+fetch? }` — `baseUrl` defaults to
 `https://api.usekaval.com`. Works in Node 18+, browsers, and edge runtimes (uses the global `fetch`).
 
 **Env vars:** this package does **not** read `KAVAL_BASE_URL` from the environment — pass

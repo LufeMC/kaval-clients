@@ -27,6 +27,26 @@ jobs:
       - name: Build, lint, typecheck, test
         run: pnpm run check
 
+  node18:
+    name: Node SDK (Node 18 compatibility)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build + test + ESM smoke
+        run: |
+          pnpm --filter @usekaval/kaval run build
+          pnpm --filter @usekaval/kaval run test
+          node sdks/node/test/node18-smoke.mjs
+
   python:
     name: Python SDK
     runs-on: ubuntu-latest

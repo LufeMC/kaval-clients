@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * Bump all three Kaval clients to ONE shared version, in lockstep:
+ * Bump all Kaval clients and registry metadata to ONE shared version, in lockstep:
  *   - @usekaval/kaval  → sdks/node/package.json
  *   - @usekaval/mcp    → packages/mcp/package.json
  *   - kaval (PyPI)     → sdks/python/pyproject.toml
+ *   - MCP registry      → packages/mcp/server.json
+ *   - MCP runtime       → packages/mcp/src/server.ts
  *
  * Usage:  node scripts/bump.mjs <patch|minor|major|X.Y.Z>
  *
@@ -19,6 +21,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const NODE_PKG = resolve(ROOT, "sdks/node/package.json");
 const MCP_PKG = resolve(ROOT, "packages/mcp/package.json");
 const PYPROJECT = resolve(ROOT, "sdks/python/pyproject.toml");
+const MCP_SERVER = resolve(ROOT, "packages/mcp/server.json");
+const MCP_SOURCE = resolve(ROOT, "packages/mcp/src/server.ts");
 
 const arg = (process.argv[2] || "").trim();
 if (!arg) {
@@ -76,8 +80,32 @@ const setPy = (file) => {
   writeFileSync(file, src.replace(re, `$1${next}$2`));
 };
 
+const setMcpServer = (file) => {
+  const src = readFileSync(file, "utf8");
+  const re = /("version"\s*:\s*")\d+\.\d+\.\d+(")/g;
+  const matches = [...src.matchAll(re)];
+  if (matches.length !== 2) {
+    console.error(`expected exactly two MCP registry versions in ${file}`);
+    process.exit(1);
+  }
+  writeFileSync(file, src.replace(re, `$1${next}$2`));
+};
+
+const setMcpSource = (file) => {
+  const src = readFileSync(file, "utf8");
+  const re =
+    /(new McpServer\(\{\s*name:\s*"kaval",\s*version:\s*")\d+\.\d+\.\d+("\s*\}\))/;
+  if (!re.test(src)) {
+    console.error(`could not find the MCP runtime version in ${file}`);
+    process.exit(1);
+  }
+  writeFileSync(file, src.replace(re, `$1${next}$2`));
+};
+
 setPkg(NODE_PKG);
 setPkg(MCP_PKG);
 setPy(PYPROJECT);
+setMcpServer(MCP_SERVER);
+setMcpSource(MCP_SOURCE);
 
 process.stdout.write(next); // consumed by the version-bump workflow

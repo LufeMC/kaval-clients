@@ -8,6 +8,10 @@ typed, abstaining verdict your agent can branch on.
 These are **thin HTTP clients** for the hosted Kaval API (`https://api.usekaval.com`). Create an API
 key at [usekaval.com](https://usekaval.com).
 
+The Node, Python, and MCP surfaces automatically attach a unique idempotency key to billable
+operations and reuse it for one bounded retry only when the transport outcome is ambiguous or the
+API is still finalizing that operation.
+
 | Package                          | Language          | Install              | Source                       |
 | -------------------------------- | ----------------- | -------------------- | ---------------------------- |
 | [`@usekaval/kaval`](sdks/node)   | Node / TypeScript | `npm i @usekaval/kaval` | [sdks/node](sdks/node)       |

@@ -104,6 +104,7 @@ describe("MCP conformance", () => {
     expect(out.error).toBe("insufficient_balance");
     expect(out.message).toContain("out of credit");
     expect(out.status).toBe(402);
+    expect(out.idempotency_key).toBeUndefined();
   });
 
   it("surfaces a bogus key (401) as a clear invalid-key error, not 'internal error'", async () => {
@@ -119,6 +120,67 @@ describe("MCP conformance", () => {
     expect(out.error).toBe("unauthorized");
     expect(out.message).toContain("invalid");
     expect(out.status).toBe(401);
+    expect(out.idempotency_key).toBeUndefined();
+  });
+
+  it("reuses and returns an MCP recovery key when event persistence is still pending", async () => {
+    const seenKeys: string[] = [];
+    const pendingFetch = (async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      seenKeys.push(
+        new Headers(init?.headers).get("idempotency-key") ?? "missing",
+      );
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: "event_persistence_pending",
+            message: "verification event is still being persisted",
+          },
+        }),
+        {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+    const client = await connectClient(pendingFetch);
+    const operationKey = "mcp-logical-operation-0001";
+
+    const res = await client.callTool({
+      name: "currentness_check",
+      arguments: {
+        belief: "Jane Doe is VP Engineering at Acme",
+        idempotency_key: operationKey,
+      },
+    });
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(parseToolText(res)).toMatchObject({
+      error: "event_persistence_pending",
+      status: 503,
+      idempotency_key: operationKey,
+    });
+    expect(seenKeys).toEqual([operationKey, operationKey]);
+  });
+
+  it("returns the generated recovery key after a terminal transport ambiguity", async () => {
+    const transportFailure = (async () => {
+      throw new TypeError("connection reset after request write");
+    }) as typeof fetch;
+    const client = await connectClient(transportFailure);
+
+    const res = await client.callTool({
+      name: "currentness_verify",
+      arguments: { belief: "Jane Doe is VP Engineering at Acme" },
+    });
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(parseToolText(res)).toMatchObject({
+      error: "request_ambiguous",
+      idempotency_key: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    });
   });
 
   it("extract_and_check finds the checkable beliefs in a paragraph", async () => {

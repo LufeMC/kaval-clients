@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Kaval, KavalError } from "../src/index.js";
 
 /** A fetch double: the handler decides status + JSON; we capture what the client sent. */
@@ -30,13 +30,17 @@ const DECISION = {
 
 describe("Kaval", () => {
   it("verify() posts to /v1/verify with bearer auth and returns the decision", async () => {
-    let seen: { url: string; auth?: string; body: unknown } | undefined;
+    let seen:
+      | { url: string; auth?: string; idempotencyKey?: string; body: unknown }
+      | undefined;
     const kaval = new Kaval({
       apiKey: "kv_live_abc",
       fetch: mockFetch((url, init) => {
+        const headers = init?.headers as Record<string, string>;
         seen = {
           url,
-          auth: (init?.headers as Record<string, string>)?.["authorization"],
+          auth: headers?.["authorization"],
+          idempotencyKey: headers?.["idempotency-key"],
           body: JSON.parse(init?.body as string),
         };
         return { json: DECISION };
@@ -47,6 +51,9 @@ describe("Kaval", () => {
 
     expect(seen?.url).toBe("https://api.usekaval.com/v1/verify");
     expect(seen?.auth).toBe("Bearer kv_live_abc");
+    expect(seen?.idempotencyKey).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(seen?.body).toEqual({ belief: "Acme's CEO is Jane Doe" });
     expect(decision.act).toBe(false);
     expect(decision.status).toBe("stale");
@@ -175,6 +182,197 @@ describe("Kaval", () => {
     await expect(kaval.check("x")).rejects.toBeInstanceOf(KavalError);
   });
 
+  it("accepts a caller idempotency key on every billable method", async () => {
+    const seen: Array<{ path: string; key?: string }> = [];
+    const kaval = new Kaval({
+      fetch: mockFetch((url, init) => {
+        seen.push({
+          path: new URL(url).pathname,
+          key: (init?.headers as Record<string, string>)?.["idempotency-key"],
+        });
+        return { json: {} };
+      }),
+    });
+    const requestOptions = { idempotencyKey: "logical-operation-0001" };
+
+    await kaval.check("x", requestOptions);
+    await kaval.verify("x", requestOptions);
+    await kaval.extractAndCheck({ text: "x" }, requestOptions);
+    await kaval.scanStore({ beliefs: ["x"] }, requestOptions);
+    await kaval.monitor({ beliefs: ["x"] }, requestOptions);
+    await kaval.kaval({ fact_type: "x" }, requestOptions);
+    await kaval.kavalBatch([{ fact_type: "x" }], requestOptions);
+
+    expect(seen.map(({ path }) => path)).toEqual([
+      "/v1/check",
+      "/v1/verify",
+      "/v1/extract-and-check",
+      "/v1/scan-store",
+      "/v1/monitor",
+      "/v1/kaval",
+      "/v1/kaval-batch",
+    ]);
+    expect(seen.every(({ key }) => key === requestOptions.idempotencyKey)).toBe(
+      true,
+    );
+  });
+
+  it("generates unique UUIDs when global Web Crypto is unavailable on Node 18", async () => {
+    const keys: string[] = [];
+    vi.stubGlobal("crypto", undefined);
+    try {
+      const kaval = new Kaval({
+        fetch: mockFetch((_url, init) => {
+          keys.push(
+            (init?.headers as Record<string, string>)["idempotency-key"]!,
+          );
+          return { json: DECISION };
+        }),
+      });
+
+      await kaval.check("first");
+      await kaval.check("second");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys)).toHaveLength(2);
+    for (const key of keys) {
+      expect(key).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    }
+  });
+
+  it("retries one transport-ambiguous failure with the same generated key", async () => {
+    const keys: string[] = [];
+    let calls = 0;
+    const fetchImpl = (async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      keys.push((init?.headers as Record<string, string>)["idempotency-key"]!);
+      calls += 1;
+      if (calls === 1)
+        throw new TypeError("connection reset after request write");
+      return new Response(JSON.stringify(DECISION), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      new Kaval({ fetch: fetchImpl }).verify("x"),
+    ).resolves.toMatchObject({
+      id: "id_1",
+    });
+    expect(calls).toBe(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it.each([
+    "idempotency_in_progress",
+    "idempotency_resolution_pending",
+    "event_persistence_pending",
+  ])("retries %s once with the same caller key", async (code) => {
+    const keys: string[] = [];
+    let calls = 0;
+    const fetchImpl = (async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      keys.push((init?.headers as Record<string, string>)["idempotency-key"]!);
+      calls += 1;
+      return new Response(
+        JSON.stringify(calls === 1 ? { error: { code } } : DECISION),
+        {
+          status:
+            calls === 1
+              ? code === "idempotency_in_progress"
+                ? 409
+                : 503
+              : 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    const out = await new Kaval({ fetch: fetchImpl }).verify("x", {
+      idempotencyKey: "caller-operation-0001",
+    });
+    expect(out.id).toBe("id_1");
+    expect(calls).toBe(2);
+    expect(keys).toEqual(["caller-operation-0001", "caller-operation-0001"]);
+  });
+
+  it("bounds ambiguous retries at two attempts", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({ error: { code: "idempotency_in_progress" } }),
+        { status: 409, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    await expect(
+      new Kaval({ fetch: fetchImpl }).check("x"),
+    ).rejects.toMatchObject({
+      status: 409,
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("exposes the generated key after a terminal transport ambiguity", async () => {
+    const fetchImpl = (async () => {
+      throw new TypeError("connection reset");
+    }) as typeof fetch;
+
+    const error = await new Kaval({ fetch: fetchImpl })
+      .check("x")
+      .catch((value) => value);
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).toMatchObject({
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    });
+  });
+
+  it("does not retry a terminal API response", async () => {
+    let calls = 0;
+    const kaval = new Kaval({
+      fetch: mockFetch(() => {
+        calls += 1;
+        return { status: 503, json: { error: { code: "unavailable" } } };
+      }),
+    });
+
+    await expect(kaval.check("x")).rejects.toMatchObject({ status: 503 });
+    expect(calls).toBe(1);
+  });
+
+  it("rejects a malformed 2xx response instead of returning null", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response("not-json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const error = await new Kaval({ fetch: fetchImpl })
+      .check("x")
+      .catch((value) => value);
+    expect(error).toBeInstanceOf(SyntaxError);
+    expect(error).toMatchObject({
+      idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    });
+    expect(calls).toBe(1);
+  });
+
   it("extractAndCheck() posts to /v1/extract-and-check and returns beliefs", async () => {
     let seen: { url: string; body: unknown } | undefined;
     const kaval = new Kaval({
@@ -225,10 +423,17 @@ describe("Kaval", () => {
   });
 
   it("reportOutcome() posts to /v1/report-outcome", async () => {
-    let seen: { url: string; body: unknown } | undefined;
+    let seen:
+      { url: string; idempotencyKey?: string; body: unknown } | undefined;
     const kaval = new Kaval({
       fetch: mockFetch((url, init) => {
-        seen = { url, body: JSON.parse(init?.body as string) };
+        seen = {
+          url,
+          idempotencyKey: (init?.headers as Record<string, string>)?.[
+            "idempotency-key"
+          ],
+          body: JSON.parse(init?.body as string),
+        };
         return { json: { ok: true } };
       }),
     });
@@ -237,6 +442,7 @@ describe("Kaval", () => {
       kind: "relied_and_correct",
     });
     expect(seen?.url).toBe("https://api.usekaval.com/v1/report-outcome");
+    expect(seen?.idempotencyKey).toBeUndefined();
     expect(seen?.body).toEqual({ id: "id_1", kind: "relied_and_correct" });
     expect(out.ok).toBe(true);
   });

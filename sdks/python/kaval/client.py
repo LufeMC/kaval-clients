@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any, Literal, Optional
 
 import httpx
@@ -15,20 +16,44 @@ VerifyMode = Literal["instant", "fast", "auto", "deep"]
 
 # The hosted kaval cloud. Override with `base_url=...` to point at a self-hosted `kaval-server`.
 DEFAULT_BASE_URL = "https://api.usekaval.com"
+MAX_BILLABLE_ATTEMPTS = 2
+AMBIGUOUS_IDEMPOTENCY_CODES = {
+    "idempotency_in_progress",
+    "idempotency_resolution_pending",
+    "event_persistence_pending",
+}
 
 
 class KavalError(Exception):
     """Raised when the API returns a non-2xx response."""
 
-    def __init__(self, status_code: int, payload: Any) -> None:
+    def __init__(
+        self, status_code: int, payload: Any, *, idempotency_key: Optional[str] = None
+    ) -> None:
         super().__init__(f"kaval {status_code}: {payload}")
         self.status_code = status_code
         self.payload = payload
+        self.idempotency_key = idempotency_key
 
 
 def _clean(body: dict[str, Any]) -> dict[str, Any]:
     """Drop None-valued keys so optional params are omitted from the request."""
     return {k: v for k, v in body.items() if v is not None}
+
+
+def _api_error_code(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    return code if isinstance(code, str) else None
+
+
+def _attach_idempotency_key(error: BaseException, operation_key: str) -> None:
+    """Attach a recovery diagnostic without changing the exception's public type."""
+    setattr(error, "idempotency_key", operation_key)
 
 
 class KavalClient:
@@ -54,6 +79,48 @@ class KavalClient:
             transport=transport,
         )
 
+    def _billable_post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> Any:
+        operation_key = idempotency_key or str(uuid.uuid4())
+        for attempt in range(MAX_BILLABLE_ATTEMPTS):
+            try:
+                res = self._http.post(
+                    path,
+                    json=body,
+                    headers={"idempotency-key": operation_key},
+                )
+            except httpx.TransportError as error:
+                _attach_idempotency_key(error, operation_key)
+                # The server may have committed before the connection failed. Retry once with the
+                # same key so a completed operation is replayed instead of billed twice.
+                if attempt + 1 < MAX_BILLABLE_ATTEMPTS:
+                    continue
+                raise
+            try:
+                payload: Any = res.json()
+            except ValueError as error:
+                # Successful responses promise JSON. Preserve that contract instead of returning
+                # an unexpected string that callers may treat as a valid verdict. Error responses
+                # can come from a proxy as plain text, so retain their body for KavalError.
+                if 200 <= res.status_code < 300:
+                    _attach_idempotency_key(error, operation_key)
+                    raise
+                payload = res.text
+            if 200 <= res.status_code < 300:
+                return payload
+            if (
+                attempt + 1 < MAX_BILLABLE_ATTEMPTS
+                and _api_error_code(payload) in AMBIGUOUS_IDEMPOTENCY_CODES
+            ):
+                continue
+            raise KavalError(res.status_code, payload, idempotency_key=operation_key)
+        raise RuntimeError("unreachable billable request state")
+
     def _post(self, path: str, body: dict[str, Any]) -> Any:
         res = self._http.post(path, json=body)
         try:
@@ -72,8 +139,9 @@ class KavalClient:
         held_evidence: Optional[list[str]] = None,
         freshness_sla: Optional[str] = None,
         proof_standard: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
-        return self._post(
+        return self._billable_post(
             "/v1/check",
             _clean(
                 {
@@ -84,6 +152,7 @@ class KavalClient:
                     "proof_standard": proof_standard,
                 }
             ),
+            idempotency_key=idempotency_key,
         )
 
     def verify(
@@ -99,6 +168,7 @@ class KavalClient:
         proof_standard: Optional[str] = None,
         min_confidence: Optional[float] = None,
         mode: Optional[VerifyMode] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
         """Pre-action gate: the verdict plus ``act`` (True only when current and confident).
         Treat ``act`` False as 'do not rely on this belief — re-fetch first'.
@@ -106,7 +176,7 @@ class KavalClient:
         ``mode`` selects a speed/depth tier — instant (cache/prior only, no LLM) | fast | auto
         (default) | deep (full multi-source + a cited explanation). The returned dict echoes
         ``tier``, and on the deep tier adds ``explanation`` {content, citations, confidence}."""
-        return self._post(
+        return self._billable_post(
             "/v1/verify",
             _clean(
                 {
@@ -122,6 +192,7 @@ class KavalClient:
                     "mode": mode,
                 }
             ),
+            idempotency_key=idempotency_key,
         )
 
     def extract_and_check(
@@ -130,10 +201,12 @@ class KavalClient:
         *,
         context: Optional[str] = None,
         freshness_sla: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
-        return self._post(
+        return self._billable_post(
             "/v1/extract-and-check",
             _clean({"text": text, "context": context, "freshness_sla": freshness_sla}),
+            idempotency_key=idempotency_key,
         )
 
     def scan_store(
@@ -143,11 +216,12 @@ class KavalClient:
         freshness_sla: Optional[str] = None,
         concurrency: Optional[int] = None,
         mode: Optional[VerifyMode] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
         """Sweep a belief store for drift. ``mode`` is the speed/depth tier for the whole sweep
         (default ``fast`` — cheap breadth; re-``verify`` a flagged belief at ``deep`` for the cited
         explanation). The returned dict echoes the ``tier`` the sweep ran at."""
-        return self._post(
+        return self._billable_post(
             "/v1/scan-store",
             _clean(
                 {
@@ -157,6 +231,7 @@ class KavalClient:
                     "mode": mode,
                 }
             ),
+            idempotency_key=idempotency_key,
         )
 
     def monitor(
@@ -168,12 +243,13 @@ class KavalClient:
         mode: Optional[VerifyMode] = None,
         webhook: Optional[str] = None,
         state: Optional[dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
         """Sweep a belief store and POST the NEWLY-risky beliefs to ``webhook`` (server-side delivery).
         Pass the ``state`` from the previous response to deliver only beliefs that became risky since
         then (a still-stale belief isn't re-sent every run). ``mode`` is the sweep tier (default
         ``fast``); the result echoes the ``tier`` it ran at and the ``state`` to carry into the next run."""
-        return self._post(
+        return self._billable_post(
             "/v1/monitor",
             _clean(
                 {
@@ -185,6 +261,7 @@ class KavalClient:
                     "state": state,
                 }
             ),
+            idempotency_key=idempotency_key,
         )
 
     def report_outcome(
@@ -192,15 +269,23 @@ class KavalClient:
     ) -> dict[str, Any]:
         return self._post("/v1/report-outcome", _clean({"id": id, "kind": kind, "note": note}))
 
-    def kaval(self, request: dict[str, Any]) -> dict[str, Any]:
+    def kaval(
+        self, request: dict[str, Any], *, idempotency_key: Optional[str] = None
+    ) -> dict[str, Any]:
         """Lower-level structured passthrough (a KavalRequest)."""
-        return self._post("/v1/kaval", request)
+        return self._billable_post("/v1/kaval", request, idempotency_key=idempotency_key)
 
     def kaval_batch(
-        self, requests: list[dict[str, Any]], *, concurrency: Optional[int] = None
+        self,
+        requests: list[dict[str, Any]],
+        *,
+        concurrency: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        return self._post(
-            "/v1/kaval-batch", _clean({"requests": requests, "concurrency": concurrency})
+        return self._billable_post(
+            "/v1/kaval-batch",
+            _clean({"requests": requests, "concurrency": concurrency}),
+            idempotency_key=idempotency_key,
         )
 
     def health(self) -> dict[str, Any]:
