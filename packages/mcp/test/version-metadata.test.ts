@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 type PackageJson = { name: string; version: string; mcpName?: string };
 type ServerJson = {
   name: string;
+  description: string;
   version: string;
   packages: Array<{ identifier: string; version: string }>;
 };
@@ -37,6 +38,7 @@ describe("release version metadata", () => {
       pythonVersion,
     ]).toEqual([node.version, node.version, node.version, node.version]);
     expect(server.name).toBe(mcp.mcpName);
+    expect(server.description.length).toBeLessThanOrEqual(100);
     expect(server.packages[0]?.identifier).toBe(mcp.name);
     expect(mcpSource).toContain(
       `new McpServer({ name: "kaval", version: "${node.version}" })`,
