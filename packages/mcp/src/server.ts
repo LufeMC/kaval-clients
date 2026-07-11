@@ -127,7 +127,7 @@ async function safe(fn: () => Promise<unknown>) {
  * underscores for client portability.
  */
 export function createMcpServer(client: Kaval): McpServer {
-  const server = new McpServer({ name: "kaval", version: "0.3.0" });
+  const server = new McpServer({ name: "kaval", version: "0.3.1" });
 
   // THE hero tool: the pre-action gate. Registered first so agents reach for it at the act-moment.
   server.registerTool(
@@ -316,7 +316,6 @@ export function createMcpServer(client: Kaval): McpServer {
         units: z.string().min(1).max(128).optional(),
         context: z.string().min(1).max(4_000).optional(),
         aliases: z.array(z.string().min(1).max(512)).max(50).optional(),
-        primary_domains: z.array(z.string().min(1).max(512)).max(20).optional(),
         origin_urls: z.array(httpUrlInput).max(20).optional(),
         record: z
           .object({
