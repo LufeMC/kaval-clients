@@ -299,6 +299,7 @@ export interface HttpArtifactMetadata {
   etag?: string;
   last_modified?: string;
   content_type?: string;
+  requested_url?: string;
   final_url?: string;
 }
 
@@ -629,7 +630,6 @@ export interface AuditInput {
   units?: string;
   context?: string;
   aliases?: string[];
-  primary_domains?: string[];
   origin_urls?: string[];
   record?: RecordRef;
   record_field?: string;

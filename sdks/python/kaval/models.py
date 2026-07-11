@@ -321,6 +321,7 @@ class HttpArtifactMetadata(TypedDict):
     etag: NotRequired[str]
     last_modified: NotRequired[str]
     content_type: NotRequired[str]
+    requested_url: NotRequired[str]
     final_url: NotRequired[str]
 
 
@@ -700,7 +701,6 @@ class AuditInput(TypedDict):
     units: NotRequired[str]
     context: NotRequired[str]
     aliases: NotRequired[list[str]]
-    primary_domains: NotRequired[list[str]]
     origin_urls: NotRequired[list[str]]
     record: NotRequired[RecordRef]
     record_field: NotRequired[str]
