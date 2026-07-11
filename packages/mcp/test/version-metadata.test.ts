@@ -42,4 +42,22 @@ describe("release version metadata", () => {
       `new McpServer({ name: "kaval", version: "${node.version}" })`,
     );
   });
+
+  it("keeps the automated bump wired to every version-bearing file", () => {
+    const bump = readFileSync(join(repoRoot, "scripts/bump.mjs"), "utf8");
+    const workflow = readFileSync(
+      join(repoRoot, ".github/workflows/version-bump.yml"),
+      "utf8",
+    );
+    for (const path of [
+      "sdks/node/package.json",
+      "packages/mcp/package.json",
+      "packages/mcp/server.json",
+      "packages/mcp/src/server.ts",
+      "sdks/python/pyproject.toml",
+    ]) {
+      expect(bump, `bump script omits ${path}`).toContain(path);
+      expect(workflow, `version-bump workflow omits ${path}`).toContain(path);
+    }
+  });
 });

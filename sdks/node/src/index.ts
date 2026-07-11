@@ -196,15 +196,44 @@ const MAX_BILLABLE_ATTEMPTS = 2;
 const AMBIGUOUS_IDEMPOTENCY_CODES = new Set([
   "idempotency_in_progress",
   "idempotency_resolution_pending",
+  "event_persistence_pending",
 ]);
+let fallbackUuidSequence = 0;
+
+function fallbackRandomUuid(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    // Node 18 exposes fetch but may not expose Web Crypto globally. Idempotency keys are uniqueness
+    // tokens, not secrets, so mix multiple PRNG draws with time + a process-local sequence rather
+    // than making every default billable call fail in that supported runtime.
+    fallbackUuidSequence += 1;
+    let state = (Date.now() ^ fallbackUuidSequence) >>> 0;
+    for (let offset = 0; offset < bytes.length; offset += 1) {
+      state =
+        (Math.imul(
+          state ^ Math.floor(Math.random() * 0x1_0000_0000),
+          1_664_525,
+        ) +
+          1_013_904_223) >>>
+        0;
+      bytes[offset] = state & 0xff;
+    }
+  }
+
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 function generatedIdempotencyKey(): string {
-  if (typeof globalThis.crypto?.randomUUID !== "function") {
-    throw new Error(
-      "crypto.randomUUID is unavailable; pass RequestOptions.idempotencyKey explicitly",
-    );
-  }
-  return globalThis.crypto.randomUUID();
+  return typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : fallbackRandomUuid();
 }
 
 function apiErrorCode(payload: unknown): string | undefined {

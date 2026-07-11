@@ -20,6 +20,7 @@ MAX_BILLABLE_ATTEMPTS = 2
 AMBIGUOUS_IDEMPOTENCY_CODES = {
     "idempotency_in_progress",
     "idempotency_resolution_pending",
+    "event_persistence_pending",
 }
 
 

@@ -109,6 +109,7 @@ export function parseToolText(res: unknown): {
   explanation?: { confidence?: string; citations?: { url: string }[] };
   error?: string;
   message?: string;
+  idempotency_key?: string;
 } {
   const content = (res as { content: Array<{ type: string; text: string }> })
     .content;

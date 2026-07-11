@@ -256,6 +256,7 @@ def test_transport_ambiguity_retries_once_with_same_generated_key():
     [
         (409, "idempotency_in_progress"),
         (503, "idempotency_resolution_pending"),
+        (503, "event_persistence_pending"),
     ],
 )
 def test_ambiguous_idempotency_response_retries_once_with_same_caller_key(status, code):

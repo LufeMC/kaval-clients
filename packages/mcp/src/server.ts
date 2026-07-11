@@ -2,6 +2,21 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { KavalError, type Kaval } from "@usekaval/kaval";
 import { z } from "zod";
 
+const idempotencyKeyInput = z
+  .string()
+  .min(8)
+  .max(200)
+  .regex(/^[\x21-\x7e]+$/)
+  .optional()
+  .describe(
+    "reuse the operation key returned by an ambiguous prior attempt; omit for a new operation",
+  );
+const RECOVERABLE_API_CODES = new Set([
+  "idempotency_in_progress",
+  "idempotency_resolution_pending",
+  "event_persistence_pending",
+]);
+
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
@@ -43,6 +58,20 @@ async function safe(fn: () => Promise<unknown>) {
         error: code ?? "request_failed",
         ...(message ? { message } : {}),
         status: e.status,
+        ...(code && RECOVERABLE_API_CODES.has(code) && e.idempotencyKey
+          ? { idempotency_key: e.idempotencyKey }
+          : {}),
+      });
+    }
+    const idempotencyKey =
+      e && typeof e === "object" && "idempotencyKey" in e
+        ? (e as { idempotencyKey?: unknown }).idempotencyKey
+        : undefined;
+    if (typeof idempotencyKey === "string") {
+      return toolError({
+        error: "request_ambiguous",
+        message: "retry later with the same idempotency_key",
+        idempotency_key: idempotencyKey,
       });
     }
     return toolError({ error: "internal error" });
@@ -100,9 +129,16 @@ export function createMcpServer(client: Kaval): McpServer {
           .describe(
             "speed/depth tier — instant (cache/prior only, no fetch/LLM) · fast (cheap model) · auto (default) · deep (full multi-source + a cited `explanation`). The result echoes `tier`; on deep it adds `explanation` { content, citations, confidence }.",
           ),
+        idempotency_key: idempotencyKeyInput,
       },
     },
-    async (args) => safe(() => client.verify(args)),
+    async ({ idempotency_key, ...args }) =>
+      safe(() =>
+        client.verify(
+          args,
+          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
+        ),
+      ),
   );
 
   server.registerTool(
@@ -126,9 +162,16 @@ export function createMcpServer(client: Kaval): McpServer {
           .optional()
           .describe("how current ground truth must be, e.g. '14d'"),
         proof_standard: z.string().optional(),
+        idempotency_key: idempotencyKeyInput,
       },
     },
-    async (args) => safe(() => client.check(args)),
+    async ({ idempotency_key, ...args }) =>
+      safe(() =>
+        client.check(
+          args,
+          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
+        ),
+      ),
   );
 
   server.registerTool(
@@ -140,9 +183,16 @@ export function createMcpServer(client: Kaval): McpServer {
         text: z.string(),
         context: z.string().optional(),
         freshness_sla: z.string().optional(),
+        idempotency_key: idempotencyKeyInput,
       },
     },
-    async (args) => safe(() => client.extractAndCheck(args)),
+    async ({ idempotency_key, ...args }) =>
+      safe(() =>
+        client.extractAndCheck(
+          args,
+          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
+        ),
+      ),
   );
 
   server.registerTool(
@@ -160,9 +210,16 @@ export function createMcpServer(client: Kaval): McpServer {
           .enum(["instant", "fast", "auto", "deep"])
           .optional()
           .describe("speed/depth tier for the whole sweep (default fast)"),
+        idempotency_key: idempotencyKeyInput,
       },
     },
-    async (args) => safe(() => client.scanStore(args)),
+    async ({ idempotency_key, ...args }) =>
+      safe(() =>
+        client.scanStore(
+          args,
+          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
+        ),
+      ),
   );
 
   server.registerTool(
@@ -190,9 +247,16 @@ export function createMcpServer(client: Kaval): McpServer {
           .describe(
             "the `state` from the previous run → deliver only newly-risky beliefs",
           ),
+        idempotency_key: idempotencyKeyInput,
       },
     },
-    async (args) => safe(() => client.monitor(args)),
+    async ({ idempotency_key, ...args }) =>
+      safe(() =>
+        client.monitor(
+          args,
+          idempotency_key ? { idempotencyKey: idempotency_key } : undefined,
+        ),
+      ),
   );
 
   server.registerTool(

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Kaval, KavalError } from "../src/index.js";
 
 /** A fetch double: the handler decides status + JSON; we capture what the client sent. */
@@ -217,6 +217,34 @@ describe("Kaval", () => {
     );
   });
 
+  it("generates unique UUIDs when global Web Crypto is unavailable on Node 18", async () => {
+    const keys: string[] = [];
+    vi.stubGlobal("crypto", undefined);
+    try {
+      const kaval = new Kaval({
+        fetch: mockFetch((_url, init) => {
+          keys.push(
+            (init?.headers as Record<string, string>)["idempotency-key"]!,
+          );
+          return { json: DECISION };
+        }),
+      });
+
+      await kaval.check("first");
+      await kaval.check("second");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys)).toHaveLength(2);
+    for (const key of keys) {
+      expect(key).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    }
+  });
+
   it("retries one transport-ambiguous failure with the same generated key", async () => {
     const keys: string[] = [];
     let calls = 0;
@@ -244,41 +272,40 @@ describe("Kaval", () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
-  it.each(["idempotency_in_progress", "idempotency_resolution_pending"])(
-    "retries %s once with the same caller key",
-    async (code) => {
-      const keys: string[] = [];
-      let calls = 0;
-      const fetchImpl = (async (
-        _url: string | URL | Request,
-        init?: RequestInit,
-      ) => {
-        keys.push(
-          (init?.headers as Record<string, string>)["idempotency-key"]!,
-        );
-        calls += 1;
-        return new Response(
-          JSON.stringify(calls === 1 ? { error: { code } } : DECISION),
-          {
-            status:
-              calls === 1
-                ? code === "idempotency_in_progress"
-                  ? 409
-                  : 503
-                : 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }) as typeof fetch;
+  it.each([
+    "idempotency_in_progress",
+    "idempotency_resolution_pending",
+    "event_persistence_pending",
+  ])("retries %s once with the same caller key", async (code) => {
+    const keys: string[] = [];
+    let calls = 0;
+    const fetchImpl = (async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      keys.push((init?.headers as Record<string, string>)["idempotency-key"]!);
+      calls += 1;
+      return new Response(
+        JSON.stringify(calls === 1 ? { error: { code } } : DECISION),
+        {
+          status:
+            calls === 1
+              ? code === "idempotency_in_progress"
+                ? 409
+                : 503
+              : 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
 
-      const out = await new Kaval({ fetch: fetchImpl }).verify("x", {
-        idempotencyKey: "caller-operation-0001",
-      });
-      expect(out.id).toBe("id_1");
-      expect(calls).toBe(2);
-      expect(keys).toEqual(["caller-operation-0001", "caller-operation-0001"]);
-    },
-  );
+    const out = await new Kaval({ fetch: fetchImpl }).verify("x", {
+      idempotencyKey: "caller-operation-0001",
+    });
+    expect(out.id).toBe("id_1");
+    expect(calls).toBe(2);
+    expect(keys).toEqual(["caller-operation-0001", "caller-operation-0001"]);
+  });
 
   it("bounds ambiguous retries at two attempts", async () => {
     let calls = 0;

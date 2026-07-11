@@ -13,6 +13,10 @@ Billable tool calls automatically carry a unique operation key. The underlying c
 one bounded retry only when the transport outcome is ambiguous or the API is still finalizing the
 same operation, preventing duplicate billing without retrying terminal errors.
 
+If both attempts remain ambiguous, the tool error includes `idempotency_key`. Retry later by passing
+that exact value back as the optional `idempotency_key` argument on the same billable tool. Omit it
+for a genuinely new operation.
+
 ## Run it
 
 ```bash
@@ -54,9 +58,9 @@ relying on it".
 
 ## Environment
 
-| Var              | Required | Purpose                                                                |
-| ---------------- | -------- | --------------------------------------------------------------------- |
-| `KAVAL_API_KEY`  | yes      | Bearer key for the hosted Kaval API (create one at https://usekaval.com) |
+| Var              | Required | Purpose                                                                                   |
+| ---------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `KAVAL_API_KEY`  | yes      | Bearer key for the hosted Kaval API (create one at https://usekaval.com)                  |
 | `KAVAL_BASE_URL` | no       | Override the API base URL (self-hosted / staging). Defaults to `https://api.usekaval.com` |
 
 The marketing site uses **`KAVAL_API_URL`** for its `/api/verify` proxy — not `KAVAL_BASE_URL`.
@@ -78,5 +82,7 @@ Or pass your own configured client:
 import { createMcpServer } from "@usekaval/mcp";
 import { Kaval } from "@usekaval/kaval";
 
-const server = createMcpServer(new Kaval({ apiKey: process.env.KAVAL_API_KEY }));
+const server = createMcpServer(
+  new Kaval({ apiKey: process.env.KAVAL_API_KEY }),
+);
 ```
