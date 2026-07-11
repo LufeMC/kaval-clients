@@ -150,10 +150,27 @@ export class KavalError extends Error {
   constructor(
     readonly status: number,
     readonly payload: unknown,
+    /** Reuse this key to resolve/replay a billable request after an ambiguous failure. */
+    readonly idempotencyKey?: string,
   ) {
     super(`kaval ${status}: ${JSON.stringify(payload)}`);
     this.name = "KavalError";
   }
+}
+
+function attachIdempotencyKey(error: unknown, idempotencyKey: string): unknown {
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    try {
+      Object.defineProperty(error, "idempotencyKey", {
+        value: idempotencyKey,
+        enumerable: true,
+        configurable: true,
+      });
+    } catch {
+      // Preserve the original error even when a host object is non-extensible.
+    }
+  }
+  return error;
 }
 
 export interface KavalOptions {
@@ -164,7 +181,41 @@ export interface KavalOptions {
   fetch?: typeof fetch;
 }
 
+/** Transport options for one billable API operation. Kaval generates a UUID by default. Supply the
+ * same key when coordinating a retry outside this client after an ambiguous/no-response failure. */
+export interface RequestOptions {
+  idempotencyKey?: string;
+}
+
+export interface KavalBatchOptions extends RequestOptions {
+  concurrency?: number;
+}
+
 const DEFAULT_BASE_URL = "https://api.usekaval.com";
+const MAX_BILLABLE_ATTEMPTS = 2;
+const AMBIGUOUS_IDEMPOTENCY_CODES = new Set([
+  "idempotency_in_progress",
+  "idempotency_resolution_pending",
+]);
+
+function generatedIdempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID !== "function") {
+    throw new Error(
+      "crypto.randomUUID is unavailable; pass RequestOptions.idempotencyKey explicitly",
+    );
+  }
+  return globalThis.crypto.randomUUID();
+}
+
+function apiErrorCode(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || !("error" in payload))
+    return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object" || !("code" in error))
+    return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
 
 /** The kaval client: a belief your system holds in, a typed freshness verdict out. */
 export class Kaval {
@@ -177,6 +228,55 @@ export class Kaval {
     this.f = opts.fetch ?? fetch;
     this.headers = { "content-type": "application/json" };
     if (opts.apiKey) this.headers["authorization"] = `Bearer ${opts.apiKey}`;
+  }
+
+  private async billablePost<T>(
+    path: string,
+    body: unknown,
+    options: RequestOptions = {},
+  ): Promise<T> {
+    const idempotencyKey = options.idempotencyKey ?? generatedIdempotencyKey();
+    const headers = { ...this.headers, "idempotency-key": idempotencyKey };
+
+    for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
+      let res: Response;
+      try {
+        res = await this.f(`${this.base}${path}`, {
+          method: "POST",
+          headers,
+          // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        // A fetch rejection is transport-ambiguous: the server may have committed before the
+        // connection failed. Retry once with the SAME key so it replays instead of double-billing.
+        if (attempt + 1 < MAX_BILLABLE_ATTEMPTS) continue;
+        throw attachIdempotencyKey(error, idempotencyKey);
+      }
+
+      let payload: unknown;
+      try {
+        payload = await res.json();
+      } catch (error) {
+        // A 2xx without the promised JSON contract is a protocol failure, not a successful null
+        // result. Error responses may legitimately come from a non-Kaval intermediary as text.
+        if (res.ok) throw attachIdempotencyKey(error, idempotencyKey);
+        payload = null;
+      }
+      if (res.ok) return payload as T;
+
+      const code = apiErrorCode(payload);
+      if (
+        attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
+        code !== undefined &&
+        AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
+      ) {
+        continue;
+      }
+      throw new KavalError(res.status, payload, idempotencyKey);
+    }
+
+    throw new Error("unreachable billable request state");
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -192,38 +292,52 @@ export class Kaval {
   }
 
   /** Pre-action gate: the verdict plus `act`. Treat `act === false` as "re-fetch before relying on it". */
-  verify(input: string | VerifyInput): Promise<Decision> {
-    return this.post(
+  verify(
+    input: string | VerifyInput,
+    options?: RequestOptions,
+  ): Promise<Decision> {
+    return this.billablePost(
       "/v1/verify",
       typeof input === "string" ? { belief: input } : input,
+      options,
     );
   }
 
   /** Re-ground a held belief → the raw freshness verdict (no act decision). */
-  check(input: string | CheckInput): Promise<Verdict> {
-    return this.post(
+  check(
+    input: string | CheckInput,
+    options?: RequestOptions,
+  ): Promise<Verdict> {
+    return this.billablePost(
       "/v1/check",
       typeof input === "string" ? { belief: input } : input,
+      options,
     );
   }
 
   /** Pull every factual belief out of a paragraph and check each. */
-  extractAndCheck(input: {
-    text: string;
-    context?: string;
-    freshness_sla?: string;
-  }): Promise<{ beliefs: CheckedBelief[] }> {
-    return this.post("/v1/extract-and-check", input);
+  extractAndCheck(
+    input: {
+      text: string;
+      context?: string;
+      freshness_sla?: string;
+    },
+    options?: RequestOptions,
+  ): Promise<{ beliefs: CheckedBelief[] }> {
+    return this.billablePost("/v1/extract-and-check", input, options);
   }
 
   /** Sweep a belief store for drift, worst first. */
-  scanStore(input: ScanInput): Promise<ScanResult> {
-    return this.post("/v1/scan-store", input);
+  scanStore(input: ScanInput, options?: RequestOptions): Promise<ScanResult> {
+    return this.billablePost("/v1/scan-store", input, options);
   }
 
   /** Sweep + POST the newly-risky beliefs to a `webhook` (server-side delivery). */
-  monitor(input: MonitorInput): Promise<MonitorResult> {
-    return this.post("/v1/monitor", input);
+  monitor(
+    input: MonitorInput,
+    options?: RequestOptions,
+  ): Promise<MonitorResult> {
+    return this.billablePost("/v1/monitor", input, options);
   }
 
   /** Report what actually happened, to calibrate trust over time. */
@@ -237,20 +351,27 @@ export class Kaval {
 
   /** Lower-level structured passthrough: a `KavalRequest` in, the raw `Verdict` out. Prefer
    *  `verify`/`check` unless you need the structured fact-type form. Mirrors the Python `kaval()`. */
-  kaval(request: Record<string, unknown>): Promise<Verdict> {
-    return this.post("/v1/kaval", request);
+  kaval(
+    request: Record<string, unknown>,
+    options?: RequestOptions,
+  ): Promise<Verdict> {
+    return this.billablePost("/v1/kaval", request, options);
   }
 
   /** Batch of structured `KavalRequest`s → a `Verdict` per request (same order). Mirrors the Python
    *  `kaval_batch()`. */
   kavalBatch(
     requests: Record<string, unknown>[],
-    opts: { concurrency?: number } = {},
+    opts: KavalBatchOptions = {},
   ): Promise<Verdict[]> {
-    return this.post("/v1/kaval-batch", {
-      requests,
-      concurrency: opts.concurrency,
-    });
+    return this.billablePost(
+      "/v1/kaval-batch",
+      {
+        requests,
+        concurrency: opts.concurrency,
+      },
+      opts,
+    );
   }
 
   async health(): Promise<{ ok: boolean; name: string; version: string }> {

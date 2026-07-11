@@ -1,7 +1,7 @@
 [project]
 name = "kaval"
-version = "0.2.0"
-description = "Python SDK for the kaval currentness API — sync client, 30s default timeout, no automatic retries."
+version = "0.2.1"
+description = "Python SDK for the kaval currentness API — sync client with safe idempotent retry handling."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -28,6 +28,9 @@ pydantic-ai = ["pydantic-ai>=1.44"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+exclude = ["/.venv*", "/.pytest_cache", "/dist"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["kaval"]

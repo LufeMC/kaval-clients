@@ -13,8 +13,8 @@ pip install kaval
 
 ## Async / concurrency
 
-**Sync-only for now.** `KavalClient` is built on `httpx.Client` (blocking I/O). v0.1.x does not ship
-an `AsyncKavalClient` — if you need `async`/`await`, call the REST API with `httpx.AsyncClient`, wrap
+**Sync-only for now.** `KavalClient` is built on `httpx.Client` (blocking I/O) and does not yet ship
+an `AsyncKavalClient`. If you need `async`/`await`, call the REST API with `httpx.AsyncClient`, wrap
 sync calls in `asyncio.to_thread()`, or use the Node SDK (`@usekaval/kaval`). Native async may land
 in a later release.
 
@@ -121,9 +121,26 @@ Explicit `api_key=` / `base_url=` always wins over the environment.
 
 ## Resilience
 
-**No automatic retries by default — bring your own.** Each API call is a single HTTP round-trip via
-`httpx`; transient failures (timeouts, 502s, rate limits) are not retried. Wrap calls in your own
-retry/backoff (e.g. `tenacity`) if you need that behavior.
+Each billable call automatically sends a fresh UUID `Idempotency-Key`. The client performs one
+safety retry only after an ambiguous `httpx.TransportError`, or when the API says the same operation
+is still in progress/finalizing; that retry reuses the exact key. Ordinary API errors, rate limits,
+and terminal 5xx responses are not retried.
+
+Pass `idempotency_key=` when an outer job/retry system needs to keep one logical operation stable:
+
+```python
+import uuid
+
+operation_id = str(uuid.uuid4())
+decision = client.verify("Acme's CEO is Jane Doe", idempotency_key=operation_id)
+```
+
+Reuse a key only after an ambiguous/no-response failure. After receiving a terminal response, start
+a new key for any new attempt. `report_outcome()` and `health()` are not billable and do not send this
+header. Add your own retry/backoff for terminal responses when appropriate.
+If both bounded attempts remain ambiguous, `KavalError` and `httpx.TransportError` expose the
+generated key as `error.idempotency_key`; pass it back after your own delay to resume the same
+operation rather than generating and billing a new one.
 
 **Default timeout: 30 seconds** (connect + read), overridable at construction:
 
@@ -137,7 +154,8 @@ Timeouts surface as `httpx.TimeoutException` (not `KavalError`).
 ## API
 
 `verify` · `check` · `extract_and_check` · `scan_store` · `monitor` · `report_outcome` ·
-`kaval` · `kaval_batch` · `health`. Construct with `KavalClient(base_url=?, api_key=?)` —
+`kaval` · `kaval_batch` · `health`. Billable methods accept the optional keyword
+`idempotency_key=`. Construct with `KavalClient(base_url=?, api_key=?)` —
 `base_url` defaults to `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
 `npm install @usekaval/kaval`.
 

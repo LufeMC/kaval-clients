@@ -9,6 +9,10 @@ This package is a **thin client** over the hosted Kaval API. All classification,
 retrieval run server-side, so you bring just a Kaval API key — no model or search keys, no local
 engine.
 
+Billable tool calls automatically carry a unique operation key. The underlying client reuses it for
+one bounded retry only when the transport outcome is ambiguous or the API is still finalizing the
+same operation, preventing duplicate billing without retrying terminal errors.
+
 ## Run it
 
 ```bash

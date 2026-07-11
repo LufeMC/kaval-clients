@@ -1,20 +1,20 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.lufemc/kaval",
+  "name": "io.github.LufeMC/kaval",
   "title": "Kaval",
-  "description": "The freshness gate for AI agents — pre-action currentness checks that verify a belief is still true against the live world before you act. A thin MCP client over the hosted Kaval API (bring your own key).",
+  "description": "Freshness gate for AI agents: verify a belief is still true against the live world before you act.",
   "websiteUrl": "https://usekaval.com",
   "repository": {
     "url": "https://github.com/LufeMC/kaval-clients",
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.1.3",
+  "version": "0.2.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@usekaval/mcp",
-      "version": "0.1.3",
+      "version": "0.2.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {

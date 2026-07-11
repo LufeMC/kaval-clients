@@ -2,6 +2,7 @@
 using httpx.MockTransport (no network)."""
 
 import json
+import uuid
 
 import httpx
 import pytest
@@ -30,6 +31,7 @@ def test_check_sends_clean_body_and_parses_gap():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/check"
         assert request.headers["content-type"] == "application/json"
+        captured["idempotency_key"] = request.headers["idempotency-key"]
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json=GAP)
 
@@ -38,6 +40,7 @@ def test_check_sends_clean_body_and_parses_gap():
 
     assert out["status"] == "stale"
     assert out["id"] == "id_1"
+    assert str(uuid.UUID(captured["idempotency_key"])) == captured["idempotency_key"]
     # None-valued optionals are omitted (clean body).
     assert captured["body"] == {"belief": "Jane Doe is at Acme", "freshness_sla": "14d"}
 
@@ -162,6 +165,7 @@ def test_monitor_sends_body_and_parses_result():
 def test_report_outcome():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/report-outcome"
+        assert request.headers.get("idempotency-key") is None
         assert json.loads(request.content)["kind"] == "relied_and_correct"
         return httpx.Response(200, json={"ok": True})
 
@@ -199,6 +203,106 @@ def test_error_response_raises():
         with pytest.raises(KavalError) as exc:
             c.check("x")
     assert exc.value.status_code == 400
+
+
+def test_caller_idempotency_key_reaches_every_billable_method():
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.url.path, request.headers.get("idempotency-key")))
+        return httpx.Response(200, json={})
+
+    operation_key = "logical-operation-0001"
+    with make_client(handler) as c:
+        c.check("x", idempotency_key=operation_key)
+        c.verify("x", idempotency_key=operation_key)
+        c.extract_and_check("x", idempotency_key=operation_key)
+        c.scan_store(["x"], idempotency_key=operation_key)
+        c.monitor(["x"], idempotency_key=operation_key)
+        c.kaval({"fact_type": "x"}, idempotency_key=operation_key)
+        c.kaval_batch([{"fact_type": "x"}], idempotency_key=operation_key)
+
+    assert [path for path, _ in captured] == [
+        "/v1/check",
+        "/v1/verify",
+        "/v1/extract-and-check",
+        "/v1/scan-store",
+        "/v1/monitor",
+        "/v1/kaval",
+        "/v1/kaval-batch",
+    ]
+    assert all(key == operation_key for _, key in captured)
+
+
+def test_transport_ambiguity_retries_once_with_same_generated_key():
+    keys = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        keys.append(request.headers["idempotency-key"])
+        if len(keys) == 1:
+            raise httpx.ConnectError("connection reset after request write", request=request)
+        return httpx.Response(200, json=GAP)
+
+    with make_client(handler) as c:
+        out = c.check("x")
+
+    assert out["id"] == "id_1"
+    assert len(keys) == 2
+    assert keys[1] == keys[0]
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (409, "idempotency_in_progress"),
+        (503, "idempotency_resolution_pending"),
+    ],
+)
+def test_ambiguous_idempotency_response_retries_once_with_same_caller_key(status, code):
+    keys = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        keys.append(request.headers["idempotency-key"])
+        if len(keys) == 1:
+            return httpx.Response(status, json={"error": {"code": code}})
+        return httpx.Response(200, json=GAP)
+
+    with make_client(handler) as c:
+        out = c.check("x", idempotency_key="caller-operation-0001")
+
+    assert out["id"] == "id_1"
+    assert keys == ["caller-operation-0001", "caller-operation-0001"]
+
+
+def test_ambiguous_idempotency_retries_are_bounded():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(409, json={"error": {"code": "idempotency_in_progress"}})
+
+    with make_client(handler) as c:
+        with pytest.raises(KavalError) as exc:
+            c.check("x")
+
+    assert exc.value.status_code == 409
+    assert uuid.UUID(exc.value.idempotency_key)
+    assert calls == ["/v1/check", "/v1/check"]
+
+
+def test_malformed_success_response_raises_json_error():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, text="not-json")
+
+    with make_client(handler) as c:
+        with pytest.raises(ValueError) as exc:
+            c.check("x")
+
+    assert uuid.UUID(exc.value.idempotency_key)
+    assert calls == ["/v1/check"]
 
 
 def test_default_base_url_is_the_cloud():
@@ -280,14 +384,19 @@ def test_health_success_returns_dict():
 
 
 def test_post_propagates_connect_error():
+    calls = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
         raise httpx.ConnectError("connection refused", request=request)
 
-    # A transport-level ConnectError surfaces as httpx.ConnectError (a subclass of httpx.HTTPError),
-    # not wrapped in KavalError — KavalError is only for non-2xx HTTP responses.
+    # A transport-level ConnectError is retried once with the same operation key, then surfaces as
+    # the original httpx.ConnectError (not wrapped in KavalError).
     with make_client(handler) as c:
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(httpx.ConnectError) as exc:
             c.check("x")
+    assert uuid.UUID(exc.value.idempotency_key)
+    assert calls == ["/v1/check", "/v1/check"]
 
 
 def test_health_propagates_timeout_exception():

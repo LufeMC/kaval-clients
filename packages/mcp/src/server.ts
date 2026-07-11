@@ -55,7 +55,7 @@ async function safe(fn: () => Promise<unknown>) {
  * Tool names use underscores for client portability; `currentness.*` is the conceptual namespace.
  */
 export function createMcpServer(client: Kaval): McpServer {
-  const server = new McpServer({ name: "kaval", version: "0.1.2" });
+  const server = new McpServer({ name: "kaval", version: "0.2.1" });
 
   // THE hero tool: the pre-action gate. Registered first so agents reach for it at the act-moment.
   server.registerTool(

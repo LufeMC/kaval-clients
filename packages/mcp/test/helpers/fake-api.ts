@@ -25,6 +25,18 @@ export const fakeKavalFetch: typeof fetch = async (input, init) => {
     ? (JSON.parse(init.body as string) as Record<string, unknown>)
     : {};
 
+  // MCP inherits the Node HTTP client. Keep the fake hosted contract strict so conformance fails if
+  // a billable tool ever stops sending the operation key required by issued-key traffic.
+  if (
+    path !== "/v1/report-outcome" &&
+    !new Headers(init?.headers).get("idempotency-key")
+  ) {
+    return new Response(
+      JSON.stringify({ error: { code: "idempotency_key_required" } }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+  }
+
   let data: unknown;
   switch (path) {
     case "/v1/check":
