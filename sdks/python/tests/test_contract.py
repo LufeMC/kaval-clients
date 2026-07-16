@@ -3,6 +3,7 @@ using httpx.MockTransport (no network)."""
 
 import json
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -13,9 +14,13 @@ from kaval.models import (
     CalibrationSupportIdentity,
     ClaimAssessment,
     CommerceAcquisitionSourceLedgerEntry,
+    CommerceCheckoutObservation,
     CommerceCheckoutVerification,
     LiveOfferSearchAcquisitionTrace,
     LiveOfferSearchCandidate,
+    LiveOfferSearchResult,
+    OfferOriginEvidence,
+    ProductCatalogIdentityResolution,
 )
 
 GAP = {
@@ -196,6 +201,14 @@ SOURCE_LEDGER = [
     },
 ]
 
+REPRESENTATIVE_WIRE_RESULT = json.loads(
+    (
+        Path(__file__).resolve().parents[3]
+        / "fixtures"
+        / "offer-search-result-v2.json"
+    ).read_text()
+)
+
 
 def test_proof_models_retain_required_calibration_support_identity():
     assert "calibration_support" in ClaimAssessment.__required_keys__
@@ -226,6 +239,24 @@ def test_offer_search_models_expose_checkout_and_acquisition_ledger_fields():
         "plan",
         "plan_digest",
         "source_ledger",
+    }
+    assert "delivery_promise" in CommerceCheckoutObservation.__annotations__
+    assert OfferOriginEvidence.__annotations__.keys() >= {
+        "artifact",
+        "version_receipt",
+    }
+    assert LiveOfferSearchResult.__annotations__.keys() >= {
+        "effective_request_digest",
+        "rejected_explanations",
+        "identity_resolution",
+    }
+    assert ProductCatalogIdentityResolution.__required_keys__ >= {
+        "resolver_version",
+        "resolution_state",
+        "resolved_target",
+        "resolved_variant",
+        "record_assessments",
+        "resolution_digest",
     }
 
 
@@ -391,6 +422,34 @@ def test_search_offers_posts_exact_request_and_returns_review_only_result():
     assert captured["key"] == "offer-search-operation-0001"
     assert captured["timeout"]["read"] == 12.0
     assert result["action"]["state"] == "NEEDS_REVIEW"
+
+
+def test_search_offers_preserves_representative_strict_wire_fixture():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=REPRESENTATIVE_WIRE_RESULT)
+
+    with make_client(handler) as c:
+        result = c.search_offers(OFFER_REQUEST)
+
+    candidate = result["candidates"][0]
+    assert result["effective_request_digest"] == f"sha256:{'b' * 64}"
+    assert result["rejected_explanations"][0]["contender"] is False
+    assert result["identity_resolution"]["resolution_state"] == "exact_variant"
+    assert candidate["origin_evidence"]["artifact"] == "rendered_page"
+    assert (
+        candidate["origin_evidence"]["version_receipt"]
+        == "browser-renderer/2026-07-16.1"
+    )
+    assert candidate["origin_offer"]["field_provenance"][0]["field_path"] == (
+        "variant.identifiers"
+    )
+    assert candidate["checkout"]["observation"]["delivery_promise"] == {
+        "certainty": "estimated",
+        "earliest_at": "2026-07-18T00:00:00.000Z",
+        "latest_at": "2026-07-20T00:00:00.000Z",
+    }
+    assert result["lifecycle"]["action_time_gate"]["permission"] == "withheld"
+    assert "SAFE_TO_QUOTE" not in json.dumps(result)
 
 
 def test_search_offers_preserves_typed_checkout_and_acquisition_source_ledger():

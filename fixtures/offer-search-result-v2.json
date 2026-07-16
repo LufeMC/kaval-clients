@@ -1,0 +1,328 @@
+{
+  "schema_revision": 2,
+  "request_id": "offer-request-1",
+  "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "effective_request_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "status": "complete",
+  "action": {
+    "state": "NEEDS_REVIEW",
+    "reason_codes": ["COMMERCE_PERMISSION_REVIEW_ONLY"]
+  },
+  "stop_reason": "coverage_satisfied",
+  "query": "Makita XPH14Z",
+  "candidates": [
+    {
+      "candidate_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "origin_url": "https://retailer.test/makita-xph14z",
+      "source_id": "retailer-origin",
+      "discovered_by": ["catalog-primary", "shopping-search"],
+      "discovery_metadata": [
+        {
+          "provider": "shopping-search",
+          "title": "Makita XPH14Z"
+        }
+      ],
+      "origin_evidence": {
+        "kind": "json_ld",
+        "artifact": "rendered_page",
+        "version_receipt": "browser-renderer/2026-07-16.1",
+        "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "source_block_index": 0,
+        "jsonld_product_index": 0,
+        "jsonld_offer_index": 0
+      },
+      "origin_offer": {
+        "evidence_kind": "json_ld",
+        "source_block_index": 0,
+        "jsonld_product_index": 0,
+        "jsonld_offer_index": 0,
+        "variant": {
+          "schema_revision": 1,
+          "variant_id": "makita-xph14z",
+          "family": {
+            "schema_revision": 1,
+            "family_id": "makita-18v-lxt-hammer-drill",
+            "brand": "Makita",
+            "name": "18V LXT hammer drill",
+            "identifiers": []
+          },
+          "name": "Makita XPH14Z",
+          "identifiers": [
+            {
+              "scheme": "model",
+              "value": "XPH14Z",
+              "issuer": "Makita"
+            }
+          ],
+          "attributes": [
+            {
+              "key": "kit",
+              "value": false
+            }
+          ],
+          "pack": {
+            "count": 1
+          }
+        },
+        "title": "Makita XPH14Z",
+        "purchase_url": "https://retailer.test/makita-xph14z",
+        "seller_name": "Authorized Retailer",
+        "condition": "new",
+        "availability": "in_stock",
+        "item_price": {
+          "amount_minor": 18999,
+          "currency": "USD"
+        },
+        "destination_eligibility": "unknown",
+        "landed_price_complete": false,
+        "extraction_gaps": ["DESTINATION_ELIGIBILITY_UNPROVEN"],
+        "field_provenance": [
+          {
+            "field_path": "variant.identifiers",
+            "source_values": [
+              {
+                "object_role": "product",
+                "path": "/sku",
+                "raw_value_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+              }
+            ],
+            "transformations": [
+              "trim_text",
+              "canonicalize_identifier",
+              "construct_product_variant"
+            ]
+          }
+        ]
+      },
+      "identity": {
+        "state": "exact",
+        "conflict_codes": [],
+        "matched_identifier_schemes": ["model"],
+        "matched_attribute_keys": ["kit"],
+        "applied_substitutions": [],
+        "explanation": "Exact model and requested kit form matched."
+      },
+      "disposition": "review",
+      "gaps": ["COMMERCE_PERMISSION_REVIEW_ONLY"],
+      "reason_codes": ["COMMERCE_PERMISSION_REVIEW_ONLY"],
+      "checkout": {
+        "status": "verified",
+        "resolver": {
+          "schema_revision": 1,
+          "source_id": "retailer-checkout",
+          "adapter_revision": "checkout/2026-07-16.1",
+          "execution_mode": "live",
+          "estimated_cost_micro_usd": 700
+        },
+        "request_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "observation": {
+          "destination_eligibility": "eligible",
+          "availability": "in_stock",
+          "seller_authorized": true,
+          "delivery_promise": {
+            "certainty": "estimated",
+            "earliest_at": "2026-07-18T00:00:00.000Z",
+            "latest_at": "2026-07-20T00:00:00.000Z"
+          },
+          "item_price": {
+            "amount_minor": 18999,
+            "currency": "USD"
+          },
+          "shipping_price": {
+            "amount_minor": 0,
+            "currency": "USD"
+          },
+          "tax_price": {
+            "amount_minor": 1567,
+            "currency": "USD"
+          },
+          "mandatory_fees": {
+            "amount_minor": 0,
+            "currency": "USD"
+          },
+          "declared_landed_total": {
+            "amount_minor": 20566,
+            "currency": "USD"
+          },
+          "quote_id": "checkout-quote-1",
+          "evidence_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "observed_at": "2026-07-16T00:00:00.050Z",
+          "expires_at": "2026-07-16T00:05:00.050Z"
+        },
+        "landed_price_validation": {
+          "state": "complete",
+          "expected_currency": "USD",
+          "calculated_landed_total": {
+            "amount_minor": 20566,
+            "currency": "USD"
+          },
+          "reason_codes": []
+        },
+        "action": {
+          "state": "REVIEW",
+          "action_authorized": false,
+          "reason_codes": ["COMMERCE_PERMISSION_REVIEW_ONLY"]
+        },
+        "actual_cost_micro_usd": 650,
+        "version_receipt": "checkout/2026-07-16.1",
+        "operational_error_code": null
+      }
+    }
+  ],
+  "rejected_explanations": [
+    {
+      "candidate_id": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "origin_url": "https://retailer.test/wrong-cheaper-variant",
+      "contender": false,
+      "disposition": "rejected",
+      "identity_state": "conflict",
+      "reason_codes": ["IDENTIFIER_CONFLICT"],
+      "gaps": ["IDENTIFIER_CONFLICT"],
+      "observed_price": {
+        "amount_minor": 9999,
+        "currency": "USD",
+        "basis": "item_price"
+      },
+      "cheaper_than_candidate_ids": [
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      ]
+    }
+  ],
+  "source_attempts": [
+    {
+      "sequence": 0,
+      "kind": "origin_fetch",
+      "call_attempted": true,
+      "source_id": "retailer-origin",
+      "provider": null,
+      "query": null,
+      "url": "https://retailer.test/makita-xph14z",
+      "outcome": "succeeded",
+      "error_code": null,
+      "latency_ms": 84,
+      "cost_micro_usd": 100,
+      "reuse": "executed",
+      "avoided_cost_micro_usd": 0,
+      "result_count": 1,
+      "http_status": 200,
+      "bytes_received": 8192
+    }
+  ],
+  "receipt": {
+    "search_calls": 2,
+    "fetch_calls": 3,
+    "providers_configured": 2,
+    "providers_succeeded": 2,
+    "cost_micro_usd": 2500,
+    "cost_basis": "reserved_ceiling",
+    "provider_estimated_cost_micro_usd": null,
+    "provider_estimated_cost_reported_search_calls": 0,
+    "discovery_cache_hits": 0,
+    "cost_avoided_micro_usd": 0,
+    "elapsed_ms": 120
+  },
+  "started_at": "2026-07-16T00:00:00.000Z",
+  "completed_at": "2026-07-16T00:00:00.120Z",
+  "identity_resolution": {
+    "schema_revision": 1,
+    "resolver_version": "catalog-identity/v1",
+    "analysis_input_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "resolution_state": "exact_variant",
+    "exact_identity": true,
+    "resolved_target": {
+      "schema_revision": 1,
+      "family": {
+        "brand": "Makita",
+        "name": "18V LXT hammer drill"
+      },
+      "name": "Makita XPH14Z",
+      "identifiers": [
+        {
+          "scheme": "model",
+          "value": "XPH14Z",
+          "issuer": "Makita"
+        }
+      ],
+      "attributes": [
+        {
+          "key": "kit",
+          "value": false
+        }
+      ],
+      "pack": {
+        "count": 1
+      }
+    },
+    "resolved_variant": {
+      "schema_revision": 1,
+      "variant_id": "makita-xph14z",
+      "family": {
+        "schema_revision": 1,
+        "family_id": "makita-18v-lxt-hammer-drill",
+        "brand": "Makita",
+        "name": "18V LXT hammer drill",
+        "identifiers": []
+      },
+      "name": "Makita XPH14Z",
+      "identifiers": [
+        {
+          "scheme": "model",
+          "value": "XPH14Z",
+          "issuer": "Makita"
+        }
+      ],
+      "attributes": [
+        {
+          "key": "kit",
+          "value": false
+        }
+      ],
+      "pack": {
+        "count": 1
+      }
+    },
+    "supporting_record_digests": [
+      "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    ],
+    "record_assessments": [
+      {
+        "record_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "source_id": "catalog-manufacturer",
+        "source_version_id": "catalog-manufacturer/2026-07-16",
+        "independence_group": "manufacturer-makita",
+        "authority": "manufacturer_catalog",
+        "content_digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "identity_binding_key": "model:Makita:XPH14Z",
+        "disposition": "supports_identity",
+        "reason_codes": ["RECORD_SUPPORTS_IDENTITY"]
+      },
+      {
+        "record_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "source_id": "catalog-distributor",
+        "source_version_id": "catalog-distributor/2026-07-16",
+        "independence_group": "distributor-one",
+        "authority": "merchant_catalog",
+        "content_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "identity_binding_key": "model:Makita:XPH14Z",
+        "disposition": "supports_identity",
+        "reason_codes": ["RECORD_SUPPORTS_IDENTITY"]
+      }
+    ],
+    "model_proposal_assessments": [],
+    "reason_codes": ["CATALOG_EXACT_IDENTITY_RESOLVED"],
+    "resolution_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "lifecycle": {
+    "persistence": "not_created",
+    "reason_codes": ["COMMERCE_LIFECYCLE_NOT_CONFIGURED"],
+    "action_time_gate": {
+      "state": "not_found",
+      "disposition": "REVIEW",
+      "permission": "withheld",
+      "reason_codes": ["COMMERCE_LIFECYCLE_NOT_CONFIGURED"],
+      "checked_at": "2026-07-16T00:00:00.130Z",
+      "final_fence_checked": false
+    }
+  }
+}

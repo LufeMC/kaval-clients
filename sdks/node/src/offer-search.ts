@@ -161,6 +161,34 @@ export interface Money {
   currency: string;
 }
 
+export interface OriginSourceValueLocator {
+  object_role:
+    | "product"
+    | "variant_parent"
+    | "offer"
+    | "embedded_product"
+    | "product_meta"
+    | "artifact_origin";
+  path: string;
+  raw_value_digest: `sha256:${string}`;
+}
+
+export interface OriginFieldProvenance {
+  field_path: string;
+  source_values: OriginSourceValueLocator[];
+  transformations: Array<
+    | "trim_text"
+    | "canonicalize_identifier"
+    | "construct_product_variant"
+    | "normalize_pack"
+    | "resolve_public_url"
+    | "decimal_currency_to_minor_units"
+    | "normalize_availability"
+    | "normalize_condition"
+    | "normalize_seller_name"
+  >;
+}
+
 export interface ExtractedOriginOffer {
   evidence_kind: "json_ld" | "embedded_product_json" | "product_meta";
   source_block_index: number;
@@ -176,6 +204,7 @@ export interface ExtractedOriginOffer {
   destination_eligibility: "unknown";
   landed_price_complete: false;
   extraction_gaps: string[];
+  field_provenance?: OriginFieldProvenance[];
 }
 
 export type OfferConflictCode =
@@ -216,19 +245,25 @@ export interface OfferMatchAssessment {
   explanation: string;
 }
 
+export interface OfferOriginEvidence {
+  kind: ExtractedOriginOffer["evidence_kind"];
+  /** Exact acquisition artifact whose bytes produced content_digest. */
+  artifact?: "static_http_body" | "rendered_page";
+  /** Renderer snapshot or deployment receipt when artifact is rendered_page. */
+  version_receipt?: string | null;
+  content_digest: `sha256:${string}`;
+  source_block_index: number;
+  jsonld_product_index: number;
+  jsonld_offer_index: number | null;
+}
+
 export interface LiveOfferSearchCandidate {
   candidate_id: `sha256:${string}`;
   origin_url: string;
   source_id: string;
   discovered_by: string[];
   discovery_metadata: Array<{ provider: string; title: string | null }>;
-  origin_evidence: {
-    kind: ExtractedOriginOffer["evidence_kind"];
-    content_digest: `sha256:${string}`;
-    source_block_index: number;
-    jsonld_product_index: number;
-    jsonld_offer_index: number | null;
-  };
+  origin_evidence: OfferOriginEvidence;
   origin_offer: ExtractedOriginOffer;
   identity: OfferMatchAssessment;
   /** Current shadow output can only be queued for review or rejected. */
@@ -237,6 +272,113 @@ export interface LiveOfferSearchCandidate {
   reason_codes: string[];
   /** Destination-aware checkout evidence. Its action remains REVIEW-only. */
   checkout?: CommerceCheckoutVerification;
+}
+
+export interface LiveOfferSearchRejectedExplanation {
+  candidate_id: LiveOfferSearchCandidate["candidate_id"];
+  origin_url: string;
+  contender: false;
+  disposition: "rejected";
+  identity_state: OfferMatchAssessment["state"];
+  reason_codes: string[];
+  gaps: string[];
+  observed_price: {
+    amount_minor: number;
+    currency: string;
+    basis: "complete_landed_total" | "item_price";
+  } | null;
+  cheaper_than_candidate_ids: Array<LiveOfferSearchCandidate["candidate_id"]>;
+}
+
+export type ProductCatalogIdentityAuthority =
+  "manufacturer_catalog" | "authorized_registry" | "merchant_catalog";
+
+export type ProductCatalogRecordReasonCode =
+  | "RECORD_SUPPORTS_IDENTITY"
+  | "ANALYSIS_BINDING_MISMATCH"
+  | "RECORD_DIGEST_INVALID"
+  | "SOURCE_RIGHTS_NOT_ALLOWED"
+  | "RECORD_NOT_CURRENT"
+  | "MATCHED_CLUE_INVALID"
+  | "IDENTITY_BINDING_NOT_IN_VARIANT"
+  | "EXPLICIT_CONSTRAINT_CONFLICT";
+
+export interface ProductCatalogIdentityRecordAssessment {
+  record_digest: `sha256:${string}`;
+  source_id: string;
+  source_version_id: string;
+  independence_group: string;
+  authority: ProductCatalogIdentityAuthority;
+  content_digest: `sha256:${string}`;
+  identity_binding_key: string;
+  disposition: "supports_identity" | "rejected";
+  reason_codes: ProductCatalogRecordReasonCode[];
+}
+
+export type ProductNameAttributeKey =
+  | "bundle"
+  | "capacity"
+  | "color"
+  | "compatibility"
+  | "condition"
+  | "edition"
+  | "material"
+  | "quantity"
+  | "size"
+  | "unit";
+
+export interface ProductNameModelProposalAssessment {
+  proposal_id: `sha256:${string}`;
+  proposal_digest: `sha256:${string}`;
+  analysis_input_digest: `sha256:${string}`;
+  authority: "non_authoritative";
+  exact_identity: false;
+  material_state_changed: false;
+  aliases: Array<{
+    kind:
+      | "catalog_search_alias"
+      | "brand_alias"
+      | "family_alias"
+      | "manufacturer_alias";
+    value: string;
+    disposition: "discovery_only";
+  }>;
+  attributes: Array<{
+    key: ProductNameAttributeKey;
+    value: string;
+    unit?: string;
+    disposition: "corroborated_constraint" | "unverified_candidate";
+  }>;
+  reason_codes: Array<
+    | "MODEL_PROPOSAL_NON_AUTHORITATIVE"
+    | "ALIASES_DISCOVERY_ONLY"
+    | "ATTRIBUTES_REQUIRE_SOURCE_VALIDATION"
+    | "EXACT_IDENTITY_WITHHELD"
+  >;
+}
+
+export type ProductCatalogResolutionReasonCode =
+  | "CATALOG_EXACT_IDENTITY_RESOLVED"
+  | "CATALOG_INPUT_AMBIGUOUS"
+  | "CATALOG_IDENTITY_CONFLICT"
+  | "CATALOG_INDEPENDENT_SUPPORT_INSUFFICIENT"
+  | "CATALOG_AUTHORITATIVE_SOURCE_MISSING"
+  | "CATALOG_RECORDS_UNUSABLE"
+  | "MODEL_PROPOSALS_NON_AUTHORITATIVE";
+
+export interface ProductCatalogIdentityResolution {
+  schema_revision: 1;
+  resolver_version: "catalog-identity/v1";
+  analysis_input_digest: `sha256:${string}`;
+  resolution_state: "exact_variant" | "ambiguous" | "insufficient_identity";
+  exact_identity: boolean;
+  resolved_target: ProductTarget | null;
+  resolved_variant: ProductVariant | null;
+  supporting_record_digests: Array<`sha256:${string}`>;
+  record_assessments: ProductCatalogIdentityRecordAssessment[];
+  model_proposal_assessments: ProductNameModelProposalAssessment[];
+  reason_codes: ProductCatalogResolutionReasonCode[];
+  resolution_digest: `sha256:${string}`;
 }
 
 export type CommerceSourceFamily =
@@ -254,10 +396,18 @@ export interface CommerceCheckoutResolverDescriptor {
   estimated_cost_micro_usd: number;
 }
 
+export interface CommerceCheckoutDeliveryPromise {
+  certainty: "guaranteed" | "estimated";
+  earliest_at: string;
+  latest_at: string;
+}
+
 export interface CommerceCheckoutObservation {
   destination_eligibility: "eligible" | "ineligible" | "unknown";
   availability: "in_stock" | "out_of_stock" | "preorder" | "unknown";
   seller_authorized: boolean | null;
+  /** Omitted for adapters that predate delivery promises; null means checked but unbounded. */
+  delivery_promise?: CommerceCheckoutDeliveryPromise | null;
   item_price: Money | null;
   shipping_price: Money | null;
   tax_price: Money | null;
@@ -538,6 +688,8 @@ export interface LiveOfferSearchResult {
   schema_revision: 2;
   request_id: string;
   request_digest: `sha256:${string}`;
+  /** Digest after verified catalog resolution enriches a sparse target. */
+  effective_request_digest?: `sha256:${string}`;
   status: "complete" | "partial" | "failed";
   /** Offer Search is shadow-only and cannot authorize a quote or purchase. */
   action: {
@@ -547,6 +699,8 @@ export interface LiveOfferSearchResult {
   stop_reason: OfferSearchStopReason;
   query: string | null;
   candidates: LiveOfferSearchCandidate[];
+  /** Rejected observations remain explainable but never enter contender ranking. */
+  rejected_explanations?: LiveOfferSearchRejectedExplanation[];
   source_attempts: CommerceLiveSourceAttempt[];
   receipt: {
     search_calls: number;
@@ -565,6 +719,8 @@ export interface LiveOfferSearchResult {
   completed_at: string;
   /** Auditable rights, coverage, and attempted-source trace. */
   acquisition?: LiveOfferSearchAcquisitionTrace;
+  /** Verified structured-catalog resolution, when the resolver was evaluated. */
+  identity_resolution?: ProductCatalogIdentityResolution;
   /** Present only when the hosted server has a configured durable commerce lifecycle. */
   lifecycle?: CommerceOfferSearchLifecycle;
 }

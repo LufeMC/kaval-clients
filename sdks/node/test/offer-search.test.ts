@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Kaval } from "../src/index.js";
 import type {
@@ -6,6 +7,13 @@ import type {
   LiveOfferSearchResult,
   OfferSearchInput,
 } from "../src/index.js";
+
+const REPRESENTATIVE_WIRE_RESULT = JSON.parse(
+  readFileSync(
+    new URL("../../../fixtures/offer-search-result-v2.json", import.meta.url),
+    "utf8",
+  ),
+) as unknown;
 
 const REQUEST: OfferSearchInput = {
   schema_revision: 1,
@@ -280,6 +288,57 @@ describe("Offer Search", () => {
       body: REQUEST,
     });
     expect(result.action.state).toBe("NEEDS_REVIEW");
+  });
+
+  it("keeps the representative strict wire fixture typed and review-only", async () => {
+    const client = new Kaval({
+      fetch: (async () =>
+        new Response(JSON.stringify(REPRESENTATIVE_WIRE_RESULT), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch,
+    });
+
+    const result: LiveOfferSearchResult = await client.searchOffers(REQUEST);
+    const candidate = result.candidates[0];
+
+    expect(result.effective_request_digest).toBe(`sha256:${"b".repeat(64)}`);
+    expect(result.rejected_explanations?.[0]).toMatchObject({
+      contender: false,
+      disposition: "rejected",
+      identity_state: "conflict",
+    });
+    expect(result.identity_resolution).toMatchObject({
+      resolver_version: "catalog-identity/v1",
+      resolution_state: "exact_variant",
+      exact_identity: true,
+    });
+    expect(candidate?.origin_evidence).toMatchObject({
+      artifact: "rendered_page",
+      version_receipt: "browser-renderer/2026-07-16.1",
+    });
+    expect(candidate?.origin_offer.field_provenance?.[0]).toMatchObject({
+      field_path: "variant.identifiers",
+      transformations: [
+        "trim_text",
+        "canonicalize_identifier",
+        "construct_product_variant",
+      ],
+    });
+    expect(candidate?.checkout?.observation?.delivery_promise).toEqual({
+      certainty: "estimated",
+      earliest_at: "2026-07-18T00:00:00.000Z",
+      latest_at: "2026-07-20T00:00:00.000Z",
+    });
+    expect(result.lifecycle).toMatchObject({
+      persistence: "not_created",
+      action_time_gate: {
+        disposition: "REVIEW",
+        permission: "withheld",
+        final_fence_checked: false,
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("SAFE_TO_QUOTE");
   });
 
   it("surfaces typed persisted lifecycle metadata without granting permission", async () => {
