@@ -304,7 +304,18 @@ describe("Kaval", () => {
           path: new URL(url).pathname,
           key: (init?.headers as Record<string, string>)?.["idempotency-key"],
         });
-        return { json: {} };
+        return {
+          json:
+            new URL(url).pathname === "/v1/search-offers"
+              ? {
+                  schema_revision: 2,
+                  request_id: "offer-request-1",
+                  request_digest: `sha256:${"a".repeat(64)}`,
+                  action: { state: "NEEDS_REVIEW", reason_codes: [] },
+                  candidates: [],
+                }
+              : {},
+        };
       }),
     });
     const requestOptions = { idempotencyKey: "logical-operation-0001" };
@@ -314,6 +325,13 @@ describe("Kaval", () => {
     await kaval.extractAndCheck({ text: "x" }, requestOptions);
     await kaval.scanStore({ beliefs: ["x"] }, requestOptions);
     await kaval.monitor({ beliefs: ["x"] }, requestOptions);
+    await kaval.searchOffers(
+      {
+        schema_revision: 1,
+        request_id: "offer-request-1",
+      } as Parameters<Kaval["searchOffers"]>[0],
+      requestOptions,
+    );
     await kaval.audit(
       { text: "x", as_of: "2026-07-10T20:00:00Z" },
       requestOptions,
@@ -346,6 +364,7 @@ describe("Kaval", () => {
       "/v1/extract-and-check",
       "/v1/scan-store",
       "/v1/monitor",
+      "/v1/search-offers",
       "/v1/audit",
       "/v1/gate",
       "/v1/kaval",

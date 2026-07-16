@@ -49,6 +49,116 @@ const httpUrlInput = z
       !parsed.password
     );
   }, "must be an http(s) URL");
+const productIdentifierSchemeInput = z.enum([
+  "gtin",
+  "upc",
+  "ean",
+  "isbn",
+  "mpn",
+  "manufacturer_sku",
+  "model",
+]);
+const productConditionInput = z.enum([
+  "new",
+  "open_box",
+  "refurbished",
+  "used_like_new",
+  "used_good",
+  "used_acceptable",
+  "unknown",
+]);
+const sellerKindInput = z.enum([
+  "brand_direct",
+  "authorized_retailer",
+  "marketplace",
+  "independent_retailer",
+  "unknown",
+]);
+const productIdentifierInput = z
+  .object({
+    scheme: productIdentifierSchemeInput,
+    value: z.string().min(1).max(512),
+    issuer: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+const productAttributeValueInput = z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+]);
+const productAttributeInput = z
+  .object({
+    key: z.string().min(1).max(512),
+    value: productAttributeValueInput,
+    unit: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+const packSpecInput = z
+  .object({
+    count: z.number().int().positive(),
+    units_per_item: z.number().finite().positive().optional(),
+    unit: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+const commerceDigestInput = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+const commerceActionBindingInput = z
+  .object({
+    action_slot_key: z.string().trim().min(1).max(512),
+    action_input_digest: commerceDigestInput,
+    action_consequence_digest: commerceDigestInput,
+  })
+  .strict()
+  .refine(
+    (binding) =>
+      binding.action_input_digest !== binding.action_consequence_digest,
+    {
+      message: "action input and consequence digests cannot alias one another",
+      path: ["action_consequence_digest"],
+    },
+  );
+const substitutionBaseInput = {
+  rule_id: z.string().min(1).max(512),
+  rationale: z.string().min(1).max(4_000),
+  maximum_materiality: materialityInput,
+};
+const permittedSubstitutionInput = z.discriminatedUnion("kind", [
+  z
+    .object({
+      ...substitutionBaseInput,
+      kind: z.literal("attribute"),
+      key: z.string().min(1).max(512),
+      requested_value: productAttributeValueInput,
+      permitted_value: productAttributeValueInput,
+      requested_unit: z.string().min(1).max(128).optional(),
+      permitted_unit: z.string().min(1).max(128).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...substitutionBaseInput,
+      kind: z.literal("pack"),
+      requested: packSpecInput,
+      permitted: packSpecInput,
+    })
+    .strict(),
+  z
+    .object({
+      ...substitutionBaseInput,
+      kind: z.literal("condition"),
+      requested: productConditionInput,
+      permitted: productConditionInput,
+    })
+    .strict(),
+  z
+    .object({
+      ...substitutionBaseInput,
+      kind: z.literal("variant"),
+      requested_identifiers: z.array(productIdentifierInput).min(1).max(50),
+      permitted_variant_id: z.string().min(1).max(512),
+      permitted_identifiers: z.array(productIdentifierInput).min(1).max(50),
+    })
+    .strict(),
+]);
 
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
@@ -122,19 +232,241 @@ async function safe(fn: () => Promise<unknown>) {
 }
 
 /**
- * The agent-facing MCP server. Wraps the thin `kaval` HTTP client and exposes the full proof
- * audit/gate protocol, compatibility currentness tools, and outcome reporting. Tool names use
+ * The agent-facing evidence-gate server. It exposes review-only offer research, the full proof
+ * audit/gate protocol, legacy currentness compatibility, and outcome reporting. Tool names use
  * underscores for client portability.
  */
 export function createMcpServer(client: Kaval): McpServer {
   const server = new McpServer({ name: "kaval", version: "0.3.1" });
 
-  // THE hero tool: the pre-action gate. Registered first so agents reach for it at the act-moment.
+  // Find current evidence for the commerce workflow. This is deliberately incapable of granting
+  // action permission while the hosted Offer Search surface remains shadow-grade.
+  server.registerTool(
+    "offer_search",
+    {
+      description:
+        "Find current offer evidence across permitted configured catalogs, feeds, retailer/search workers, origin pages, browser-rendered DOM, and checkout resolvers for one requested product and destination. Returns candidates, checkout evidence, and an explicit bounded source ledger with action.state NEEDS_REVIEW or NO_RELIABLE_OFFER only. This review-only shadow tool NEVER returns ALLOW or SAFE_TO_QUOTE and does not authorize quoting, purchasing, or any other action; send every candidate to human review.",
+      inputSchema: {
+        schema_revision: z.number().int().positive(),
+        request_id: z.string().min(1).max(256),
+        raw_description: z.string().min(1).max(10_000),
+        target: z
+          .object({
+            schema_revision: z.number().int().positive(),
+            family: z
+              .object({
+                brand: z.string().min(1).max(512).optional(),
+                name: z.string().min(1).max(1_000).optional(),
+                category: z.string().min(1).max(512).optional(),
+              })
+              .strict()
+              .optional(),
+            name: z.string().min(1).max(1_000).optional(),
+            identifiers: z.array(productIdentifierInput).max(32),
+            attributes: z.array(productAttributeInput).max(64),
+            pack: packSpecInput.optional(),
+          })
+          .strict(),
+        requested_condition: productConditionInput,
+        destination: z
+          .object({
+            country_code: z.string().regex(/^[A-Z]{2}$/u),
+            region: z.string().min(1).max(128).optional(),
+            postal_code: z.string().min(1).max(32).optional(),
+          })
+          .strict(),
+        match_policy: z
+          .object({
+            identity_requirement: z.enum([
+              "shared_identifier",
+              "shared_identifier_or_complete_attributes",
+            ]),
+            required_identifier_schemes: z
+              .array(productIdentifierSchemeInput)
+              .max(7),
+            required_attribute_keys: z.array(z.string().min(1)).max(64),
+            permitted_substitutions: z
+              .array(permittedSubstitutionInput)
+              .max(64),
+          })
+          .strict(),
+        seller_policy: z
+          .object({
+            allowed_seller_ids: z.array(z.string().min(1)).max(1_000),
+            blocked_seller_ids: z.array(z.string().min(1)).max(1_000),
+            allowed_kinds: z.array(sellerKindInput).min(1).max(5),
+            require_authorized: z.boolean(),
+          })
+          .strict(),
+        destination_policy: z
+          .object({
+            require_eligible: z.boolean(),
+            require_exact_region: z.boolean(),
+            require_exact_postal_code: z.boolean(),
+          })
+          .strict(),
+        price_policy: z
+          .object({
+            currency: z.string().regex(/^[A-Z]{3}$/u),
+            maximum_landed_total_minor: z
+              .number()
+              .int()
+              .nonnegative()
+              .optional(),
+            require_complete_landed_total: z.boolean(),
+            allow_estimated_components: z.boolean(),
+            allow_member_price: z.boolean(),
+            allow_subscription_price: z.boolean(),
+            allow_coupon_price: z.boolean(),
+            allow_installment_display: z.boolean(),
+            allow_trade_in_price: z.boolean(),
+          })
+          .strict(),
+        source_policy: z
+          .object({
+            allowed_source_ids: z.array(z.string().min(1)).max(1_000),
+            blocked_source_ids: z.array(z.string().min(1)).max(1_000),
+            require_origin_evidence: z.boolean(),
+          })
+          .strict(),
+        intended_action: z
+          .object({
+            description: z.string().min(1).max(2_000),
+            materiality: materialityInput,
+            reversibility: z.enum([
+              "reversible",
+              "partially_reversible",
+              "irreversible",
+            ]),
+          })
+          .strict(),
+        freshness_maximum_age_ms: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(31_536_000_000),
+        max_results: z.number().int().min(1).max(100),
+        minimum_unique_sellers: z.number().int().min(1).max(100),
+        deadline_ms: z.number().int().min(50).max(300_000),
+        maximum_cost_micro_usd: z.number().int().nonnegative(),
+        maximum_search_calls: z.number().int().nonnegative().max(1_000),
+        maximum_fetches: z.number().int().nonnegative().max(10_000),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...args }, extra) =>
+      safe(async () => {
+        const input = args as Parameters<Kaval["searchOffers"]>[0];
+        const options = transportOptions(idempotency_key, extra.signal);
+        const progressToken = extra._meta?.progressToken;
+        if (progressToken === undefined) {
+          return client.searchOffers(input, options);
+        }
+
+        let finalResult: Awaited<ReturnType<Kaval["searchOffers"]>> | undefined;
+        for await (const event of client.streamOfferSearch(input, options)) {
+          if (event.type === "final") {
+            finalResult = event.result;
+            continue;
+          }
+          const message =
+            event.type === "candidate_provisional"
+              ? "candidate_provisional: origin-verified research candidate; final publication pending; durable=false; actionable=false; permission=withheld"
+              : "message" in event && typeof event.message === "string"
+                ? `${event.type}: ${event.message}`
+                : "Offer Search replayed the completed review-only result.";
+          await extra.sendNotification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: event.sequence,
+              message,
+              ...(event.type === "candidate_provisional"
+                ? {
+                    _meta: {
+                      "usekaval.com/offer-search-progress": {
+                        schema_revision: 1,
+                        type: "candidate_provisional",
+                        request_id: event.request_id,
+                        request_digest: event.details.request_digest,
+                        candidate: {
+                          candidate_id: event.details.candidate.candidate_id,
+                          merchant: {
+                            source_id: event.details.candidate.source_id,
+                            seller_name:
+                              event.details.candidate.origin_offer.seller_name,
+                          },
+                          price:
+                            event.details.candidate.checkout?.observation
+                              ?.item_price ??
+                            event.details.candidate.origin_offer.item_price,
+                          url:
+                            event.details.candidate.origin_offer.purchase_url ||
+                            event.details.candidate.origin_url,
+                          verification: {
+                            identity: event.details.candidate.identity,
+                            disposition: event.details.candidate.disposition,
+                            gaps: event.details.candidate.gaps,
+                            reason_codes: event.details.candidate.reason_codes,
+                            origin_evidence:
+                              event.details.candidate.origin_evidence,
+                            checkout: event.details.candidate.checkout,
+                            publication_state: "provisional",
+                            durable: false,
+                            final_inclusion: "not_yet_determined",
+                          },
+                          action: {
+                            state: "REVIEW",
+                            actionable: false,
+                            permission: "withheld",
+                          },
+                        },
+                      },
+                    },
+                  }
+                : {}),
+            },
+          });
+        }
+        if (!finalResult) {
+          throw new TypeError(
+            "Offer Search stream ended without a canonical final result",
+          );
+        }
+        return finalResult;
+      }),
+  );
+
+  // Final-fence one exact persisted commerce generation. The hosted contract deliberately keeps
+  // permission withheld even when the evidence is current.
+  server.registerTool(
+    "offer_search_gate",
+    {
+      description:
+        "Re-read one exact persisted Offer Search evidence generation and its stream head immediately before a quote or purchase would be considered. Returns REVIEW with permission withheld for every state, including current_review_only; this tool NEVER authorizes the action. Refresh or send to human review when the generation is missing, stale, expired, invalidated, changed, or otherwise unavailable.",
+      inputSchema: {
+        dependency_id: z.string().trim().min(1).max(512),
+        generation_id: z.string().trim().min(1).max(512),
+        generation_number: z.number().int().positive(),
+        generation_digest: commerceDigestInput,
+        action_binding: commerceActionBindingInput,
+      },
+    },
+    async (args, { signal }) =>
+      safe(() =>
+        client.gateOfferSearch(
+          args as Parameters<Kaval["gateOfferSearch"]>[0],
+          { signal },
+        ),
+      ),
+  );
+
+  // Legacy compatibility for the original held-belief API.
   server.registerTool(
     "currentness_verify",
     {
       description:
-        "PRE-ACTION GATE — call this before acting on ANY belief you already hold (a cached fact, a stored field, a retrieved RAG chunk, a prior answer). It independently re-derives the truth and returns `act` (boolean) + a typed verdict + the proof. If `act` is false, DO NOT proceed — the belief is stale/contradicted/unprovable; re-research first. Pass any provenance you kept (the source url, held_at, the content hash you saw at read time) so silent drift (changed-since-read) is caught.",
+        "LEGACY HELD-BELIEF COMPATIBILITY — call this before acting on a cached fact, stored field, retrieved RAG chunk, or prior answer. It independently re-derives the truth and returns `act` (boolean) + a typed verdict + the proof. If `act` is false, DO NOT proceed; re-research first. Pass any provenance you kept (source URL, held_at, content hash) so silent drift is caught.",
       inputSchema: {
         belief: z
           .string()
@@ -289,7 +621,7 @@ export function createMcpServer(client: Kaval): McpServer {
     "proof_audit",
     {
       description:
-        "Build the complete action-bound Kaval ProofPacket: compile atomic claims, run support and falsification research, preserve exact evidence and lineage, adjudicate scope/time/conflicts, and return ALLOW, BLOCK, or REVIEW. Apply the result through proof_gate so the configured shadow/block-only/bounded rollout policy remains authoritative.",
+        "Build the complete action-bound Kaval ProofPacket: compile atomic claims, run support and falsification research, preserve exact evidence and lineage, adjudicate scope/time/conflicts, and return ALLOW, REVIEW, or BLOCK. Apply the result through proof_gate so the configured shadow/block-only/bounded rollout policy remains authoritative.",
       inputSchema: {
         text: z.string().min(1).max(10_000),
         as_of: z

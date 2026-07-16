@@ -2,7 +2,7 @@
   "name": "@usekaval/kaval",
   "version": "0.3.1",
   "license": "Apache-2.0",
-  "description": "Action-bound verification for AI agents — signed proof packets plus ALLOW/BLOCK/REVIEW gates.",
+  "description": "Evidence gates for AI agents: review-only offer research and action-bound ALLOW/REVIEW/BLOCK decisions.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,6 +19,8 @@
     "kaval",
     "ai",
     "agents",
+    "evidence",
+    "commerce",
     "freshness",
     "rag",
     "verification"

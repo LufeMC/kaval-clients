@@ -1,9 +1,11 @@
 # Kaval clients
 
-Open-source client libraries for [Kaval](https://usekaval.com) — the freshness gate for AI agents.
-Before your agent acts on a belief it already holds (a cached fact, a stored field, a retrieved RAG
-chunk, a prior answer), Kaval independently re-derives the truth from the live world and returns a
-typed, abstaining verdict your agent can branch on.
+Open-source client libraries for [Kaval](https://usekaval.com), the **evidence gate for AI agents**.
+Before an AI agent acts, Kaval checks that the current evidence still supports the action. It returns
+`ALLOW`, `REVIEW`, or `BLOCK` with supporting evidence; when that evidence changes or expires, the
+permission does too.
+
+**Search retrieves evidence. Kaval decides whether that evidence is sufficient for the action.**
 
 These are **thin HTTP clients** for the hosted Kaval API (`https://api.usekaval.com`). Create an API
 key at [usekaval.com](https://usekaval.com).
@@ -18,12 +20,55 @@ API is still finalizing that operation.
 | [`kaval`](sdks/python)          | Python            | `pip install kaval`     | [sdks/python](sdks/python)   |
 | [`@usekaval/mcp`](packages/mcp) | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
+## Two workflows, one product
+
+- **Find current evidence.** Offer Search takes a requested product and constraints, then researches
+  candidate price, stock, seller, destination, and freshness evidence. The current public result is
+  deliberately review-only until exact-variant resolution and representative calibration are proven
+  for that scope: it returns `NEEDS_REVIEW` or `NO_RELIABLE_OFFER`, never `ALLOW` or
+  `SAFE_TO_QUOTE`.
+- **React when evidence changes.** Build an action-bound proof, then gate reuse at the action
+  boundary. A changed, expired, or invalidated dependency prevents an old permission from silently
+  remaining valid.
+
+Both follow the same lifecycle: evidence → supported conclusion → permission for one action →
+expiry or evidence change → review, re-evaluation, or renewed permission.
+
 ## Node
 
 ```ts
 import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
+
+const offers = await kaval.searchOffers(offerRequest);
+if (offers.action.state === "NEEDS_REVIEW") {
+  await queueForHumanReview(offers.candidates);
+}
+// Never quote or purchase from current Offer Search output without review.
+
+if (offers.lifecycle?.persistence === "persisted") {
+  const finalFence = await kaval.gateOfferSearch({
+    dependency_id: offers.lifecycle.dependency_id,
+    generation_id: offers.lifecycle.generation_id,
+    generation_number: offers.lifecycle.generation_number,
+    generation_digest: offers.lifecycle.generation_digest,
+    action_binding: offers.lifecycle.action_binding,
+  });
+  // Every state remains REVIEW-only with permission withheld. Refresh any non-current generation.
+  if (finalFence.state !== "current_review_only") await refreshOfferEvidence();
+}
+
+// The SSE surface emits research-only progress, or `replay` for an already-completed same-key
+// operation, followed by the same canonical final result.
+for await (const event of kaval.streamOfferSearch(offerRequest)) {
+  if (event.type === "candidate_provisional") {
+    // Display-only: not durable, not actionable, permission is withheld, final inclusion is pending.
+    renderProvisionalOffer(event.details.candidate);
+  } else if (event.type === "final") {
+    await queueForHumanReview(event.result.candidates);
+  }
+}
 
 const proof = await kaval.audit({
   text: "Acme is eligible for a $12,000 refund",
@@ -52,6 +97,7 @@ if (
 }
 // controlApplied === false is shadow mode: observe wouldAllow without controlling the action.
 
+// Legacy held-belief compatibility remains available:
 const { act, status, reason } = await kaval.verify({
   belief: "Acme is on our Enterprise plan",
   url: "https://billing.acme.com/account",
@@ -68,9 +114,19 @@ if (!act) {
 from kaval import KavalClient
 
 kaval = KavalClient(api_key=os.environ["KAVAL_API_KEY"])
-decision = kaval.verify(belief="Acme is on our Enterprise plan")
-if not decision["act"]:
-    ...  # re-research before acting
+offers = kaval.search_offers(offer_request)
+if offers["action"]["state"] == "NEEDS_REVIEW":
+    queue_for_human_review(offers["candidates"])
+
+if offers.get("lifecycle", {}).get("persistence") == "persisted":
+    lifecycle = offers["lifecycle"]
+    final_fence = kaval.gate_offer_search({
+        "dependency_id": lifecycle["dependency_id"],
+        "generation_id": lifecycle["generation_id"],
+        "generation_number": lifecycle["generation_number"],
+        "generation_digest": lifecycle["generation_digest"],
+        "action_binding": lifecycle["action_binding"],
+    })
 ```
 
 ## MCP
@@ -79,7 +135,8 @@ if not decision["act"]:
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Exposes `proof_audit` + `proof_gate` for the full action-verification protocol, plus
+Exposes review-only `offer_search` + `offer_search_gate`, and `proof_audit` + `proof_gate` for the full evidence-gate protocol,
+plus legacy compatibility tools
 `currentness_verify`, `currentness_check`, `…_extract_and_check`, `…_scan_store`, `…_monitor`, and
 `report_outcome` over stdio. See [packages/mcp](packages/mcp).
 

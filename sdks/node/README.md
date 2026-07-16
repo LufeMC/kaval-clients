@@ -1,8 +1,10 @@
 # @usekaval/kaval
 
-The freshness gate for AI. Give kaval a belief your system already holds — a cached fact, a CRM
-field, an agent memory — and it checks the live world and returns a typed verdict: `current`,
-`stale`, `contradicted`, `unsupported`, `conflicting`, or `insufficient`.
+The evidence gate for AI agents. Before an agent acts, Kaval checks that the current evidence still
+supports that exact action. The full proof lifecycle returns `ALLOW`, `REVIEW`, or `BLOCK`; when the
+evidence changes or expires, the permission does too.
+
+**Search retrieves evidence. Kaval decides whether that evidence is sufficient for the action.**
 
 ```bash
 npm install @usekaval/kaval
@@ -20,6 +22,144 @@ const { Kaval } = await import("@usekaval/kaval");
 **CJS `require("@usekaval/kaval")`** needs Node **≥20.19** or **≥22.12** (Node’s native
 `require(esm)` support). On Node 18, use `import` / `await import()` instead — `engines.node` is
 `>=18` for ESM + `fetch`, not for CJS require.
+
+## Find current offer evidence (review-only)
+
+```ts
+import { Kaval, type OfferSearchInput } from "@usekaval/kaval";
+
+const request: OfferSearchInput = {
+  schema_revision: 1,
+  request_id: crypto.randomUUID(),
+  raw_description: "Makita XPH14Z hammer drill, tool only",
+  target: {
+    schema_revision: 1,
+    name: "Makita XPH14Z",
+    identifiers: [{ scheme: "model", value: "XPH14Z" }],
+    attributes: [{ key: "kit", value: false }],
+  },
+  requested_condition: "new",
+  destination: { country_code: "US", region: "CA", postal_code: "94107" },
+  match_policy: {
+    identity_requirement: "shared_identifier",
+    required_identifier_schemes: ["model"],
+    required_attribute_keys: ["kit"],
+    permitted_substitutions: [],
+  },
+  seller_policy: {
+    allowed_seller_ids: [],
+    blocked_seller_ids: [],
+    allowed_kinds: ["brand_direct", "authorized_retailer"],
+    require_authorized: true,
+  },
+  destination_policy: {
+    require_eligible: true,
+    require_exact_region: true,
+    require_exact_postal_code: true,
+  },
+  price_policy: {
+    currency: "USD",
+    require_complete_landed_total: true,
+    allow_estimated_components: false,
+    allow_member_price: false,
+    allow_subscription_price: false,
+    allow_coupon_price: false,
+    allow_installment_display: false,
+    allow_trade_in_price: false,
+  },
+  source_policy: {
+    allowed_source_ids: [],
+    blocked_source_ids: [],
+    require_origin_evidence: true,
+  },
+  intended_action: {
+    description: "Quote this exact item to a customer",
+    materiality: "high",
+    reversibility: "partially_reversible",
+  },
+  freshness_maximum_age_ms: 300_000,
+  max_results: 5,
+  minimum_unique_sellers: 2,
+  deadline_ms: 15_000,
+  maximum_cost_micro_usd: 50_000,
+  maximum_search_calls: 4,
+  maximum_fetches: 12,
+};
+
+const kaval = new Kaval({
+  apiKey: process.env.KAVAL_API_KEY,
+});
+const result = await kaval.searchOffers(request);
+
+if (result.action.state === "NEEDS_REVIEW") {
+  await queueForHumanReview(result.candidates);
+}
+
+// When durable lifecycle metadata is present, final-fence the exact generation at action time.
+// Even current evidence remains REVIEW-only until commerce authorization is calibrated.
+if (result.lifecycle?.persistence === "persisted") {
+  const finalFence = await kaval.gateOfferSearch({
+    dependency_id: result.lifecycle.dependency_id,
+    generation_id: result.lifecycle.generation_id,
+    generation_number: result.lifecycle.generation_number,
+    generation_digest: result.lifecycle.generation_digest,
+    action_binding: result.lifecycle.action_binding,
+  });
+  if (finalFence.state !== "current_review_only") {
+    await refreshOfferEvidence(result.lifecycle.dependency_id);
+  }
+  // finalFence.disposition === "REVIEW" and finalFence.permission === "withheld" in every state.
+}
+```
+
+For progressive UI or agent feedback, consume the same operation as SSE. The last event contains the
+same guarded result returned by `searchOffers()`; earlier events are explicitly `research_only` and
+cannot authorize a quote or purchase:
+
+```ts
+for await (const event of kaval.streamOfferSearch(request, {
+  idempotencyKey: crypto.randomUUID(),
+})) {
+  if (event.type === "candidate_provisional") {
+    // Origin verification finished, but final selection and lifecycle persistence have not.
+    // durable=false, actionable=false, permission="withheld".
+    renderProvisionalOffer(event.details.candidate);
+  } else if (event.type === "final") {
+    await queueForHumanReview(event.result.candidates);
+  } else {
+    console.log(
+      event.type,
+      event.type === "replay" ? "completed operation replayed" : event.message,
+    );
+  }
+}
+```
+
+`candidate_provisional` is the only pre-completion candidate event. Its typed details always state
+`publication_state: "provisional"`, `durable: false`, `actionable: false`,
+`permission: "withheld"`, and `final_inclusion: "not_yet_determined"`. The SDK binds its request
+ID and cryptographic digest across provisional, replay, and terminal results and rejects drift. The
+later `candidate` event has crossed the current final publication boundary; only the exact
+`lifecycle.selected_candidate_id` is durable, and every candidate remains review-only.
+
+Offer Search researches the accessible configured web through configured structured source workers,
+search discovery, direct origin re-fetches, serialized-DOM browser fallback, and optional
+destination-aware checkout resolution. `candidate.checkout` contains the checkout receipt when one
+was verified; `acquisition.source_ledger` states which planned sources succeeded, failed, were
+prohibited, or remained unsearched. Coverage is explicitly bounded, not a claim to have searched the
+literal entire internet. Its public output is deliberately shadow-grade: `action.state` is
+`NEEDS_REVIEW` or `NO_RELIABLE_OFFER`, candidate dispositions are `review` or `rejected`, and the
+SDK rejects any drifted response that claims `ALLOW`, `BLOCK`, `SAFE_TO_QUOTE`, or other commerce
+authority. Do not quote or purchase from this result without review. `searchOffers()` accepts the same
+`{ idempotencyKey?, signal?, timeoutMs? }` request options as other billable calls;
+`streamOfferSearch()` also closes the response stream when its signal is aborted or iteration stops.
+
+When the server has a durable commerce lifecycle configured, `result.lifecycle` identifies the
+immutable evidence generation, exact selected candidate, and action binding. Call
+`gateOfferSearch()` immediately before the action boundary. It re-reads that generation and the
+latest stream head, but deliberately returns only `disposition: "REVIEW"` and
+`permission: "withheld"`; stale, expired, invalidated, changed, revoked, unavailable, or mismatched
+evidence must be refreshed or reviewed.
 
 ## Build a proof, then gate the action
 
@@ -68,7 +208,7 @@ Both methods accept `{ idempotencyKey?, signal?, timeoutMs? }`. The constructor 
 30-second deadline; override per call or set `timeoutMs: null` to disable it. Cancellation and timeout
 errors retain `error.idempotencyKey`, because an interrupted billable request can be ambiguous.
 
-## Gate a belief before you act on it
+## Legacy held-belief compatibility
 
 ```ts
 import { Kaval } from "@usekaval/kaval";
@@ -81,7 +221,8 @@ if (!decision.act) {
 }
 ```
 
-`verify()` returns the verdict plus `act` — `true` only when the belief is `current` and confident
+`verify()` preserves the original currentness API. It returns the verdict plus `act` — `true` only
+when the belief is `current` and confident
 (≥ 0.7 by default; override with `minConfidence`).
 
 ## Safe retries and idempotency
@@ -142,7 +283,7 @@ await kaval.monitor({ beliefs, webhook: "https://your-app.com/hooks/stale" });
 
 ## API
 
-`audit` · `gateAction` (`gate` alias) · `verify` · `check` · `extractAndCheck` · `scanStore` ·
+`searchOffers` · `streamOfferSearch` · `gateOfferSearch` · `audit` · `gateAction` (`gate` alias) · `verify` · `check` · `extractAndCheck` · `scanStore` ·
 `monitor` · `reportOutcome` · `kaval` · `kavalBatch` · `health`. Billable methods accept a final
 `{ idempotencyKey?, signal?, timeoutMs? }` request-options argument (`kavalBatch` includes it alongside
 `concurrency`). Construct with `{ apiKey, baseUrl?, fetch?, timeoutMs? }` — `baseUrl` defaults to

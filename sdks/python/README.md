@@ -1,9 +1,10 @@
 # kaval (Python SDK)
 
-The freshness gate for AI. Give [kaval](https://github.com/LufeMC/kaval-clients) a belief your system
-already holds — a cached fact, a CRM field, an agent memory — and it checks the live world and
-returns a typed freshness gap: `current` / `stale` / `contradicted` / `unsupported` / `conflicting`
-/ `insufficient`.
+The evidence gate for AI agents. Before an agent acts, Kaval checks that the current evidence still
+supports that exact action. The full proof lifecycle returns `ALLOW`, `REVIEW`, or `BLOCK`; when the
+evidence changes or expires, the permission does too.
+
+**Search retrieves evidence. Kaval decides whether that evidence is sufficient for the action.**
 
 ## Install
 
@@ -16,9 +17,108 @@ pip install kaval
 **Sync-only for now.** `KavalClient` is built on `httpx.Client` (blocking I/O) and does not yet ship
 an `AsyncKavalClient`. If you need `async`/`await`, call the REST API with `httpx.AsyncClient`, wrap
 sync calls in `asyncio.to_thread()`, or use the Node SDK (`@usekaval/kaval`). Native async may land
-in a later release.
+in a later release. `stream_offer_search()` is progressive but still synchronous.
 
-## Gate a belief before you act on it
+## Find current offer evidence (review-only)
+
+```python
+from kaval import KavalClient, OfferSearchInput
+
+# This typed request contains the exact product identifiers/attributes, destination, policies,
+# intended action, freshness requirement, and bounded search budget.
+offer_request: OfferSearchInput = load_offer_request()
+
+with KavalClient(api_key="kv_live_...") as client:
+    result = client.search_offers(
+        offer_request,
+        idempotency_key="your-stable-operation-id",
+        timeout=20.0,
+    )
+    if result["action"]["state"] == "NEEDS_REVIEW":
+        queue_for_human_review(result["candidates"])
+
+    # When durable lifecycle metadata is present, final-fence the exact generation at action time.
+    lifecycle = result.get("lifecycle")
+    if lifecycle and lifecycle["persistence"] == "persisted":
+        final_fence = client.gate_offer_search(
+            {
+                "dependency_id": lifecycle["dependency_id"],
+                "generation_id": lifecycle["generation_id"],
+                "generation_number": lifecycle["generation_number"],
+                "generation_digest": lifecycle["generation_digest"],
+                "action_binding": lifecycle["action_binding"],
+            },
+            timeout=5.0,
+        )
+        if final_fence["state"] != "current_review_only":
+            refresh_offer_evidence(lifecycle["dependency_id"])
+        # disposition is REVIEW and permission is withheld in every state.
+```
+
+For live progress, use the synchronous SSE generator. Every progress event is validated as
+`research_only` / `REVIEW`, sequences must increase, and the terminal `final` event contains the
+same canonical `LiveOfferSearchResult` returned by `search_offers()`:
+
+```python
+stream = client.stream_offer_search(
+    offer_request,
+    idempotency_key="your-stable-operation-id",
+    timeout=20.0,
+)
+try:
+    for event in stream:
+        if event["type"] == "candidate_provisional":
+            # Display-only: durable=False, actionable=False, permission="withheld".
+            render_provisional_offer(event["details"]["candidate"])
+        elif event["type"] == "final":
+            result = event["result"]
+        elif event["type"] == "replay":
+            note("The same operation key replayed completed work.")
+        else:
+            show_progress(event["message"], event["details"])
+finally:
+    # A normal completed loop is already closed. Call close() when cancelling early so the
+    # response and hosted acquisition operation are released immediately.
+    stream.close()
+```
+
+`candidate_provisional` is the only pre-completion candidate event. Its typed details always state
+`publication_state == "provisional"`, `durable is False`, `actionable is False`,
+`permission == "withheld"`, and `final_inclusion == "not_yet_determined"`. The client binds its
+request ID and cryptographic digest across provisional, replay, and terminal results and rejects
+drift. The later `candidate` event has crossed the current final publication boundary; only the exact
+`lifecycle["selected_candidate_id"]` is durable, and every candidate remains review-only.
+
+The client retries once with the same operation key only if the transport fails before stream
+headers arrive (or the API reports that the same operation is still being resolved). It never
+retries after a stream has begun. If a later read is interrupted or the stream ends before `final`,
+the exception carries `idempotency_key` for an explicit same-key recovery attempt.
+
+Offer Search researches permitted, accessible configured sources: structured catalogs and merchant
+feeds, retailer/search workers, direct origin re-fetches, serialized browser DOM when needed, and
+destination-aware checkout resolvers. Its explicit acquisition ledger reports the sources it did
+not or could not search; it does not claim exhaustive coverage of the entire internet. Its typed
+`LiveOfferSearchResult` is deliberately shadow-grade:
+`action.state` is `NEEDS_REVIEW` or `NO_RELIABLE_OFFER`, candidate dispositions are `review` or
+`rejected`, and the SDK rejects any drifted response that claims `ALLOW`, `BLOCK`,
+`SAFE_TO_QUOTE`, or other commerce authority. Do not quote or purchase from this result without
+review.
+
+New runtime results can include `candidate["checkout"]`, which records destination eligibility,
+availability, seller authorization, item/shipping/tax/fees, declared and calculated landed totals,
+expiry, resolver version, cost, and operational gaps. `result["acquisition"]` records the bounded
+source plan and full `source_ledger`, including sources that succeeded, failed, were prohibited,
+were deferred, or remained unsearched. These fields make coverage limits visible; they do not turn
+the review-only result into permission.
+
+When the server has a durable commerce lifecycle configured, `result["lifecycle"]` identifies the
+immutable evidence generation, exact selected candidate, and action binding. Call
+`gate_offer_search()` immediately before the action boundary. It re-reads that generation and the
+latest stream head, but deliberately returns only `disposition: "REVIEW"` and
+`permission: "withheld"`; stale, expired, invalidated, changed, revoked, unavailable, or mismatched
+evidence must be refreshed or reviewed.
+
+## Legacy held-belief compatibility
 
 ```python
 from kaval import KavalClient
@@ -36,7 +136,8 @@ with KavalClient() as client:
     ...
 ```
 
-`verify()` returns the verdict plus `act` — `True` only when the belief is `current` and confident
+`verify()` preserves the original currentness API. It returns the verdict plus `act` — `True` only
+when the belief is `current` and confident
 (≥ 0.7 by default; override with `min_confidence`).
 
 ## Build a proof, then gate the action
@@ -151,10 +252,10 @@ client = KavalClient(base_url="https://staging.api.usekaval.com", api_key="...")
 
 When omitted, constructor args fall back to:
 
-| Variable | Used for | Default |
-|----------|----------|---------|
-| `KAVAL_API_KEY` | Bearer token | none (unauthenticated) |
-| `KAVAL_BASE_URL` | API origin | `https://api.usekaval.com` |
+| Variable         | Used for     | Default                    |
+| ---------------- | ------------ | -------------------------- |
+| `KAVAL_API_KEY`  | Bearer token | none (unauthenticated)     |
+| `KAVAL_BASE_URL` | API origin   | `https://api.usekaval.com` |
 
 The marketing site (`apps/web`) uses **`KAVAL_API_URL`** for its server-side proxy — not
 `KAVAL_BASE_URL`. Set both when self-hosting the engine and running the web demo against it.
@@ -195,7 +296,7 @@ Timeouts surface as `httpx.TimeoutException` (not `KavalError`).
 
 ## API
 
-`audit` · `gate_action` (`gate` alias) · `verify` · `check` · `extract_and_check` · `scan_store` ·
+`search_offers` · `stream_offer_search` · `gate_offer_search` · `audit` · `gate_action` (`gate` alias) · `verify` · `check` · `extract_and_check` · `scan_store` ·
 `monitor` · `report_outcome` · `kaval` · `kaval_batch` · `health`. Billable methods accept the
 optional keyword `idempotency_key=`. Construct with `KavalClient(base_url=?, api_key=?)` —
 `base_url` defaults to `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:

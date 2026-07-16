@@ -2,7 +2,7 @@
   "name": "kaval-clients",
   "version": "0.1.2",
   "private": true,
-  "description": "Open-source client libraries for Kaval — the Node & Python SDKs and the MCP server.",
+  "description": "Open-source clients for Kaval, the evidence gate for AI agents.",
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.33.0",
   "engines": {

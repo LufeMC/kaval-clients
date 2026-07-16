@@ -759,14 +759,756 @@ class ProofGateResult(TypedDict):
     enforcement: NotRequired[ProofEnforcementResult]
 
 
+# Offer Search is intentionally a separate review-only result family. It preserves the hosted
+# commerce contract without widening ActionDisposition: the current endpoint cannot emit ALLOW or
+# SAFE_TO_QUOTE.
+ProductIdentifierScheme: TypeAlias = Literal[
+    "gtin", "upc", "ean", "isbn", "mpn", "manufacturer_sku", "model"
+]
+ProductCondition: TypeAlias = Literal[
+    "new",
+    "open_box",
+    "refurbished",
+    "used_like_new",
+    "used_good",
+    "used_acceptable",
+    "unknown",
+]
+SellerKind: TypeAlias = Literal[
+    "brand_direct", "authorized_retailer", "marketplace", "independent_retailer", "unknown"
+]
+
+
+class ProductIdentifier(TypedDict):
+    scheme: ProductIdentifierScheme
+    value: str
+    issuer: NotRequired[str]
+
+
+class ProductAttribute(TypedDict):
+    key: str
+    value: str | int | float | bool
+    unit: NotRequired[str]
+
+
+class PackSpec(TypedDict):
+    count: int
+    units_per_item: NotRequired[int | float]
+    unit: NotRequired[str]
+
+
+class ProductFamilyHint(TypedDict):
+    brand: NotRequired[str]
+    name: NotRequired[str]
+    category: NotRequired[str]
+
+
+class ProductTarget(TypedDict):
+    schema_revision: int
+    family: NotRequired[ProductFamilyHint]
+    name: NotRequired[str]
+    identifiers: list[ProductIdentifier]
+    attributes: list[ProductAttribute]
+    pack: NotRequired[PackSpec]
+
+
+class ProductFamily(TypedDict):
+    schema_revision: int
+    family_id: str
+    brand: str
+    name: str
+    category: NotRequired[str]
+    identifiers: list[ProductIdentifier]
+
+
+class ProductVariant(TypedDict):
+    schema_revision: int
+    variant_id: str
+    family: ProductFamily
+    name: str
+    identifiers: list[ProductIdentifier]
+    attributes: list[ProductAttribute]
+    pack: PackSpec
+
+
+class AttributeSubstitution(TypedDict):
+    rule_id: str
+    rationale: str
+    maximum_materiality: Materiality
+    kind: Literal["attribute"]
+    key: str
+    requested_value: str | int | float | bool
+    permitted_value: str | int | float | bool
+    requested_unit: NotRequired[str]
+    permitted_unit: NotRequired[str]
+
+
+class PackSubstitution(TypedDict):
+    rule_id: str
+    rationale: str
+    maximum_materiality: Materiality
+    kind: Literal["pack"]
+    requested: PackSpec
+    permitted: PackSpec
+
+
+class ConditionSubstitution(TypedDict):
+    rule_id: str
+    rationale: str
+    maximum_materiality: Materiality
+    kind: Literal["condition"]
+    requested: ProductCondition
+    permitted: ProductCondition
+
+
+class VariantSubstitution(TypedDict):
+    rule_id: str
+    rationale: str
+    maximum_materiality: Materiality
+    kind: Literal["variant"]
+    requested_identifiers: list[ProductIdentifier]
+    permitted_variant_id: str
+    permitted_identifiers: list[ProductIdentifier]
+
+
+PermittedSubstitution: TypeAlias = (
+    AttributeSubstitution | PackSubstitution | ConditionSubstitution | VariantSubstitution
+)
+
+
+class OfferDestination(TypedDict):
+    country_code: str
+    region: NotRequired[str]
+    postal_code: NotRequired[str]
+
+
+class OfferMatchPolicy(TypedDict):
+    identity_requirement: Literal["shared_identifier", "shared_identifier_or_complete_attributes"]
+    required_identifier_schemes: list[ProductIdentifierScheme]
+    required_attribute_keys: list[str]
+    permitted_substitutions: list[PermittedSubstitution]
+
+
+class OfferSellerPolicy(TypedDict):
+    allowed_seller_ids: list[str]
+    blocked_seller_ids: list[str]
+    allowed_kinds: list[SellerKind]
+    require_authorized: bool
+
+
+class OfferDestinationPolicy(TypedDict):
+    require_eligible: bool
+    require_exact_region: bool
+    require_exact_postal_code: bool
+
+
+class OfferPricePolicy(TypedDict):
+    currency: str
+    maximum_landed_total_minor: NotRequired[int]
+    require_complete_landed_total: bool
+    allow_estimated_components: bool
+    allow_member_price: bool
+    allow_subscription_price: bool
+    allow_coupon_price: bool
+    allow_installment_display: bool
+    allow_trade_in_price: bool
+
+
+class OfferSourcePolicy(TypedDict):
+    allowed_source_ids: list[str]
+    blocked_source_ids: list[str]
+    require_origin_evidence: bool
+
+
+class OfferIntendedAction(TypedDict):
+    description: str
+    materiality: Materiality
+    reversibility: Literal["reversible", "partially_reversible", "irreversible"]
+
+
+class OfferSearchInput(TypedDict):
+    schema_revision: int
+    request_id: str
+    raw_description: str
+    target: ProductTarget
+    requested_condition: ProductCondition
+    destination: OfferDestination
+    match_policy: OfferMatchPolicy
+    seller_policy: OfferSellerPolicy
+    destination_policy: OfferDestinationPolicy
+    price_policy: OfferPricePolicy
+    source_policy: OfferSourcePolicy
+    intended_action: OfferIntendedAction
+    freshness_maximum_age_ms: int
+    max_results: int
+    minimum_unique_sellers: int
+    deadline_ms: int
+    maximum_cost_micro_usd: int
+    maximum_search_calls: int
+    maximum_fetches: int
+
+
+class Money(TypedDict):
+    amount_minor: int
+    currency: str
+
+
+CommerceSourceFamily: TypeAlias = Literal[
+    "catalog",
+    "merchant_feed",
+    "retailer_origin",
+    "shopping_search",
+    "open_web",
+]
+
+
+class CommerceCheckoutResolverDescriptor(TypedDict):
+    schema_revision: Literal[1]
+    source_id: str
+    adapter_revision: str
+    execution_mode: Literal["recorded_fixture", "live"]
+    estimated_cost_micro_usd: int
+
+
+class CommerceCheckoutObservation(TypedDict):
+    destination_eligibility: Literal["eligible", "ineligible", "unknown"]
+    availability: Literal["in_stock", "out_of_stock", "preorder", "unknown"]
+    seller_authorized: bool | None
+    item_price: Money | None
+    shipping_price: Money | None
+    tax_price: Money | None
+    mandatory_fees: Money | None
+    declared_landed_total: Money | None
+    quote_id: str | None
+    evidence_digest: ContentDigest
+    observed_at: IsoTimestamp
+    expires_at: IsoTimestamp
+
+
+LandedPriceValidationReason: TypeAlias = Literal[
+    "EXPECTED_CURRENCY_INVALID",
+    "ITEM_PRICE_MISSING",
+    "SHIPPING_PRICE_MISSING",
+    "TAX_PRICE_MISSING",
+    "MANDATORY_FEES_MISSING",
+    "DECLARED_LANDED_TOTAL_MISSING",
+    "MONEY_VALUE_INVALID",
+    "PRICE_CURRENCY_CONFLICT",
+    "LANDED_TOTAL_OVERFLOW",
+    "LANDED_TOTAL_ARITHMETIC_MISMATCH",
+]
+
+
+class LandedPriceValidation(TypedDict):
+    state: Literal["complete", "incomplete", "invalid", "inconsistent"]
+    expected_currency: str
+    calculated_landed_total: Money | None
+    reason_codes: list[LandedPriceValidationReason]
+
+
+class CommerceCheckoutAction(TypedDict):
+    state: Literal["REVIEW"]
+    action_authorized: Literal[False]
+    reason_codes: list[str]
+
+
+CheckoutOperationalErrorCode: TypeAlias = Literal[
+    "UPSTREAM_UNAVAILABLE",
+    "DESTINATION_UNSUPPORTED",
+    "MALFORMED_RESPONSE",
+    "RIGHTS_REVOKED",
+    "CANCELLED",
+]
+
+
+class CommerceCheckoutVerification(TypedDict):
+    status: Literal["verified", "review_required", "rejected", "operational_failure"]
+    resolver: CommerceCheckoutResolverDescriptor | None
+    request_digest: ContentDigest
+    observation: CommerceCheckoutObservation | None
+    landed_price_validation: LandedPriceValidation
+    action: CommerceCheckoutAction
+    actual_cost_micro_usd: int
+    version_receipt: str | None
+    operational_error_code: CheckoutOperationalErrorCode | None
+
+
+class ExtractedOriginOffer(TypedDict):
+    evidence_kind: Literal["json_ld", "embedded_product_json", "product_meta"]
+    source_block_index: int
+    jsonld_product_index: int
+    jsonld_offer_index: int | None
+    variant: ProductVariant
+    title: str
+    purchase_url: str
+    seller_name: str | None
+    condition: ProductCondition
+    availability: Literal["in_stock", "out_of_stock", "preorder", "unknown"]
+    item_price: Money | None
+    destination_eligibility: Literal["unknown"]
+    landed_price_complete: Literal[False]
+    extraction_gaps: list[str]
+
+
+OfferConflictCode: TypeAlias = Literal[
+    "FAMILY_BRAND_CONFLICT",
+    "FAMILY_NAME_CONFLICT",
+    "IDENTIFIER_CONFLICT",
+    "IDENTIFIER_AMBIGUOUS",
+    "IDENTIFIER_MISSING",
+    "ATTRIBUTE_CONFLICT",
+    "ATTRIBUTE_MISSING",
+    "PACK_CONFLICT",
+    "PACK_INCOMPLETE",
+    "CONDITION_CONFLICT",
+    "SELLER_BLOCKED",
+    "SELLER_NOT_ALLOWED",
+    "SELLER_KIND_NOT_ALLOWED",
+    "SELLER_AUTHORIZATION_REQUIRED",
+    "DESTINATION_CONFLICT",
+    "DESTINATION_INELIGIBLE",
+    "DESTINATION_UNKNOWN",
+    "CURRENCY_CONFLICT",
+    "PRICE_LIMIT_EXCEEDED",
+    "PRICE_INCOMPLETE",
+    "MATERIAL_EVIDENCE_MISSING",
+    "OBSERVATION_EXPIRED",
+]
+
+
+class OfferMatchAssessment(TypedDict):
+    state: Literal["exact", "permitted_substitute", "ambiguous", "conflict", "insufficient_identity"]
+    conflict_codes: list[OfferConflictCode]
+    matched_identifier_schemes: list[ProductIdentifierScheme]
+    matched_attribute_keys: list[str]
+    applied_substitutions: list[PermittedSubstitution]
+    explanation: str
+
+
+class OfferDiscoveryMetadata(TypedDict):
+    provider: str
+    title: str | None
+
+
+class OfferOriginEvidence(TypedDict):
+    kind: Literal["json_ld", "embedded_product_json", "product_meta"]
+    content_digest: ContentDigest
+    source_block_index: int
+    jsonld_product_index: int
+    jsonld_offer_index: int | None
+
+
+class LiveOfferSearchCandidate(TypedDict):
+    candidate_id: ContentDigest
+    origin_url: str
+    source_id: str
+    discovered_by: list[str]
+    discovery_metadata: list[OfferDiscoveryMetadata]
+    origin_evidence: OfferOriginEvidence
+    origin_offer: ExtractedOriginOffer
+    identity: OfferMatchAssessment
+    disposition: Literal["review", "rejected"]
+    gaps: list[str]
+    reason_codes: list[str]
+    checkout: NotRequired[CommerceCheckoutVerification]
+
+
+class CommercePlannedSource(TypedDict):
+    source_id: str
+    family: CommerceSourceFamily
+    call_kind: Literal["search", "fetch"]
+    independence_group: str
+    estimated_cost_micro_usd: int
+    field_guarantees: list[str]
+    health_state: Literal["healthy", "degraded"]
+    concurrency_limit: int
+    supports_cancellation: bool
+    role: Literal["structured_acquisition", "origin_verification", "discovery_tail"]
+    winner_must_be_origin_verified: Literal[True]
+
+
+class CommerceSourcePlanWave(TypedDict):
+    wave: int
+    purpose: Literal[
+        "structured_authoritative",
+        "retailer_origin",
+        "unresolved_identity_and_coverage",
+    ]
+    sources: list[CommercePlannedSource]
+
+
+class CommerceSourcePlanExclusion(TypedDict):
+    source_id: str
+    family: CommerceSourceFamily
+    call_kind: Literal["search", "fetch"]
+    estimated_cost_micro_usd: int
+    reason: str
+
+
+class CommerceSourcePlanReceipt(TypedDict):
+    schema_revision: int
+    request_id: str
+    coverage_claim: Literal["bounded_not_comprehensive"]
+    name_only_target: bool
+    minimum_independent_families_required: int
+    planned_independent_families: list[CommerceSourceFamily]
+    planned_independence_groups: list[str]
+    independence_requirement_met: bool
+    origin_verification_required: Literal[True]
+    origin_verification_planned: bool
+    origin_verification_source_ids: list[str]
+    eligible_supplier_count_before_budget: int
+    total_planned_cost_micro_usd: int
+    total_planned_search_calls: int
+    total_planned_fetches: int
+    exclusions: list[CommerceSourcePlanExclusion]
+
+
+class CommerceSourcePlan(TypedDict):
+    schema_revision: int
+    request_id: str
+    request_digest: ContentDigest
+    supplier_registry_schema_revision: int
+    supplier_registry_digest: ContentDigest
+    waves: list[CommerceSourcePlanWave]
+    receipt: CommerceSourcePlanReceipt
+
+
+class CommerceAcquisitionSourceLedgerEntry(TypedDict):
+    source_id: str
+    family: CommerceSourceFamily
+    disposition: Literal[
+        "succeeded",
+        "failed",
+        "cancelled",
+        "prohibited",
+        "deferred",
+        "unsearched",
+    ]
+    reason_code: str
+
+
+class CommerceAcquisitionCoverage(TypedDict):
+    claim: Literal["bounded_not_comprehensive"]
+    attempted_source_families: list[CommerceSourceFamily]
+    unique_candidate_keys: int
+    unique_sellers: int
+    unsearched_source_count: int
+    prohibited_source_count: int
+    failed_source_count: int
+
+
+class CommerceAcquisitionDeduplication(TypedDict):
+    source_records: int
+    unique_urls: int
+    unique_variants: int
+    unique_sellers: int
+    unique_listings: int
+    unique_offers: int
+    independent_information_origins: int
+
+
+class CommerceAcquisitionStop(TypedDict):
+    reason: Literal[
+        "coverage_satisfied",
+        "source_exhausted",
+        "budget_exhausted",
+        "deadline_reached",
+        "cancelled",
+        "upstream_unavailable",
+        "policy_blocked",
+    ]
+    explanation: str
+
+
+class CommerceAcquisitionRunReport(TypedDict):
+    schema_revision: Literal[1]
+    request_digest: ContentDigest
+    plan: CommerceSourcePlan
+    state: dict[str, Any]
+    stop: CommerceAcquisitionStop
+    calls: list[dict[str, Any]]
+    records: list[dict[str, Any]]
+    source_ledger: list[CommerceAcquisitionSourceLedgerEntry]
+    coverage: CommerceAcquisitionCoverage
+    deduplication: CommerceAcquisitionDeduplication
+    replay_digest: ContentDigest
+
+
+class LiveOfferSearchAcquisitionTrace(TypedDict):
+    coverage_claim: Literal["bounded_not_comprehensive"]
+    plan: CommerceSourcePlan
+    plan_digest: ContentDigest
+    source_ledger: list[CommerceAcquisitionSourceLedgerEntry]
+    adapter_run: NotRequired[CommerceAcquisitionRunReport]
+
+
+class CommerceActionBinding(TypedDict):
+    """Digests binding a persisted evidence generation to one exact downstream action slot."""
+
+    action_slot_key: str
+    action_input_digest: ContentDigest
+    action_consequence_digest: ContentDigest
+
+
+CommerceActionTimeGateState: TypeAlias = Literal[
+    "current_review_only",
+    "not_found",
+    "stale_generation",
+    "binding_mismatch",
+    "expired",
+    "invalidated",
+    "refresh_required",
+    "source_revoked",
+    "retention_unavailable",
+    "integrity_failed",
+    "operational_failure",
+]
+
+
+class CommerceActionTimeGateInput(TypedDict):
+    """Exact POST /v1/search-offers/gate body; tenant identity is server-derived."""
+
+    dependency_id: str
+    generation_id: str
+    generation_number: int
+    generation_digest: ContentDigest
+    action_binding: CommerceActionBinding
+
+
+class CommerceActionTimeGateResult(TypedDict):
+    """Final-fence result. Commerce permission remains withheld even when evidence is current."""
+
+    state: CommerceActionTimeGateState
+    disposition: Literal["REVIEW"]
+    permission: Literal["withheld"]
+    reason_codes: list[str]
+    checked_at: IsoTimestamp
+    final_fence_checked: bool
+    generation_id: NotRequired[str]
+    generation_number: NotRequired[int]
+    generation_digest: NotRequired[ContentDigest]
+    expires_at: NotRequired[IsoTimestamp]
+
+
+class CommercePersistedOfferSearchLifecycle(TypedDict):
+    persistence: Literal["persisted"]
+    dependency_id: str
+    generation_id: str
+    generation_number: int
+    generation_digest: ContentDigest
+    selected_candidate_id: ContentDigest
+    expires_at: IsoTimestamp
+    action_binding: CommerceActionBinding
+    action_time_gate: CommerceActionTimeGateResult
+
+
+class CommerceNotCreatedActionTimeGate(TypedDict):
+    state: Literal["not_found"]
+    disposition: Literal["REVIEW"]
+    permission: Literal["withheld"]
+    reason_codes: list[str]
+    checked_at: IsoTimestamp
+    final_fence_checked: bool
+
+
+class CommerceNotCreatedOfferSearchLifecycle(TypedDict):
+    persistence: Literal["not_created"]
+    reason_codes: list[str]
+    action_time_gate: CommerceNotCreatedActionTimeGate
+
+
+CommerceOfferSearchLifecycle: TypeAlias = (
+    CommercePersistedOfferSearchLifecycle | CommerceNotCreatedOfferSearchLifecycle
+)
+
+
+OfferSourceAttemptErrorCode: TypeAlias = Literal[
+    "INVALID_DISCOVERY_URL",
+    "DISCOVERY_IDENTIFIER_MISMATCH",
+    "ORIGIN_BLOCKED",
+    "ORIGIN_HTTP_ERROR",
+    "ORIGIN_JSONLD_INVALID",
+    "ORIGIN_TIMEOUT",
+    "ORIGIN_UNAVAILABLE",
+    "SEARCH_UNAVAILABLE",
+    "BUDGET_EXHAUSTED",
+    "DEADLINE_REACHED",
+    "CANCELLED",
+    "COVERAGE_SATISFIED",
+]
+
+
+class CommerceLiveSourceAttempt(TypedDict):
+    sequence: int
+    kind: Literal["search", "origin_fetch"]
+    call_attempted: bool
+    source_id: str
+    provider: str | None
+    query: str | None
+    url: str | None
+    outcome: Literal["succeeded", "empty", "failed", "blocked", "skipped", "cancelled"]
+    error_code: OfferSourceAttemptErrorCode | None
+    latency_ms: int
+    cost_micro_usd: int
+    reuse: Literal["executed", "tenant_private_cache"]
+    avoided_cost_micro_usd: int
+    result_count: int | None
+    http_status: int | None
+    bytes_received: int | None
+
+
+OfferSearchStopReason: TypeAlias = Literal[
+    "coverage_satisfied",
+    "sufficient_offers",
+    "source_exhausted",
+    "budget_exhausted",
+    "deadline_reached",
+    "cancelled",
+    "upstream_unavailable",
+    "policy_blocked",
+]
+
+
+class OfferSearchAction(TypedDict):
+    state: Literal["NEEDS_REVIEW", "NO_RELIABLE_OFFER"]
+    reason_codes: list[str]
+
+
+class OfferSearchReceipt(TypedDict):
+    search_calls: int
+    fetch_calls: int
+    providers_configured: int
+    providers_succeeded: int
+    cost_micro_usd: int
+    cost_basis: Literal["reserved_ceiling"]
+    provider_estimated_cost_micro_usd: int | None
+    provider_estimated_cost_reported_search_calls: int
+    discovery_cache_hits: int
+    cost_avoided_micro_usd: int
+    elapsed_ms: int
+
+
+class LiveOfferSearchResult(TypedDict):
+    schema_revision: Literal[2]
+    request_id: str
+    request_digest: ContentDigest
+    status: Literal["complete", "partial", "failed"]
+    action: OfferSearchAction
+    stop_reason: OfferSearchStopReason
+    query: str | None
+    candidates: list[LiveOfferSearchCandidate]
+    source_attempts: list[CommerceLiveSourceAttempt]
+    receipt: OfferSearchReceipt
+    started_at: IsoTimestamp
+    completed_at: IsoTimestamp
+    # Auditable plan, rights, coverage, and attempted-source trace.
+    acquisition: NotRequired[LiveOfferSearchAcquisitionTrace]
+    # Present only when the hosted server has a configured durable commerce lifecycle.
+    lifecycle: NotRequired[CommerceOfferSearchLifecycle]
+
+
+OfferSearchProgressStage: TypeAlias = Literal[
+    "accepted",
+    "acquisition",
+    "verification",
+    "coverage",
+    "candidate_provisional",
+    "candidate",
+    "warning",
+]
+
+
+class OfferSearchStageEvent(TypedDict):
+    type: Literal[
+        "accepted",
+        "acquisition",
+        "verification",
+        "coverage",
+        "candidate",
+        "warning",
+    ]
+    sequence: int
+    at: IsoTimestamp
+    request_id: str
+    message: str
+    authority: Literal["research_only"]
+    action_state: Literal["REVIEW"]
+    details: dict[str, Any]
+
+
+class OfferSearchProvisionalCandidateDetails(TypedDict):
+    request_digest: ContentDigest
+    origin_sequence: int
+    publication_state: Literal["provisional"]
+    durable: Literal[False]
+    actionable: Literal[False]
+    permission: Literal["withheld"]
+    final_inclusion: Literal["not_yet_determined"]
+    candidate: LiveOfferSearchCandidate
+
+
+class OfferSearchProvisionalCandidateEvent(TypedDict):
+    type: Literal["candidate_provisional"]
+    sequence: int
+    at: IsoTimestamp
+    request_id: str
+    message: str
+    authority: Literal["research_only"]
+    action_state: Literal["REVIEW"]
+    details: OfferSearchProvisionalCandidateDetails
+
+
+OfferSearchProgressEvent: TypeAlias = (
+    OfferSearchStageEvent | OfferSearchProvisionalCandidateEvent
+)
+
+
+class OfferSearchReplayEvent(TypedDict):
+    type: Literal["replay"]
+    sequence: int
+    replayed_at: IsoTimestamp
+    request_id: str
+    request_digest: ContentDigest
+    authority: Literal["research_only"]
+    action_state: Literal["REVIEW"]
+
+
+class OfferSearchFinalEvent(TypedDict):
+    type: Literal["final"]
+    sequence: int
+    result: LiveOfferSearchResult
+
+
+OfferSearchStreamEvent: TypeAlias = (
+    OfferSearchProgressEvent | OfferSearchReplayEvent | OfferSearchFinalEvent
+)
+
+
 __all__ = [
     "ActionContext",
     "ActionDecision",
     "ActionDisposition",
     "ActionReversibility",
     "AuditInput",
+    "CommerceActionBinding",
+    "CommerceActionTimeGateInput",
+    "CommerceActionTimeGateResult",
+    "CommerceAcquisitionSourceLedgerEntry",
+    "CommerceCheckoutVerification",
+    "CommerceOfferSearchLifecycle",
     "DecisionThreshold",
+    "LiveOfferSearchAcquisitionTrace",
     "Materiality",
+    "LiveOfferSearchResult",
+    "OfferSearchFinalEvent",
+    "OfferSearchInput",
+    "OfferSearchProgressEvent",
+    "OfferSearchProvisionalCandidateDetails",
+    "OfferSearchProvisionalCandidateEvent",
+    "OfferSearchReplayEvent",
+    "OfferSearchStageEvent",
+    "OfferSearchStreamEvent",
     "ProofGateInput",
     "ProofGateResult",
     "ProofPacket",

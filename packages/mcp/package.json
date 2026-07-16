@@ -3,7 +3,7 @@
   "mcpName": "io.github.LufeMC/kaval",
   "version": "0.3.1",
   "license": "Apache-2.0",
-  "description": "MCP server for Kaval action verification: proof audit/gate plus compatibility currentness tools over the hosted API.",
+  "description": "MCP evidence gate for AI agents: review-only offer search, proof audit/gate, and legacy currentness tools.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,6 +25,8 @@
     "model-context-protocol",
     "ai",
     "agents",
+    "evidence",
+    "commerce",
     "freshness",
     "rag",
     "verification"
