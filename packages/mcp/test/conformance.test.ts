@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Kaval } from "@usekaval/kaval";
@@ -12,6 +13,13 @@ import {
   fakeOfferSearchResult,
   parseToolText,
 } from "./helpers/fake-api.js";
+
+const REPRESENTATIVE_WIRE_RESULT = JSON.parse(
+  readFileSync(
+    new URL("../../../fixtures/offer-search-result-v2.json", import.meta.url),
+    "utf8",
+  ),
+) as Record<string, unknown>;
 
 /**
  * MCP is a thin client now: a request goes MCP tool → `kaval` HTTP client → the hosted `/v1/*` API.
@@ -654,6 +662,50 @@ describe("MCP conformance", () => {
       error: "request_ambiguous",
       idempotency_key: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
+  });
+
+  it("offer_search forwards current strict wire fields without widening authority", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify(REPRESENTATIVE_WIRE_RESULT), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const client = await connectClient(fetchImpl);
+    const res = await client.callTool({
+      name: "offer_search",
+      arguments: fakeOfferSearchRequest,
+    });
+    const out = parseToolText(res);
+
+    expect(out as Record<string, unknown>).toMatchObject({
+      effective_request_digest: `sha256:${"b".repeat(64)}`,
+      identity_resolution: {
+        resolution_state: "exact_variant",
+        exact_identity: true,
+      },
+      rejected_explanations: [
+        {
+          contender: false,
+          disposition: "rejected",
+        },
+      ],
+      candidates: [
+        {
+          origin_evidence: {
+            artifact: "rendered_page",
+            version_receipt: "browser-renderer/2026-07-16.1",
+          },
+          checkout: {
+            observation: {
+              delivery_promise: {
+                certainty: "estimated",
+              },
+            },
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(out)).not.toContain("SAFE_TO_QUOTE");
   });
 
   it("extract_and_check finds the checkable beliefs in a paragraph", async () => {

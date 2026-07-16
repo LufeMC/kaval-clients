@@ -11,10 +11,12 @@ from .models import (
     CommerceActionTimeGateInput,
     CommerceActionTimeGateResult,
     CommerceAcquisitionSourceLedgerEntry,
+    CommerceCheckoutDeliveryPromise,
     CommerceCheckoutVerification,
     CommerceOfferSearchLifecycle,
     DecisionThreshold,
     LiveOfferSearchAcquisitionTrace,
+    LiveOfferSearchRejectedExplanation,
     LiveOfferSearchResult,
     OfferSearchFinalEvent,
     OfferSearchInput,
@@ -27,6 +29,7 @@ from .models import (
     ProofGateInput,
     ProofGateResult,
     ProofPacket,
+    ProductCatalogIdentityResolution,
     RecordRef,
 )
 
@@ -38,12 +41,14 @@ __all__ = [
     "CommerceActionTimeGateInput",
     "CommerceActionTimeGateResult",
     "CommerceAcquisitionSourceLedgerEntry",
+    "CommerceCheckoutDeliveryPromise",
     "CommerceCheckoutVerification",
     "CommerceOfferSearchLifecycle",
     "DecisionThreshold",
     "KavalClient",
     "KavalError",
     "LiveOfferSearchAcquisitionTrace",
+    "LiveOfferSearchRejectedExplanation",
     "LiveOfferSearchResult",
     "OfferSearchFinalEvent",
     "OfferSearchInput",
@@ -56,6 +61,7 @@ __all__ = [
     "ProofGateInput",
     "ProofGateResult",
     "ProofPacket",
+    "ProductCatalogIdentityResolution",
     "RecordRef",
 ]
 

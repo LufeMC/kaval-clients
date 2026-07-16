@@ -970,10 +970,18 @@ class CommerceCheckoutResolverDescriptor(TypedDict):
     estimated_cost_micro_usd: int
 
 
+class CommerceCheckoutDeliveryPromise(TypedDict):
+    certainty: Literal["guaranteed", "estimated"]
+    earliest_at: IsoTimestamp
+    latest_at: IsoTimestamp
+
+
 class CommerceCheckoutObservation(TypedDict):
     destination_eligibility: Literal["eligible", "ineligible", "unknown"]
     availability: Literal["in_stock", "out_of_stock", "preorder", "unknown"]
     seller_authorized: bool | None
+    # Omitted for adapters that predate delivery promises; None means checked but unbounded.
+    delivery_promise: NotRequired[CommerceCheckoutDeliveryPromise | None]
     item_price: Money | None
     shipping_price: Money | None
     tax_price: Money | None
@@ -1033,6 +1041,41 @@ class CommerceCheckoutVerification(TypedDict):
     operational_error_code: CheckoutOperationalErrorCode | None
 
 
+OriginSourceObjectRole: TypeAlias = Literal[
+    "product",
+    "variant_parent",
+    "offer",
+    "embedded_product",
+    "product_meta",
+    "artifact_origin",
+]
+
+
+class OriginSourceValueLocator(TypedDict):
+    object_role: OriginSourceObjectRole
+    path: str
+    raw_value_digest: ContentDigest
+
+
+OriginFieldTransformation: TypeAlias = Literal[
+    "trim_text",
+    "canonicalize_identifier",
+    "construct_product_variant",
+    "normalize_pack",
+    "resolve_public_url",
+    "decimal_currency_to_minor_units",
+    "normalize_availability",
+    "normalize_condition",
+    "normalize_seller_name",
+]
+
+
+class OriginFieldProvenance(TypedDict):
+    field_path: str
+    source_values: list[OriginSourceValueLocator]
+    transformations: list[OriginFieldTransformation]
+
+
 class ExtractedOriginOffer(TypedDict):
     evidence_kind: Literal["json_ld", "embedded_product_json", "product_meta"]
     source_block_index: int
@@ -1048,6 +1091,7 @@ class ExtractedOriginOffer(TypedDict):
     destination_eligibility: Literal["unknown"]
     landed_price_complete: Literal[False]
     extraction_gaps: list[str]
+    field_provenance: NotRequired[list[OriginFieldProvenance]]
 
 
 OfferConflictCode: TypeAlias = Literal[
@@ -1092,6 +1136,8 @@ class OfferDiscoveryMetadata(TypedDict):
 
 class OfferOriginEvidence(TypedDict):
     kind: Literal["json_ld", "embedded_product_json", "product_meta"]
+    artifact: NotRequired[Literal["static_http_body", "rendered_page"]]
+    version_receipt: NotRequired[str | None]
     content_digest: ContentDigest
     source_block_index: int
     jsonld_product_index: int
@@ -1111,6 +1157,138 @@ class LiveOfferSearchCandidate(TypedDict):
     gaps: list[str]
     reason_codes: list[str]
     checkout: NotRequired[CommerceCheckoutVerification]
+
+
+class LiveOfferSearchObservedPrice(TypedDict):
+    amount_minor: int
+    currency: str
+    basis: Literal["complete_landed_total", "item_price"]
+
+
+class LiveOfferSearchRejectedExplanation(TypedDict):
+    candidate_id: ContentDigest
+    origin_url: str
+    contender: Literal[False]
+    disposition: Literal["rejected"]
+    identity_state: Literal[
+        "exact",
+        "permitted_substitute",
+        "ambiguous",
+        "conflict",
+        "insufficient_identity",
+    ]
+    reason_codes: list[str]
+    gaps: list[str]
+    observed_price: LiveOfferSearchObservedPrice | None
+    cheaper_than_candidate_ids: list[ContentDigest]
+
+
+ProductCatalogIdentityAuthority: TypeAlias = Literal[
+    "manufacturer_catalog",
+    "authorized_registry",
+    "merchant_catalog",
+]
+
+ProductCatalogRecordReasonCode: TypeAlias = Literal[
+    "RECORD_SUPPORTS_IDENTITY",
+    "ANALYSIS_BINDING_MISMATCH",
+    "RECORD_DIGEST_INVALID",
+    "SOURCE_RIGHTS_NOT_ALLOWED",
+    "RECORD_NOT_CURRENT",
+    "MATCHED_CLUE_INVALID",
+    "IDENTITY_BINDING_NOT_IN_VARIANT",
+    "EXPLICIT_CONSTRAINT_CONFLICT",
+]
+
+
+class ProductCatalogIdentityRecordAssessment(TypedDict):
+    record_digest: ContentDigest
+    source_id: str
+    source_version_id: str
+    independence_group: str
+    authority: ProductCatalogIdentityAuthority
+    content_digest: ContentDigest
+    identity_binding_key: str
+    disposition: Literal["supports_identity", "rejected"]
+    reason_codes: list[ProductCatalogRecordReasonCode]
+
+
+ProductNameAttributeKey: TypeAlias = Literal[
+    "bundle",
+    "capacity",
+    "color",
+    "compatibility",
+    "condition",
+    "edition",
+    "material",
+    "quantity",
+    "size",
+    "unit",
+]
+
+
+class ProductNameModelProposedAliasAssessment(TypedDict):
+    kind: Literal[
+        "catalog_search_alias",
+        "brand_alias",
+        "family_alias",
+        "manufacturer_alias",
+    ]
+    value: str
+    disposition: Literal["discovery_only"]
+
+
+class ProductNameModelProposedAttributeAssessment(TypedDict):
+    key: ProductNameAttributeKey
+    value: str
+    unit: NotRequired[str]
+    disposition: Literal["corroborated_constraint", "unverified_candidate"]
+
+
+ProductNameModelProposalAssessmentReasonCode: TypeAlias = Literal[
+    "MODEL_PROPOSAL_NON_AUTHORITATIVE",
+    "ALIASES_DISCOVERY_ONLY",
+    "ATTRIBUTES_REQUIRE_SOURCE_VALIDATION",
+    "EXACT_IDENTITY_WITHHELD",
+]
+
+
+class ProductNameModelProposalAssessment(TypedDict):
+    proposal_id: ContentDigest
+    proposal_digest: ContentDigest
+    analysis_input_digest: ContentDigest
+    authority: Literal["non_authoritative"]
+    exact_identity: Literal[False]
+    material_state_changed: Literal[False]
+    aliases: list[ProductNameModelProposedAliasAssessment]
+    attributes: list[ProductNameModelProposedAttributeAssessment]
+    reason_codes: list[ProductNameModelProposalAssessmentReasonCode]
+
+
+ProductCatalogResolutionReasonCode: TypeAlias = Literal[
+    "CATALOG_EXACT_IDENTITY_RESOLVED",
+    "CATALOG_INPUT_AMBIGUOUS",
+    "CATALOG_IDENTITY_CONFLICT",
+    "CATALOG_INDEPENDENT_SUPPORT_INSUFFICIENT",
+    "CATALOG_AUTHORITATIVE_SOURCE_MISSING",
+    "CATALOG_RECORDS_UNUSABLE",
+    "MODEL_PROPOSALS_NON_AUTHORITATIVE",
+]
+
+
+class ProductCatalogIdentityResolution(TypedDict):
+    schema_revision: Literal[1]
+    resolver_version: Literal["catalog-identity/v1"]
+    analysis_input_digest: ContentDigest
+    resolution_state: Literal["exact_variant", "ambiguous", "insufficient_identity"]
+    exact_identity: bool
+    resolved_target: ProductTarget | None
+    resolved_variant: ProductVariant | None
+    supporting_record_digests: list[ContentDigest]
+    record_assessments: list[ProductCatalogIdentityRecordAssessment]
+    model_proposal_assessments: list[ProductNameModelProposalAssessment]
+    reason_codes: list[ProductCatalogResolutionReasonCode]
+    resolution_digest: ContentDigest
 
 
 class CommercePlannedSource(TypedDict):
@@ -1393,17 +1571,23 @@ class LiveOfferSearchResult(TypedDict):
     schema_revision: Literal[2]
     request_id: str
     request_digest: ContentDigest
+    # Digest after verified catalog resolution enriches a sparse target.
+    effective_request_digest: NotRequired[ContentDigest]
     status: Literal["complete", "partial", "failed"]
     action: OfferSearchAction
     stop_reason: OfferSearchStopReason
     query: str | None
     candidates: list[LiveOfferSearchCandidate]
+    # Rejected observations remain explainable but never enter contender ranking.
+    rejected_explanations: NotRequired[list[LiveOfferSearchRejectedExplanation]]
     source_attempts: list[CommerceLiveSourceAttempt]
     receipt: OfferSearchReceipt
     started_at: IsoTimestamp
     completed_at: IsoTimestamp
     # Auditable plan, rights, coverage, and attempted-source trace.
     acquisition: NotRequired[LiveOfferSearchAcquisitionTrace]
+    # Verified structured-catalog resolution, when the resolver was evaluated.
+    identity_resolution: NotRequired[ProductCatalogIdentityResolution]
     # Present only when the hosted server has a configured durable commerce lifecycle.
     lifecycle: NotRequired[CommerceOfferSearchLifecycle]
 
@@ -1495,12 +1679,15 @@ __all__ = [
     "CommerceActionTimeGateInput",
     "CommerceActionTimeGateResult",
     "CommerceAcquisitionSourceLedgerEntry",
+    "CommerceCheckoutDeliveryPromise",
     "CommerceCheckoutVerification",
     "CommerceOfferSearchLifecycle",
     "DecisionThreshold",
     "LiveOfferSearchAcquisitionTrace",
+    "LiveOfferSearchRejectedExplanation",
     "Materiality",
     "LiveOfferSearchResult",
+    "OriginFieldProvenance",
     "OfferSearchFinalEvent",
     "OfferSearchInput",
     "OfferSearchProgressEvent",
@@ -1512,5 +1699,6 @@ __all__ = [
     "ProofGateInput",
     "ProofGateResult",
     "ProofPacket",
+    "ProductCatalogIdentityResolution",
     "RecordRef",
 ]
