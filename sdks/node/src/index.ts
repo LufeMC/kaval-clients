@@ -1,5 +1,5 @@
 /**
- * @usekaval/kaval — the freshness gate for AI. A typed, dependency-light HTTP client for the kaval API.
+ * @usekaval/kaval — the evidence gate for AI agents. A typed, dependency-light HTTP client for the Kaval API.
  * Mirrors the Python SDK (`pip install kaval`). Uses the global `fetch` (Node 18+, browsers, edge).
  */
 
@@ -9,8 +9,20 @@ import type {
   ProofGateResult,
   ProofPacket,
 } from "./proof.js";
+import {
+  reviewOnlyCommerceActionTimeGateResult,
+  reviewOnlyOfferSearchProgressEvent,
+  reviewOnlyOfferSearchReplayEvent,
+  reviewOnlyOfferSearchResult,
+  type CommerceActionTimeGateInput,
+  type CommerceActionTimeGateResult,
+  type LiveOfferSearchResult,
+  type OfferSearchInput,
+  type OfferSearchStreamEvent,
+} from "./offer-search.js";
 
 export type * from "./proof.js";
+export type * from "./offer-search.js";
 
 export type VerdictStatus =
   | "current"
@@ -289,7 +301,7 @@ function requestSignal(
   };
 }
 
-/** The kaval client: a belief your system holds in, a typed freshness verdict out. */
+/** The Kaval client: evidence in, an action-bound decision or review-only research result out. */
 export class Kaval {
   private readonly base: string;
   private readonly headers: Record<string, string>;
@@ -373,16 +385,29 @@ export class Kaval {
     throw new Error("unreachable billable request state");
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
-    const res = await this.f(`${this.base}${path}`, {
-      method: "POST",
-      headers: this.headers,
-      // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
-      body: JSON.stringify(body),
-    });
-    const payload: unknown = await res.json().catch(() => null);
-    if (!res.ok) throw new KavalError(res.status, payload);
-    return payload as T;
+  private async post<T>(
+    path: string,
+    body: unknown,
+    options: Pick<RequestOptions, "signal" | "timeoutMs"> = {},
+  ): Promise<T> {
+    const request = requestSignal(
+      options.signal,
+      options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
+    );
+    try {
+      const res = await this.f(`${this.base}${path}`, {
+        method: "POST",
+        headers: this.headers,
+        signal: request.signal,
+        // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
+        body: JSON.stringify(body),
+      });
+      const payload: unknown = await res.json().catch(() => null);
+      if (!res.ok) throw new KavalError(res.status, payload);
+      return payload as T;
+    } finally {
+      request.cleanup();
+    }
   }
 
   /** Pre-action gate: the verdict plus `act`. Treat `act === false` as "re-fetch before relying on it". */
@@ -432,6 +457,253 @@ export class Kaval {
     options?: RequestOptions,
   ): Promise<MonitorResult> {
     return this.billablePost("/v1/monitor", input, options);
+  }
+
+  /** Search the accessible configured web for exact or possible offers. Current results are
+   * research-only: action.state is NEEDS_REVIEW or NO_RELIABLE_OFFER, never permission to quote. */
+  async searchOffers(
+    input: OfferSearchInput,
+    options?: RequestOptions,
+  ): Promise<LiveOfferSearchResult> {
+    const result = await this.billablePost<unknown>(
+      "/v1/search-offers",
+      input,
+      options,
+    );
+    return reviewOnlyOfferSearchResult(result, input.request_id);
+  }
+
+  /** Stream bounded, review-only acquisition progress followed by one canonical final result.
+   * Cancellation closes the response body and propagates to the hosted acquisition operation. */
+  async *streamOfferSearch(
+    input: OfferSearchInput,
+    options: RequestOptions = {},
+  ): AsyncGenerator<OfferSearchStreamEvent, LiveOfferSearchResult, void> {
+    const idempotencyKey = options.idempotencyKey ?? generatedIdempotencyKey();
+    const headers = {
+      ...this.headers,
+      accept: "text/event-stream",
+      "idempotency-key": idempotencyKey,
+    };
+    const request = requestSignal(
+      options.signal,
+      options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
+    );
+
+    let response: Response | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
+        try {
+          response = await this.f(`${this.base}/v1/search-offers`, {
+            method: "POST",
+            headers,
+            signal: request.signal,
+            body: JSON.stringify(input),
+          });
+        } catch (error) {
+          if (request.signal?.aborted || attempt + 1 >= MAX_BILLABLE_ATTEMPTS) {
+            throw attachIdempotencyKey(error, idempotencyKey);
+          }
+          continue;
+        }
+
+        if (response.ok) break;
+        const responseText = await response.text();
+        let payload: unknown = responseText;
+        try {
+          payload = JSON.parse(responseText);
+        } catch {
+          // A non-Kaval intermediary may return a plain-text error.
+        }
+        const code = apiErrorCode(payload);
+        if (
+          attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
+          code !== undefined &&
+          AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
+        ) {
+          response = undefined;
+          continue;
+        }
+        throw new KavalError(response.status, payload, idempotencyKey);
+      }
+
+      if (!response?.ok)
+        throw new Error("unreachable Offer Search stream request state");
+      if (
+        !response.headers.get("content-type")?.includes("text/event-stream")
+      ) {
+        throw attachIdempotencyKey(
+          new TypeError("Offer Search stream returned a non-SSE response"),
+          idempotencyKey,
+        );
+      }
+      if (!response.body) {
+        throw attachIdempotencyKey(
+          new TypeError("Offer Search stream response has no body"),
+          idempotencyKey,
+        );
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let lastSequence = -1;
+      let finalResult: LiveOfferSearchResult | undefined;
+      let streamRequestDigest: string | undefined;
+
+      const consumeFrame = (frame: string): OfferSearchStreamEvent | null => {
+        const lines = frame.split("\n");
+        const eventName = lines
+          .find((line) => line.startsWith("event:"))
+          ?.slice("event:".length)
+          .trim();
+        const idText = lines
+          .find((line) => line.startsWith("id:"))
+          ?.slice("id:".length)
+          .trim();
+        const dataText = lines
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice("data:".length).trimStart())
+          .join("\n");
+        if (!eventName || !dataText) return null;
+
+        let payload: unknown;
+        try {
+          payload = JSON.parse(dataText);
+        } catch (error) {
+          throw attachIdempotencyKey(error, idempotencyKey);
+        }
+        const id = idText === undefined ? undefined : Number(idText);
+        if (idText !== undefined && (!Number.isInteger(id) || id! < 0)) {
+          throw new TypeError("Offer Search stream event ID is invalid");
+        }
+
+        if (eventName === "error") {
+          const error = payload as { status?: unknown };
+          throw new KavalError(
+            typeof error?.status === "number" ? error.status : 500,
+            payload,
+            idempotencyKey,
+          );
+        }
+        if (eventName === "final") {
+          const result = reviewOnlyOfferSearchResult(payload, input.request_id);
+          if (
+            streamRequestDigest !== undefined &&
+            result.request_digest !== streamRequestDigest
+          ) {
+            throw new TypeError(
+              "Offer Search stream events are bound to another final result",
+            );
+          }
+          const sequence = Number.isInteger(id) ? id! : lastSequence + 1;
+          if (sequence <= lastSequence) {
+            throw new TypeError(
+              "Offer Search stream sequence is not monotonic",
+            );
+          }
+          lastSequence = sequence;
+          finalResult = result;
+          return { type: "final", sequence, result };
+        }
+
+        if (eventName === "replay") {
+          const event = reviewOnlyOfferSearchReplayEvent(
+            payload,
+            input.request_id,
+          );
+          if (
+            (id !== undefined && id !== event.sequence) ||
+            event.sequence <= lastSequence
+          ) {
+            throw new TypeError(
+              "Offer Search stream replay sequence is invalid",
+            );
+          }
+          if (
+            streamRequestDigest !== undefined &&
+            event.request_digest !== streamRequestDigest
+          ) {
+            throw new TypeError("Offer Search replay request binding changed");
+          }
+          streamRequestDigest = event.request_digest;
+          lastSequence = event.sequence;
+          return event;
+        }
+
+        const event = reviewOnlyOfferSearchProgressEvent(payload);
+        if (
+          event.type !== eventName ||
+          event.request_id !== input.request_id ||
+          (id !== undefined && id !== event.sequence) ||
+          event.sequence <= lastSequence
+        ) {
+          throw new TypeError(
+            "Offer Search stream event sequence or type is invalid",
+          );
+        }
+        if (event.type === "candidate_provisional") {
+          if (
+            streamRequestDigest !== undefined &&
+            event.details.request_digest !== streamRequestDigest
+          ) {
+            throw new TypeError(
+              "Offer Search provisional candidate request binding changed",
+            );
+          }
+          streamRequestDigest = event.details.request_digest;
+        }
+        lastSequence = event.sequence;
+        return event;
+      };
+
+      while (true) {
+        const chunk = await reader.read();
+        buffer =
+          `${buffer}${decoder.decode(chunk.value, { stream: !chunk.done })}`.replaceAll(
+            "\r\n",
+            "\n",
+          );
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = consumeFrame(frame);
+          if (event) yield event;
+          if (finalResult) return finalResult;
+          boundary = buffer.indexOf("\n\n");
+        }
+        if (chunk.done) break;
+      }
+
+      if (buffer.trim().length > 0) {
+        const event = consumeFrame(buffer);
+        if (event) yield event;
+        if (finalResult) return finalResult;
+      }
+      throw attachIdempotencyKey(
+        new TypeError("Offer Search stream ended before its final result"),
+        idempotencyKey,
+      );
+    } finally {
+      await reader?.cancel().catch(() => undefined);
+      request.cleanup();
+    }
+  }
+
+  /** Re-read one persisted offer generation at the exact action boundary. This final fence always
+   * returns REVIEW with commerce permission withheld; it never authorizes quoting or purchasing. */
+  async gateOfferSearch(
+    input: CommerceActionTimeGateInput,
+    options?: Pick<RequestOptions, "signal" | "timeoutMs">,
+  ): Promise<CommerceActionTimeGateResult> {
+    const result = await this.post<unknown>(
+      "/v1/search-offers/gate",
+      input,
+      options,
+    );
+    return reviewOnlyCommerceActionTimeGateResult(result, input);
   }
 
   /** Build, sign, and persist a complete action-bound proof packet. */
