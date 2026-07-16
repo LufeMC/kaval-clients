@@ -237,7 +237,7 @@ async function safe(fn: () => Promise<unknown>) {
  * underscores for client portability.
  */
 export function createMcpServer(client: Kaval): McpServer {
-  const server = new McpServer({ name: "kaval", version: "0.3.1" });
+  const server = new McpServer({ name: "kaval", version: "0.4.0" });
 
   // Find current evidence for the commerce workflow. This is deliberately incapable of granting
   // action permission while the hosted Offer Search surface remains shadow-grade.
