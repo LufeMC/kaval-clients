@@ -1,7 +1,7 @@
 [project]
 name = "kaval"
 version = "0.4.0"
-description = "Python SDK for Kaval evidence gates, review-only offer research, and action-bound decisions."
+description = "Python SDK for Kaval product research, review-only offer evidence, and action-bound decisions."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -23,14 +23,14 @@ Issues = "https://github.com/LufeMC/kaval-clients/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
-pydantic-ai = ["pydantic-ai>=1.44"]
+pydantic-ai = ["pydantic-ai>=1.44,<3"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-exclude = ["/.venv*", "/.pytest_cache", "/dist"]
+exclude = ["/.venv*", "/.pytest_cache", "/dist", "/uv.lock"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["kaval"]
@@ -38,3 +38,8 @@ packages = ["kaval"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.pyright]
+include = ["kaval"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"

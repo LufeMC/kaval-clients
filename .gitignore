@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 sdks/python/dist/
+sdks/python/uv.lock
 
 *.tgz
 .DS_Store

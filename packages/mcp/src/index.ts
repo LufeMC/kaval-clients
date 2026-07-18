@@ -6,3 +6,9 @@
  */
 export { createMcpServer } from "./server.js";
 export { createClientFromEnv } from "./env.js";
+export type {
+  CommerceLiveSourceAttempt,
+  LiveOfferSearchResult,
+  ProductResearchExecutionReceipt,
+  ProductResearchResult,
+} from "@usekaval/kaval";

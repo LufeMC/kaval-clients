@@ -62,6 +62,19 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-      - name: Test (hermetic contract tests)
-        run: pytest
+          pip install \
+            "build==1.5.0" \
+            "pydantic-ai==2.13.0" \
+            "pyright==1.1.411" \
+            "twine==6.2.0" \
+            -e ".[dev,pydantic-ai]"
+      - name: Test and typecheck
+        run: |
+          pytest
+          pyright --warnings
+      - name: Build and inspect publish artifacts
+        run: |
+          python -c 'from pathlib import Path; p = Path("uv.lock"); assert not p.exists(), "uv.lock must remain untracked"; p.write_text("CI exclusion sentinel\n", encoding="utf-8")'
+          python -m build
+          python -m twine check dist/*
+          python scripts/check_dist.py dist

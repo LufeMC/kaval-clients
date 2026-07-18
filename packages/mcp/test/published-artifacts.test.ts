@@ -51,6 +51,7 @@ describe("published tarballs (not workspace-linked kaval)", () => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toEqual(
         expect.arrayContaining([
+          "product_research",
           "currentness_verify",
           "currentness_check",
           "currentness_extract_and_check",
@@ -75,6 +76,19 @@ describe("published tarballs (not workspace-linked kaval)", () => {
     )) as typeof import("../src/server.js");
 
     const kaval = new Kaval({ apiKey: "kv_live_test", fetch: fakeKavalFetch });
+    const directResearch = await kaval.researchProducts({
+      query: "cordless framing nailer",
+    });
+    expect(directResearch.authority).toEqual({
+      mode: "review_only",
+      action_authorized: false,
+      permission: "withheld",
+    });
+    expect(directResearch.unverified_discoveries[0]).toMatchObject({
+      title: "Unverified web result",
+      listing_kind: "unknown",
+    });
+
     const server = createMcpServer(kaval);
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
@@ -86,6 +100,21 @@ describe("published tarballs (not workspace-linked kaval)", () => {
       server.connect(serverTransport),
       client.connect(clientTransport),
     ]);
+
+    const researchResult = await client.callTool({
+      name: "product_research",
+      arguments: { query: "cordless framing nailer" },
+    });
+    const research = parseToolText(researchResult);
+    expect(research.authority).toEqual({
+      mode: "review_only",
+      action_authorized: false,
+      permission: "withheld",
+    });
+    expect(research.unverified_discoveries?.[0]).toMatchObject({
+      title: "Unverified web result",
+      listing_kind: "unknown",
+    });
 
     const verifyResult = await client.callTool({
       name: "currentness_verify",

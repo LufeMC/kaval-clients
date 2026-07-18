@@ -1,0 +1,116 @@
+{
+  "schema_revision": 1,
+  "research_id": "product-research:fixture-1",
+  "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "operational_state": "partial",
+  "research_state": "no_verified_offers",
+  "authority": {
+    "mode": "review_only",
+    "action_authorized": false,
+    "permission": "withheld"
+  },
+  "interpretation": {
+    "schema_revision": 1,
+    "interpreter_version": "product-research-interpreter/1",
+    "original_query": "cordless framing nailer",
+    "normalized_query": "cordless framing nailer",
+    "query_class": "descriptive_product",
+    "identity_state": "candidate_only",
+    "listing_intent": ["purchase"],
+    "location_sensitive": false,
+    "accessory_ambiguous": false,
+    "clues": [],
+    "query_bundle": {
+      "version": "product-research-query/v1",
+      "queries": [
+        {
+          "query_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "kind": "literal",
+          "text": "cordless framing nailer",
+          "rationale_codes": ["CUSTOMER_QUERY"],
+          "authority": "discovery_only"
+        }
+      ]
+    }
+  },
+  "groups": [],
+  "unverified_discoveries": [
+    {
+      "discovery_id": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "title": "Unverified web result",
+      "origin_url": "https://merchant.example/products/framing-nailer",
+      "merchant_domain": "merchant.example",
+      "listing_kind": "unknown",
+      "relationship": "unknown",
+      "discovered_price": null,
+      "observed_at": "2026-07-16T12:00:01.000Z",
+      "discovered_by": ["search:fixture"],
+      "verification_tier": "discovered_unverified",
+      "possible_group_id": null,
+      "warning_codes": ["DISCOVERY_NOT_ORIGIN_VERIFIED"]
+    }
+  ],
+  "coverage": {
+    "claim": "bounded_not_comprehensive",
+    "state": "partial",
+    "source_ledger": [
+      {
+        "source_id": "search:fixture",
+        "family": "shopping_search",
+        "origin_domain": null,
+        "disposition": "failed",
+        "reason_code": "UPSTREAM_UNAVAILABLE",
+        "reason_codes": ["UPSTREAM_UNAVAILABLE"],
+        "calls": 1,
+        "outcome_counts": {
+          "succeeded": 0,
+          "empty": 0,
+          "failed": 1,
+          "blocked": 0,
+          "cancelled": 0,
+          "deferred": 0,
+          "unsearched": 0
+        },
+        "candidates_discovered": 1,
+        "verified_offers": 0,
+        "cost_micro_usd": 0,
+        "avoided_cost_micro_usd": 0
+      }
+    ],
+    "execution_receipt": {
+      "search_calls": 1,
+      "fetch_calls": 0,
+      "providers_configured": 1,
+      "providers_succeeded": 0,
+      "cost_micro_usd": 0,
+      "cost_basis": "reserved_ceiling",
+      "provider_estimated_cost_micro_usd": null,
+      "provider_estimated_cost_reported_search_calls": 0,
+      "discovery_cache_hits": 0,
+      "cost_avoided_micro_usd": 0,
+      "browser_attempt_count": 0,
+      "first_useful_candidate_ms": null,
+      "elapsed_ms": 2000
+    },
+    "source_families_attempted": ["shopping_search"],
+    "merchant_origins_attempted": 0,
+    "merchant_origins_succeeded": 0,
+    "verified_offer_count": 0,
+    "unverified_discovery_count": 1,
+    "product_group_count": 0,
+    "gap_codes": ["UPSTREAM_UNAVAILABLE"],
+    "stop_reason": "deadline_reached"
+  },
+  "warnings": [
+    {
+      "code": "BOUNDED_NOT_COMPREHENSIVE",
+      "message": "Only the configured bounded source set was checked.",
+      "scope": "coverage",
+      "subject_id": null
+    }
+  ],
+  "requested_refinements": [],
+  "started_at": "2026-07-16T12:00:00.000Z",
+  "completed_at": "2026-07-16T12:00:02.000Z",
+  "expires_at": "2026-07-16T13:00:00.000Z"
+}

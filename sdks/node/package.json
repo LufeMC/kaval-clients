@@ -2,7 +2,7 @@
   "name": "@usekaval/kaval",
   "version": "0.4.0",
   "license": "Apache-2.0",
-  "description": "Evidence gates for AI agents: review-only offer research and action-bound ALLOW/REVIEW/BLOCK decisions.",
+  "description": "Evidence gates for AI agents: product research, review-only offer evidence, and action-bound decisions.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

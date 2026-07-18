@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /** A fake `/v1/*` fetch that always rejects with the given product-API error envelope, so MCP tests can
  *  exercise the out-of-credit (402) / invalid-key (401) paths without the network or the engine. */
 export function failingKavalFetch(
@@ -11,6 +13,39 @@ export function failingKavalFetch(
       { status, headers: { "content-type": "application/json" } },
     );
 }
+
+export const fakeProductResearchRequest = {
+  query: "cordless framing nailer",
+  market: { country_code: "US", preferred_currency: "USD" },
+  filters: {
+    condition: "new",
+    merchant_policy: {
+      allowed_domains: [],
+      blocked_domains: [],
+      marketplace_policy: "exclude",
+    },
+  },
+};
+
+export const fakeProductResearchResult = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../fixtures/product-research-result-v1.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as Record<string, any>;
+
+export const fakeProductResearchDelivery = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../fixtures/product-research-delivery-v1.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as Record<string, any>;
 
 export const fakeOfferSearchRequest = {
   schema_revision: 1,
@@ -177,7 +212,27 @@ export const fakeOfferSearchResult = {
       },
     },
   ],
-  source_attempts: [],
+  source_attempts: [
+    {
+      sequence: 0,
+      kind: "origin_fetch",
+      call_attempted: true,
+      source_id: "retailer-origin",
+      provider: null,
+      query: null,
+      url: "https://retailer.test/makita-xph14z",
+      outcome: "succeeded",
+      error_code: null,
+      latency_ms: 84,
+      cost_micro_usd: 100,
+      reuse: "executed",
+      avoided_cost_micro_usd: 0,
+      result_count: 1,
+      http_status: 200,
+      bytes_received: 8_192,
+      browser_attempted: true,
+    },
+  ],
   receipt: {
     search_calls: 2,
     fetch_calls: 3,
@@ -189,6 +244,7 @@ export const fakeOfferSearchResult = {
     provider_estimated_cost_reported_search_calls: 0,
     discovery_cache_hits: 0,
     cost_avoided_micro_usd: 0,
+    browser_attempt_count: 1,
     elapsed_ms: 120,
   },
   started_at: "2026-07-15T00:00:00.000Z",
@@ -292,6 +348,9 @@ export const fakeKavalFetch: typeof fetch = async (input, init) => {
 
   let data: unknown;
   switch (path) {
+    case "/v1/product-research":
+      data = fakeProductResearchResult;
+      break;
     case "/v1/search-offers":
       data = fakeOfferSearchResult;
       break;
@@ -396,6 +455,15 @@ export function parseToolText(res: unknown): {
   proofId?: string;
   action_decision?: { decision?: string };
   action?: { state?: string; reason_codes?: string[] };
+  authority?: {
+    mode?: string;
+    action_authorized?: boolean;
+    permission?: string;
+  };
+  unverified_discoveries?: Array<{
+    title?: string;
+    listing_kind?: string;
+  }>;
   candidates?: Array<{
     disposition?: string;
     safe_to_quote?: boolean;

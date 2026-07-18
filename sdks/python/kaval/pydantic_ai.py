@@ -20,7 +20,7 @@ Requires the ``pydantic-ai`` extra: ``pip install "kaval[pydantic-ai]"``.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Optional, Sequence, TypeVar
+from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar
 
 from .client import KavalClient, VerifyMode
 
@@ -66,7 +66,7 @@ def verify_output(
     mode: VerifyMode = "fast",
     min_confidence: Optional[float] = None,
     freshness_sla: Optional[str] = None,
-) -> Callable[[OutputT], Any]:
+) -> Callable[[Any, OutputT], Awaitable[OutputT]]:
     """Build a Pydantic AI output validator that verifies the output's beliefs before returning.
 
     Args:

@@ -4,11 +4,20 @@ using httpx.MockTransport (no network)."""
 import json
 import uuid
 from pathlib import Path
+from threading import Event, Thread
+from typing import get_type_hints
 
 import httpx
 import pytest
 
-from kaval import KavalClient, KavalError
+from kaval import (
+    CommerceLiveSourceAttempt,
+    KavalCancellationToken,
+    KavalCancelledError,
+    KavalClient,
+    KavalError,
+    OfferSearchReceipt,
+)
 from kaval.client import DEFAULT_BASE_URL
 from kaval.models import (
     CalibrationSupportIdentity,
@@ -258,6 +267,16 @@ def test_offer_search_models_expose_checkout_and_acquisition_ledger_fields():
         "record_assessments",
         "resolution_digest",
     }
+    assert "NotRequired" in repr(
+        get_type_hints(CommerceLiveSourceAttempt, include_extras=True)[
+            "browser_attempted"
+        ]
+    )
+    assert "NotRequired" in repr(
+        get_type_hints(OfferSearchReceipt, include_extras=True)[
+            "browser_attempt_count"
+        ]
+    )
 
 
 def make_client(handler):
@@ -424,6 +443,92 @@ def test_search_offers_posts_exact_request_and_returns_review_only_result():
     assert result["action"]["state"] == "NEEDS_REVIEW"
 
 
+def test_search_offers_pre_cancel_skips_transport_and_retains_operation_key():
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=OFFER_RESULT)
+
+    token = KavalCancellationToken()
+    token.cancel("cancelled before offer search")
+    with make_client(handler) as client:
+        with pytest.raises(KavalCancelledError) as raised:
+            client.search_offers(
+                OFFER_REQUEST,
+                idempotency_key="offer-search-pre-cancel-0001",
+                cancellation_token=token,
+            )
+
+    assert calls == 0
+    assert raised.value.idempotency_key == "offer-search-pre-cancel-0001"
+
+
+def test_search_offers_inflight_cancel_releases_caller_without_retry():
+    response_body_started = Event()
+    release_response_body = Event()
+    response_closed = Event()
+    calls = 0
+
+    class BlockingResponseStream(httpx.SyncByteStream):
+        def __iter__(self):
+            response_body_started.set()
+            assert release_response_body.wait(3)
+            if not response_closed.is_set():
+                yield json.dumps(OFFER_RESULT).encode()
+
+        def close(self):
+            response_closed.set()
+            release_response_body.set()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=BlockingResponseStream(),
+        )
+
+    token = KavalCancellationToken()
+    outcome = []
+    client = make_client(handler)
+
+    def invoke() -> None:
+        try:
+            outcome.append(
+                client.search_offers(
+                    OFFER_REQUEST,
+                    idempotency_key="offer-search-inflight-cancel-0001",
+                    cancellation_token=token,
+                )
+            )
+        except BaseException as error:
+            outcome.append(error)
+
+    caller = Thread(target=invoke)
+    try:
+        caller.start()
+        assert response_body_started.wait(2)
+        token.cancel("caller cancelled offer search")
+        caller.join(2)
+
+        assert caller.is_alive() is False
+        assert response_closed.wait(2)
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], KavalCancelledError)
+        assert str(outcome[0]) == "caller cancelled offer search"
+        assert outcome[0].idempotency_key == (
+            "offer-search-inflight-cancel-0001"
+        )
+        assert calls == 1
+    finally:
+        release_response_body.set()
+        caller.join(2)
+        client.close()
+
+
 def test_search_offers_preserves_representative_strict_wire_fixture():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=REPRESENTATIVE_WIRE_RESULT)
@@ -449,7 +554,45 @@ def test_search_offers_preserves_representative_strict_wire_fixture():
         "latest_at": "2026-07-20T00:00:00.000Z",
     }
     assert result["lifecycle"]["action_time_gate"]["permission"] == "withheld"
+    assert result["source_attempts"][0]["browser_attempted"] is True
+    assert result["receipt"]["browser_attempt_count"] == 1
     assert "SAFE_TO_QUOTE" not in json.dumps(result)
+
+
+def test_search_offers_accepts_legacy_recording_without_browser_metrics():
+    payload = json.loads(json.dumps(REPRESENTATIVE_WIRE_RESULT))
+    del payload["source_attempts"][0]["browser_attempted"]
+    del payload["receipt"]["browser_attempt_count"]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with make_client(handler) as client:
+        assert client.search_offers(OFFER_REQUEST) == payload
+
+
+@pytest.mark.parametrize(
+    ("target", "value"),
+    [
+        ("attempt", "yes"),
+        ("count", -1),
+        ("count", 0.5),
+        ("count", 9_007_199_254_740_992),
+    ],
+)
+def test_search_offers_rejects_invalid_optional_browser_metrics(target, value):
+    payload = json.loads(json.dumps(REPRESENTATIVE_WIRE_RESULT))
+    if target == "attempt":
+        payload["source_attempts"][0]["browser_attempted"] = value
+    else:
+        payload["receipt"]["browser_attempt_count"] = value
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with make_client(handler) as client:
+        with pytest.raises(TypeError):
+            client.search_offers(OFFER_REQUEST)
 
 
 def test_search_offers_preserves_typed_checkout_and_acquisition_source_ledger():
@@ -520,6 +663,64 @@ def collect_offer_search_stream(stream):
             events.append(next(stream))
         except StopIteration as completed:
             return events, completed.value
+
+
+def test_stream_offer_search_inflight_cancel_closes_body_without_retry():
+    body_waiting = Event()
+    release_body = Event()
+    body_closed = Event()
+    calls = 0
+    accepted = {
+        "type": "accepted",
+        "sequence": 0,
+        "at": "2026-07-15T00:00:00.000Z",
+        "request_id": OFFER_REQUEST["request_id"],
+        "message": "admitted",
+        "authority": "research_only",
+        "action_state": "REVIEW",
+        "details": {},
+    }
+
+    class BlockingStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield offer_search_sse(("accepted", 0, accepted))
+            body_waiting.set()
+            assert release_body.wait(3)
+            if not body_closed.is_set():
+                yield offer_search_sse(("final", 1, OFFER_RESULT))
+
+        def close(self):
+            body_closed.set()
+            release_body.set()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=BlockingStream(),
+        )
+
+    token = KavalCancellationToken()
+    with make_client(handler) as client:
+        stream = client.stream_offer_search(
+            OFFER_REQUEST,
+            idempotency_key="offer-stream-inflight-cancel-0001",
+            cancellation_token=token,
+        )
+        assert next(stream)["type"] == "accepted"
+        assert body_waiting.wait(2)
+        token.cancel("caller cancelled offer stream")
+        assert body_closed.wait(2)
+        with pytest.raises(KavalCancelledError) as raised:
+            next(stream)
+
+    assert calls == 1
+    assert str(raised.value) == "caller cancelled offer stream"
+    assert raised.value.idempotency_key == (
+        "offer-stream-inflight-cancel-0001"
+    )
 
 
 def test_stream_offer_search_retries_only_before_stream_with_same_operation_key():
@@ -1030,6 +1231,28 @@ def test_search_offers_surfaces_not_created_lifecycle_as_review_only_absence():
     assert result["lifecycle"]["persistence"] == "not_created"
     assert result["lifecycle"]["action_time_gate"]["state"] == "not_found"
     assert result["lifecycle"]["action_time_gate"]["permission"] == "withheld"
+
+
+def test_gate_offer_search_pre_cancel_skips_transport():
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=OFFER_GATE_RESULT)
+
+    token = KavalCancellationToken()
+    token.cancel("cancelled before final fence")
+    with make_client(handler) as client:
+        with pytest.raises(KavalCancelledError) as raised:
+            client.gate_offer_search(
+                OFFER_GATE_REQUEST,
+                cancellation_token=token,
+            )
+
+    assert calls == 0
+    assert str(raised.value) == "cancelled before final fence"
+    assert raised.value.idempotency_key is None
 
 
 def test_gate_offer_search_posts_exact_final_fence_request_and_stays_review_only():

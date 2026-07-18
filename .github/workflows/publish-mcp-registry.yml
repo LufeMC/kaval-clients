@@ -69,11 +69,13 @@ jobs:
               ;;
           esac
 
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "identifier=$identifier" >> "$GITHUB_OUTPUT"
-          echo "registry_url=$registry_url" >> "$GITHUB_OUTPUT"
-          echo "published=$published" >> "$GITHUB_OUTPUT"
+          {
+            echo "name=$name"
+            echo "version=$version"
+            echo "identifier=$identifier"
+            echo "registry_url=$registry_url"
+            echo "published=$published"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Confirm the npm package is published
         if: steps.metadata.outputs.published != 'true'

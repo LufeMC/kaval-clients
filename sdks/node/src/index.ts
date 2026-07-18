@@ -20,9 +20,18 @@ import {
   type OfferSearchInput,
   type OfferSearchStreamEvent,
 } from "./offer-search.js";
+import {
+  reviewOnlyProductResearchProgressEvent,
+  reviewOnlyProductResearchReplayEvent,
+  reviewOnlyProductResearchResult,
+  type ProductResearchInput,
+  type ProductResearchResult,
+  type ProductResearchStreamEvent,
+} from "./product-research.js";
 
 export type * from "./proof.js";
 export type * from "./offer-search.js";
+export type * from "./product-research.js";
 
 export type VerdictStatus =
   | "current"
@@ -457,6 +466,248 @@ export class Kaval {
     options?: RequestOptions,
   ): Promise<MonitorResult> {
     return this.billablePost("/v1/monitor", input, options);
+  }
+
+  /** Research a product from ordinary product text. The canonical result is bounded,
+   * review-only evidence and never grants permission to quote, buy, or execute an action. */
+  async researchProducts(
+    input: ProductResearchInput,
+    options?: RequestOptions,
+  ): Promise<ProductResearchResult> {
+    const result = await this.billablePost<unknown>(
+      "/v1/product-research",
+      input,
+      options,
+    );
+    return reviewOnlyProductResearchResult(result, { query: input.query });
+  }
+
+  /** Stream canonical, contiguous Product Research events. A live stream begins with
+   * `accepted`; a durable same-key replay begins with `replay`. */
+  async *streamProductResearch(
+    input: ProductResearchInput,
+    options: RequestOptions = {},
+  ): AsyncGenerator<ProductResearchStreamEvent, ProductResearchResult, void> {
+    const idempotencyKey = options.idempotencyKey ?? generatedIdempotencyKey();
+    const headers = {
+      ...this.headers,
+      accept: "text/event-stream",
+      "idempotency-key": idempotencyKey,
+    };
+    const request = requestSignal(
+      options.signal,
+      options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
+    );
+
+    let response: Response | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
+        try {
+          response = await this.f(`${this.base}/v1/product-research`, {
+            method: "POST",
+            headers,
+            signal: request.signal,
+            body: JSON.stringify(input),
+          });
+        } catch (error) {
+          if (request.signal?.aborted || attempt + 1 >= MAX_BILLABLE_ATTEMPTS) {
+            throw attachIdempotencyKey(error, idempotencyKey);
+          }
+          continue;
+        }
+
+        if (response.ok) break;
+        const responseText = await response.text();
+        let payload: unknown = responseText;
+        try {
+          payload = JSON.parse(responseText);
+        } catch {
+          // A non-Kaval intermediary may return a plain-text error.
+        }
+        const code = apiErrorCode(payload);
+        if (
+          attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
+          code !== undefined &&
+          AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
+        ) {
+          response = undefined;
+          continue;
+        }
+        throw new KavalError(response.status, payload, idempotencyKey);
+      }
+
+      if (!response?.ok)
+        throw new Error("unreachable Product Research stream request state");
+      if (
+        !response.headers.get("content-type")?.includes("text/event-stream")
+      ) {
+        throw attachIdempotencyKey(
+          new TypeError("Product Research stream returned a non-SSE response"),
+          idempotencyKey,
+        );
+      }
+      if (!response.body) {
+        throw attachIdempotencyKey(
+          new TypeError("Product Research stream response has no body"),
+          idempotencyKey,
+        );
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let lastSequence = -1;
+      let lastObservedAt: number | undefined;
+      let streamResearchId: string | undefined;
+      let streamRequestDigest: string | undefined;
+      let terminal:
+        | {
+            kind: "completed" | "failed" | "cancelled";
+            result: ProductResearchResult;
+          }
+        | undefined;
+
+      const consumeFrame = (
+        frame: string,
+      ): ProductResearchStreamEvent | null => {
+        const lines = frame.split("\n");
+        const eventName = lines
+          .find((line) => line.startsWith("event:"))
+          ?.slice("event:".length)
+          .trim();
+        const idText = lines
+          .find((line) => line.startsWith("id:"))
+          ?.slice("id:".length)
+          .trim();
+        const dataText = lines
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice("data:".length).trimStart())
+          .join("\n");
+        if (!eventName || !dataText) return null;
+
+        let payload: unknown;
+        try {
+          payload = JSON.parse(dataText);
+        } catch (error) {
+          throw attachIdempotencyKey(error, idempotencyKey);
+        }
+
+        if (eventName === "error") {
+          const error = payload as { status?: unknown };
+          throw new KavalError(
+            typeof error?.status === "number" ? error.status : 500,
+            payload,
+            idempotencyKey,
+          );
+        }
+
+        if (idText === undefined || !/^(0|[1-9][0-9]*)$/u.test(idText)) {
+          throw new TypeError("Product Research stream event ID is invalid");
+        }
+        const id = Number(idText);
+        if (!Number.isSafeInteger(id) || id !== lastSequence + 1) {
+          throw new TypeError(
+            "Product Research stream sequence is not contiguous and zero-based",
+          );
+        }
+
+        if (eventName === "replay") {
+          const event = reviewOnlyProductResearchReplayEvent(payload);
+          if (
+            event.sequence !== id ||
+            (lastSequence === -1 && event.sequence !== 0) ||
+            (lastSequence !== -1 &&
+              (event.research_id !== streamResearchId ||
+                event.request_digest !== streamRequestDigest))
+          ) {
+            throw new TypeError(
+              "Product Research replay sequence or request binding is invalid",
+            );
+          }
+          if (lastSequence === -1) {
+            streamResearchId = event.research_id;
+            streamRequestDigest = event.request_digest;
+          }
+          lastSequence = event.sequence;
+          return event;
+        }
+
+        const event = reviewOnlyProductResearchProgressEvent(payload, {
+          ...(streamResearchId ? { research_id: streamResearchId } : {}),
+          ...(streamRequestDigest
+            ? { request_digest: streamRequestDigest }
+            : {}),
+          query: input.query,
+        });
+        if (event.type !== eventName || event.sequence !== id) {
+          throw new TypeError(
+            "Product Research stream event sequence or type is invalid",
+          );
+        }
+        if (lastSequence === -1 && event.type !== "accepted") {
+          throw new TypeError(
+            "Live Product Research progress must begin with accepted",
+          );
+        }
+        if (streamResearchId === undefined) {
+          streamResearchId = event.research_id;
+          streamRequestDigest = event.request_digest;
+        }
+        const observedAt = Date.parse(event.observed_at);
+        if (lastObservedAt !== undefined && observedAt < lastObservedAt) {
+          throw new TypeError(
+            "Product Research stream timestamps are not monotonic",
+          );
+        }
+        lastObservedAt = observedAt;
+        lastSequence = event.sequence;
+        if (
+          event.type === "completed" ||
+          event.type === "failed" ||
+          event.type === "cancelled"
+        ) {
+          terminal = { kind: event.type, result: event.result };
+        }
+        return event;
+      };
+
+      while (true) {
+        const chunk = await reader.read();
+        buffer =
+          `${buffer}${decoder.decode(chunk.value, { stream: !chunk.done })}`.replaceAll(
+            "\r\n",
+            "\n",
+          );
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = consumeFrame(frame);
+          if (event) yield event;
+          if (terminal) return terminal.result;
+          boundary = buffer.indexOf("\n\n");
+        }
+        if (chunk.done) break;
+      }
+
+      if (buffer.trim().length > 0) {
+        const event = consumeFrame(buffer);
+        if (event) yield event;
+        if (terminal) return terminal.result;
+      }
+      throw attachIdempotencyKey(
+        new TypeError(
+          "Product Research stream ended before a canonical terminal event",
+        ),
+        idempotencyKey,
+      );
+    } catch (error) {
+      throw attachIdempotencyKey(error, idempotencyKey);
+    } finally {
+      await reader?.cancel().catch(() => undefined);
+      request.cleanup();
+    }
   }
 
   /** Search the accessible configured web for exact or possible offers. Current results are

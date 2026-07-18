@@ -95,18 +95,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Test (hermetic contract tests)
+      - name: Install test and package tooling
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install \
+            "build==1.5.0" \
+            "pydantic-ai==2.13.0" \
+            "pyright==1.1.411" \
+            "twine==6.2.0" \
+            -e ".[dev,pydantic-ai]"
+      - name: Test and typecheck
+        run: |
           pytest
+          pyright --warnings
       - name: Assert git tag matches pyproject.toml version
         if: startsWith(github.ref, 'refs/tags/')
         run: test "v$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")" = "$GITHUB_REF_NAME"
-      - name: Build sdist + wheel
+      - name: Build and inspect publish artifacts
         run: |
-          python -m pip install --upgrade build
+          python -c 'from pathlib import Path; p = Path("uv.lock"); assert not p.exists(), "uv.lock must remain untracked"; p.write_text("release exclusion sentinel\n", encoding="utf-8")'
           python -m build
+          python -m twine check dist/*
+          python scripts/check_dist.py dist
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

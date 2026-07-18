@@ -1,0 +1,47 @@
+{
+  "checkout_status": "verified",
+  "research_request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "request_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "origin_url": "https://merchant.example/products/framing-nailer",
+  "source_id": "checkout:merchant",
+  "adapter_revision": "checkout-merchant/1",
+  "execution_mode": "live",
+  "version_receipt": "checkout-merchant/1:quote-42",
+  "destination_eligibility": "eligible",
+  "availability": "in_stock",
+  "seller_authorized": true,
+  "delivery_promise": {
+    "certainty": "estimated",
+    "earliest_at": "2026-07-17T12:00:00.000Z",
+    "latest_at": "2026-07-18T12:00:00.000Z"
+  },
+  "item_price": {
+    "amount_minor": 19900,
+    "currency": "USD"
+  },
+  "shipping_price": {
+    "amount_minor": 500,
+    "currency": "USD"
+  },
+  "tax_price": {
+    "amount_minor": 1650,
+    "currency": "USD"
+  },
+  "mandatory_fees": {
+    "amount_minor": 0,
+    "currency": "USD"
+  },
+  "declared_landed_total": {
+    "amount_minor": 22050,
+    "currency": "USD"
+  },
+  "calculated_landed_total": {
+    "amount_minor": 22050,
+    "currency": "USD"
+  },
+  "landed_price_state": "complete",
+  "quote_id": "quote-42",
+  "evidence_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "observed_at": "2026-07-16T12:00:02.000Z",
+  "expires_at": "2026-07-16T12:30:00.000Z"
+}
