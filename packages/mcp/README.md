@@ -46,6 +46,7 @@ It speaks MCP over stdio. Point any MCP client at it.
 
 | Tool                            | What it does                                                                                             |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `product_research`              | Research ordinary product text with canonical groups, prices, and bounded coverage. Review-only.         |
 | `offer_search`                  | Find exact/possible offer evidence. Review-only: never `ALLOW` or `SAFE_TO_QUOTE`.                       |
 | `offer_search_gate`             | Final-fence one persisted offer generation. Always `REVIEW` with permission withheld.                    |
 | `currentness_verify`            | Pre-action gate: returns `act` (boolean) + a typed verdict + proof. Call before acting on a held belief. |
@@ -56,6 +57,18 @@ It speaks MCP over stdio. Point any MCP client at it.
 | `proof_audit`                   | Build a complete action-bound ProofPacket with exact evidence, policy, lineage, risk, and expiry.        |
 | `proof_gate`                    | Apply a durable proof to the exact action and return staged enforcement without repeating research.      |
 | `report_outcome`                | Report what actually happened for a prior check so the service can calibrate.                            |
+
+`product_research` is Kaval's primary product-only workflow. It needs only a product query; market,
+destination, and filters are optional, while execution budgets remain server-owned. It returns the
+same canonical review-only result as REST, Node, and Python. When the MCP caller requests progress,
+the tool consumes ordered Product Research SSE and forwards accepted, interpreted, source,
+candidate, group, failed, cancelled, and replay events as `notifications/progress`, including the
+full canonical event under `usekaval.com/product-research-progress`. Every completed, failed, or
+cancelled terminal carries its exact canonical result; the tool returns that result directly without
+a follow-up JSON request. Transport errors remain errors, and cancellation propagates to the active
+operation. Authority remains `{ mode: "review_only", action_authorized: false, permission:
+"withheld" }`. The underlying client rejects verified offers and candidate progress whose material
+fields are not bound to the same tier, origin URL, observation, and exact evidence receipt.
 
 `offer_search` resolves the requested product across permitted, accessible configured catalogs,
 feeds, retailer/search workers, origin pages, browser-rendered DOM, and checkout resolvers. It

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { KavalError, type Kaval } from "@usekaval/kaval";
 import { z } from "zod";
@@ -49,6 +50,48 @@ const httpUrlInput = z
       !parsed.password
     );
   }, "must be an http(s) URL");
+const PRODUCT_RESEARCH_URL_PREFIX = /^[a-z][a-z0-9+.-]*:\/\//iu;
+const SECRET_URL_PARAMETER =
+  /(?:^|[_-])(?:api[_-]?key|auth|authorization|credential|password|secret|sig(?:nature)?|token)(?:$|[_-])/iu;
+
+function fragmentParameters(fragment: string): URLSearchParams | null {
+  const value = fragment.replace(/^#/u, "");
+  if (!value.includes("=")) return null;
+  const queryIndex = value.indexOf("?");
+  return new URLSearchParams(
+    queryIndex === -1 ? value : value.slice(queryIndex + 1),
+  );
+}
+
+function credentialSafeProductResearchQuery(value: string): boolean {
+  if (!PRODUCT_RESEARCH_URL_PREFIX.test(value)) return true;
+  try {
+    const url = new URL(value);
+    const fragment = fragmentParameters(url.hash);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      !url.username &&
+      !url.password &&
+      ![...url.searchParams.keys()].some((key) =>
+        SECRET_URL_PARAMETER.test(key),
+      ) &&
+      (fragment === null ||
+        ![...fragment.keys()].some((key) => SECRET_URL_PARAMETER.test(key)))
+    );
+  } catch {
+    return false;
+  }
+}
+
+const productResearchQueryInput = z
+  .string()
+  .trim()
+  .min(2)
+  .max(1_000)
+  .refine(
+    credentialSafeProductResearchQuery,
+    "a whole-query URL must use HTTP(S) and cannot contain credentials or secret URL parameters",
+  );
 const productIdentifierSchemeInput = z.enum([
   "gtin",
   "upc",
@@ -99,8 +142,104 @@ const packSpecInput = z
     units_per_item: z.number().finite().positive().optional(),
     unit: z.string().min(1).max(128).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (pack) => (pack.units_per_item === undefined) === (pack.unit === undefined),
+    {
+      message: "units_per_item and unit must be supplied together",
+    },
+  );
 const commerceDigestInput = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+const merchantDomainInput = z
+  .string()
+  .trim()
+  .min(1)
+  .max(253)
+  .refine((value) => value === value.toLowerCase(), {
+    message: "merchant domains must be lowercase",
+  })
+  .refine((value) => {
+    try {
+      return new URL(`https://${value}`).hostname === value;
+    } catch {
+      return false;
+    }
+  }, "merchant domain must be a valid hostname");
+const productResearchListingKindInput = z.enum([
+  "purchase",
+  "rental",
+  "quote_only",
+]);
+const productResearchPriceFilterInput = z
+  .object({
+    currency: z.string().regex(/^[A-Z]{3}$/u),
+    minimum_amount_minor: z.number().int().safe().nonnegative().optional(),
+    maximum_amount_minor: z.number().int().safe().nonnegative().optional(),
+  })
+  .strict()
+  .refine(
+    (price) =>
+      price.minimum_amount_minor === undefined ||
+      price.maximum_amount_minor === undefined ||
+      price.minimum_amount_minor <= price.maximum_amount_minor,
+    {
+      path: ["maximum_amount_minor"],
+      message: "maximum price cannot be below minimum price",
+    },
+  );
+const productResearchFiltersInput = z
+  .object({
+    condition: productConditionInput.optional(),
+    pack: packSpecInput.optional(),
+    brand: z.string().trim().min(1).max(256).optional(),
+    model: z.string().trim().min(1).max(256).optional(),
+    merchant_policy: z
+      .object({
+        allowed_domains: z.array(merchantDomainInput).max(1_000),
+        blocked_domains: z.array(merchantDomainInput).max(1_000),
+        marketplace_policy: z.enum(["allow", "exclude"]),
+      })
+      .strict()
+      .superRefine((policy, ctx) => {
+        if (
+          new Set(policy.allowed_domains).size !== policy.allowed_domains.length
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["allowed_domains"],
+            message: "allowed merchant domains must be unique",
+          });
+        }
+        if (
+          new Set(policy.blocked_domains).size !== policy.blocked_domains.length
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["blocked_domains"],
+            message: "blocked merchant domains must be unique",
+          });
+        }
+        const allowed = new Set(policy.allowed_domains);
+        if (policy.blocked_domains.some((domain) => allowed.has(domain))) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["blocked_domains"],
+            message: "a merchant domain cannot be both allowed and blocked",
+          });
+        }
+      })
+      .optional(),
+    listing_kinds: z
+      .array(productResearchListingKindInput)
+      .min(1)
+      .max(3)
+      .refine((values) => new Set(values).size === values.length, {
+        message: "listing kinds must be unique",
+      })
+      .optional(),
+    price: productResearchPriceFilterInput.optional(),
+  })
+  .strict();
 const commerceActionBindingInput = z
   .object({
     action_slot_key: z.string().trim().min(1).max(512),
@@ -238,6 +377,98 @@ async function safe(fn: () => Promise<unknown>) {
  */
 export function createMcpServer(client: Kaval): McpServer {
   const server = new McpServer({ name: "kaval", version: "0.4.0" });
+
+  // Kaval's primary product-only workflow. It returns bounded comparison evidence and remains
+  // deliberately incapable of granting action authority.
+  server.registerTool(
+    "product_research",
+    {
+      description:
+        "Research an ordinary product query across the configured bounded source system. No ZIP, manufacturer, model, or identifier is required. Returns canonical exact/possible/conflicting product groups, item prices, availability, source links, unverified discoveries, refinements, warnings, and an explicit bounded-not-comprehensive coverage ledger. This tool is review-only: authority.permission is always withheld and it NEVER authorizes quoting, purchasing, checkout, or another action.",
+      inputSchema: {
+        query: productResearchQueryInput,
+        vertical: z.string().trim().min(1).max(128).optional(),
+        market: z
+          .object({
+            country_code: z.string().regex(/^[A-Z]{2}$/u),
+            preferred_currency: z.string().regex(/^[A-Z]{3}$/u),
+          })
+          .strict()
+          .optional(),
+        destination: z
+          .object({
+            country_code: z.string().regex(/^[A-Z]{2}$/u),
+            region: z.string().trim().min(1).max(128).optional(),
+            postal_code: z.string().trim().min(1).max(32).optional(),
+          })
+          .strict()
+          .optional(),
+        filters: productResearchFiltersInput.optional(),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...args }, extra) =>
+      safe(async () => {
+        const input = args as Parameters<Kaval["researchProducts"]>[0];
+        const progressToken = extra._meta?.progressToken;
+        if (progressToken === undefined) {
+          return client.researchProducts(
+            input,
+            transportOptions(idempotency_key, extra.signal),
+          );
+        }
+
+        // Generate one operation key so the progress stream and its embedded terminal result stay
+        // bound to the same durable Product Research operation.
+        const operationKey = idempotency_key ?? randomUUID();
+        const options = transportOptions(operationKey, extra.signal);
+        let finalResult:
+          Awaited<ReturnType<Kaval["researchProducts"]>> | undefined;
+        for await (const event of client.streamProductResearch(
+          input,
+          options,
+        )) {
+          if (event.type === "completed") {
+            finalResult = event.result;
+            continue;
+          }
+          if (event.type === "failed" || event.type === "cancelled") {
+            finalResult = event.result;
+          }
+          const message =
+            event.type === "replay"
+              ? "replay: returning the durable review-only Product Research result"
+              : event.type === "accepted"
+                ? `accepted: ${event.query}`
+                : event.type === "source_progress"
+                  ? `source_progress: ${event.source_id} ${event.state}`
+                  : event.type === "candidate_observed"
+                    ? `candidate_observed: ${event.candidate.product_name}`
+                    : event.type === "group_updated"
+                      ? `group_updated: ${event.group.product_name}`
+                      : event.type === "interpreted"
+                        ? `interpreted: ${event.interpretation.normalized_query}`
+                        : event.type === "failed"
+                          ? `failed: ${event.error_code}`
+                          : `cancelled: ${event.reason_code}`;
+          await extra.sendNotification({
+            method: "notifications/progress",
+            params: {
+              progressToken,
+              progress: event.sequence,
+              message,
+              _meta: {
+                "usekaval.com/product-research-progress": event,
+              },
+            },
+          });
+        }
+        if (finalResult) return finalResult;
+        throw new TypeError(
+          "Product Research stream ended without a canonical terminal state",
+        );
+      }),
+  );
 
   // Find current evidence for the commerce workflow. This is deliberately incapable of granting
   // action permission while the hosted Offer Search surface remains shadow-grade.

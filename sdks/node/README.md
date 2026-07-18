@@ -23,6 +23,42 @@ const { Kaval } = await import("@usekaval/kaval");
 `require(esm)` support). On Node 18, use `import` / `await import()` instead — `engines.node` is
 `>=18` for ESM + `fetch`, not for CJS require.
 
+## Research products from ordinary text (review-only)
+
+```ts
+import { Kaval, type ProductResearchInput } from "@usekaval/kaval";
+
+const input: ProductResearchInput = {
+  query: "cordless framing nailer",
+  market: { country_code: "US", preferred_currency: "USD" },
+  filters: { condition: "new", listing_kinds: ["purchase"] },
+};
+const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
+const result = await kaval.researchProducts(input);
+
+for await (const event of kaval.streamProductResearch(input)) {
+  if (event.type === "candidate_observed") renderCandidate(event.candidate);
+  if (event.type === "group_updated") renderGroup(event.group);
+  if (event.type === "completed") renderResult(event.result);
+}
+```
+
+The public input deliberately excludes execution limits: authenticated workspace policy assigns
+budgets server-side. JSON may return `complete`, `partial`, `failed`, or `cancelled` canonical
+results. Live SSE is contiguous and zero-based, begins with `accepted`, and ends with `completed`,
+`failed`, or `cancelled`; a same-key durable replay is explicitly `replay` then `completed`.
+Every terminal event carries its exact canonical result, and `streamProductResearch()` returns that
+result for completed, failed, and cancelled outcomes. Genuine transport and typed SSE errors still
+throw. The client rejects sequence, timestamp, request-binding, shape, and authority drift before
+exposing data. Every result carries `authority: { mode: "review_only", action_authorized: false,
+permission: "withheld" }` and cannot authorize quoting, purchasing, checkout, or any action.
+Verified offers and candidate progress also fail closed unless every published material field has a
+unique exact evidence binding to the same tier, origin URL, observation, and receipt; merchant
+hostnames and listing-specific price semantics must match.
+
+Both methods accept `{ idempotencyKey?, signal?, timeoutMs? }`. A transport retry is bounded to the
+pre-stream boundary and reuses the same key; cancellation closes the response body.
+
 ## Find current offer evidence (review-only)
 
 ```ts
@@ -283,7 +319,7 @@ await kaval.monitor({ beliefs, webhook: "https://your-app.com/hooks/stale" });
 
 ## API
 
-`searchOffers` · `streamOfferSearch` · `gateOfferSearch` · `audit` · `gateAction` (`gate` alias) · `verify` · `check` · `extractAndCheck` · `scanStore` ·
+`researchProducts` · `streamProductResearch` · `searchOffers` · `streamOfferSearch` · `gateOfferSearch` · `audit` · `gateAction` (`gate` alias) · `verify` · `check` · `extractAndCheck` · `scanStore` ·
 `monitor` · `reportOutcome` · `kaval` · `kavalBatch` · `health`. Billable methods accept a final
 `{ idempotencyKey?, signal?, timeoutMs? }` request-options argument (`kavalBatch` includes it alongside
 `concurrency`). Construct with `{ apiKey, baseUrl?, fetch?, timeoutMs? }` — `baseUrl` defaults to

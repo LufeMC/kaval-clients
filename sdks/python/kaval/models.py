@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal, TypeAlias
-
-try:  # Python 3.11+
-    from typing import NotRequired, TypedDict
-except ImportError:  # pragma: no cover - Python 3.10 uses the declared backport dependency
-    from typing_extensions import NotRequired, TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 IsoTimestamp: TypeAlias = str
 ContentDigest: TypeAlias = str
@@ -116,7 +112,13 @@ CanonicalClaimType: TypeAlias = Literal[
     "generic",
 ]
 ClaimModality: TypeAlias = Literal[
-    "asserted", "scheduled", "forecast", "conditional", "opinion", "alleged", "estimated"
+    "asserted",
+    "scheduled",
+    "forecast",
+    "conditional",
+    "opinion",
+    "alleged",
+    "estimated",
 ]
 
 
@@ -334,7 +336,9 @@ class SourceVersion(TypedDict):
     canonical_url: NotRequired[str]
     raw_artifact: RawArtifactMetadata
     http: NotRequired[HttpArtifactMetadata]
-    version_state: Literal["active", "superseded", "corrected", "retracted", "unavailable"]
+    version_state: Literal[
+        "active", "superseded", "corrected", "retracted", "unavailable"
+    ]
     published_at: NotRequired[IsoTimestamp]
     modified_at: NotRequired[IsoTimestamp]
     observed_at: IsoTimestamp
@@ -395,7 +399,13 @@ class MediaLocator(TypedDict):
 
 
 EvidenceLocator: TypeAlias = (
-    TextLocator | JsonLocator | HtmlLocator | PdfLocator | TableLocator | RecordLocator | MediaLocator
+    TextLocator
+    | JsonLocator
+    | HtmlLocator
+    | PdfLocator
+    | TableLocator
+    | RecordLocator
+    | MediaLocator
 )
 
 
@@ -734,7 +744,11 @@ ProofGateState: TypeAlias = Literal[
     "operational_failure",
 ]
 ProofBillingClass: TypeAlias = Literal[
-    "action_gate", "direct_refresh", "web_refresh", "deep_refresh", "operational_failure"
+    "action_gate",
+    "direct_refresh",
+    "web_refresh",
+    "deep_refresh",
+    "operational_failure",
 ]
 
 
@@ -775,7 +789,11 @@ ProductCondition: TypeAlias = Literal[
     "unknown",
 ]
 SellerKind: TypeAlias = Literal[
-    "brand_direct", "authorized_retailer", "marketplace", "independent_retailer", "unknown"
+    "brand_direct",
+    "authorized_retailer",
+    "marketplace",
+    "independent_retailer",
+    "unknown",
 ]
 
 
@@ -872,7 +890,10 @@ class VariantSubstitution(TypedDict):
 
 
 PermittedSubstitution: TypeAlias = (
-    AttributeSubstitution | PackSubstitution | ConditionSubstitution | VariantSubstitution
+    AttributeSubstitution
+    | PackSubstitution
+    | ConditionSubstitution
+    | VariantSubstitution
 )
 
 
@@ -883,7 +904,9 @@ class OfferDestination(TypedDict):
 
 
 class OfferMatchPolicy(TypedDict):
-    identity_requirement: Literal["shared_identifier", "shared_identifier_or_complete_attributes"]
+    identity_requirement: Literal[
+        "shared_identifier", "shared_identifier_or_complete_attributes"
+    ]
     required_identifier_schemes: list[ProductIdentifierScheme]
     required_attribute_keys: list[str]
     permitted_substitutions: list[PermittedSubstitution]
@@ -1121,7 +1144,13 @@ OfferConflictCode: TypeAlias = Literal[
 
 
 class OfferMatchAssessment(TypedDict):
-    state: Literal["exact", "permitted_substitute", "ambiguous", "conflict", "insufficient_identity"]
+    state: Literal[
+        "exact",
+        "permitted_substitute",
+        "ambiguous",
+        "conflict",
+        "insufficient_identity",
+    ]
     conflict_codes: list[OfferConflictCode]
     matched_identifier_schemes: list[ProductIdentifierScheme]
     matched_attribute_keys: list[str]
@@ -1534,6 +1563,7 @@ class CommerceLiveSourceAttempt(TypedDict):
     result_count: int | None
     http_status: int | None
     bytes_received: int | None
+    browser_attempted: NotRequired[bool]
 
 
 OfferSearchStopReason: TypeAlias = Literal[
@@ -1564,6 +1594,7 @@ class OfferSearchReceipt(TypedDict):
     provider_estimated_cost_reported_search_calls: int
     discovery_cache_hits: int
     cost_avoided_micro_usd: int
+    browser_attempt_count: NotRequired[int]
     elapsed_ms: int
 
 
@@ -1669,6 +1700,727 @@ OfferSearchStreamEvent: TypeAlias = (
 )
 
 
+ProductResearchListingKind: TypeAlias = Literal["purchase", "rental", "quote_only"]
+ProductResearchObservedListingKind: TypeAlias = Literal[
+    "purchase", "rental", "quote_only", "unknown"
+]
+ProductResearchRelationship: TypeAlias = Literal[
+    "primary_product",
+    "substitute",
+    "accessory",
+    "replacement_part",
+    "consumable",
+    "unknown",
+]
+ProductResearchMatchStatus: TypeAlias = Literal["exact", "possible", "conflicting"]
+ProductResearchVerificationTier: TypeAlias = Literal[
+    "origin_verified", "structured_source_verified", "discovered_unverified"
+]
+ProductResearchSourceFamily: TypeAlias = Literal[
+    "catalog", "merchant_feed", "retailer_origin", "shopping_search", "open_web"
+]
+
+
+class ProductResearchMarket(TypedDict):
+    country_code: str
+    preferred_currency: str
+
+
+class ProductResearchMerchantPolicy(TypedDict):
+    allowed_domains: list[str]
+    blocked_domains: list[str]
+    marketplace_policy: Literal["allow", "exclude"]
+
+
+class ProductResearchPriceFilter(TypedDict):
+    currency: str
+    minimum_amount_minor: NotRequired[int]
+    maximum_amount_minor: NotRequired[int]
+
+
+class ProductResearchFilters(TypedDict):
+    condition: NotRequired[ProductCondition]
+    pack: NotRequired[PackSpec]
+    brand: NotRequired[str]
+    model: NotRequired[str]
+    merchant_policy: NotRequired[ProductResearchMerchantPolicy]
+    listing_kinds: NotRequired[list[ProductResearchListingKind]]
+    price: NotRequired[ProductResearchPriceFilter]
+
+
+class _ProductResearchRequiredInput(TypedDict):
+    query: str
+
+
+class ProductResearchInput(_ProductResearchRequiredInput, total=False):
+    """Public product-only request. Execution limits are assigned by the server."""
+
+    vertical: str
+    market: ProductResearchMarket
+    destination: OfferDestination
+    filters: ProductResearchFilters
+
+
+ProductResearchRequest: TypeAlias = ProductResearchInput
+
+
+class ProductResearchEvidenceSpan(TypedDict):
+    encoding: Literal["utf16_code_unit"]
+    start: int
+    end: int
+    text: str
+
+
+class ProductResearchClueProvenance(TypedDict):
+    source: Literal["query_text", "request_filter", "model_proposal"]
+    field: str
+    span: NotRequired[ProductResearchEvidenceSpan]
+
+
+class ProductResearchClue(TypedDict):
+    clue_id: str
+    kind: Literal[
+        "brand",
+        "manufacturer",
+        "family",
+        "model_like",
+        "identifier",
+        "dimension",
+        "gauge",
+        "thread",
+        "voltage",
+        "power_source",
+        "capacity",
+        "material",
+        "color",
+        "compatibility",
+        "included_component",
+        "performance_rating",
+        "pack",
+        "condition",
+        "purchase_intent",
+        "rental_intent",
+        "quote_intent",
+        "accessory_intent",
+        "location_sensitive",
+        "search_phrase",
+    ]
+    value: str
+    normalized_value: str
+    unit: NotRequired[str]
+    identifier: NotRequired[ProductIdentifier]
+    authority: Literal["asserted", "retrieval_only"]
+    provenance: ProductResearchClueProvenance
+
+
+class ProductResearchPlannedQuery(TypedDict):
+    query_id: ContentDigest
+    kind: Literal[
+        "literal",
+        "normalized",
+        "exact_identifier",
+        "brand_model",
+        "attribute",
+        "commercial",
+        "construction_expansion",
+        "rental",
+        "quote",
+    ]
+    text: str
+    rationale_codes: list[str]
+    authority: Literal["discovery_only"]
+
+
+class ProductResearchQueryBundle(TypedDict):
+    version: Literal["product-research-query/v1"]
+    queries: list[ProductResearchPlannedQuery]
+
+
+class ProductResearchQueryInterpretation(TypedDict):
+    schema_revision: Literal[1]
+    interpreter_version: str
+    original_query: str
+    normalized_query: str
+    query_class: Literal[
+        "exact_identifier",
+        "brand_model_description",
+        "descriptive_product",
+        "commodity_local",
+        "rental_or_quote",
+        "ambiguous",
+    ]
+    identity_state: Literal["asserted_identifier", "candidate_only", "ambiguous"]
+    listing_intent: list[ProductResearchListingKind]
+    location_sensitive: bool
+    accessory_ambiguous: bool
+    clues: list[ProductResearchClue]
+    query_bundle: ProductResearchQueryBundle
+
+
+class ProductResearchPerItemPriceBasis(TypedDict):
+    kind: Literal["per_orderable_item"]
+
+
+class ProductResearchPerPackPriceBasis(TypedDict):
+    kind: Literal["per_pack"]
+    pack_count: int
+
+
+class ProductResearchPerUnitPriceBasis(TypedDict):
+    kind: Literal["per_unit"]
+    quantity: float
+    unit: str
+
+
+class ProductResearchRentalPriceBasis(TypedDict):
+    kind: Literal["rental_period"]
+    duration: float
+    unit: Literal["hour", "day", "week", "month"]
+
+
+ProductResearchPriceBasis: TypeAlias = (
+    ProductResearchPerItemPriceBasis
+    | ProductResearchPerPackPriceBasis
+    | ProductResearchPerUnitPriceBasis
+    | ProductResearchRentalPriceBasis
+)
+
+ProductResearchPriceQualifier: TypeAlias = Literal[
+    "unknown",
+    "standard",
+    "list",
+    "sale",
+    "member",
+    "subscription",
+    "coupon",
+    "trade_in",
+    "installment",
+    "estimated",
+]
+
+
+class ProductResearchPrice(TypedDict):
+    amount: Money
+    basis: ProductResearchPriceBasis
+    qualifiers: list[ProductResearchPriceQualifier]
+    shipping_included: bool | None
+    tax_included: bool | None
+
+
+class ProductResearchDeliveryPromise(TypedDict):
+    certainty: Literal["guaranteed", "estimated"]
+    earliest_at: IsoTimestamp
+    latest_at: IsoTimestamp
+
+
+class ProductResearchDeliveryEvidence(TypedDict):
+    checkout_status: Literal["verified", "review_required", "rejected"]
+    research_request_digest: ContentDigest
+    request_digest: ContentDigest
+    origin_url: str
+    source_id: str
+    adapter_revision: str
+    execution_mode: Literal["live", "recorded_fixture"]
+    version_receipt: str
+    destination_eligibility: Literal["eligible", "ineligible", "unknown"]
+    availability: Literal["in_stock", "out_of_stock", "preorder", "unknown"]
+    seller_authorized: bool | None
+    delivery_promise: ProductResearchDeliveryPromise | None
+    item_price: Money | None
+    shipping_price: Money | None
+    tax_price: Money | None
+    mandatory_fees: Money | None
+    declared_landed_total: Money | None
+    calculated_landed_total: Money | None
+    landed_price_state: Literal["complete", "incomplete", "invalid", "inconsistent"]
+    quote_id: str | None
+    evidence_digest: ContentDigest
+    observed_at: IsoTimestamp
+    expires_at: IsoTimestamp
+
+
+class ProductResearchMerchant(TypedDict):
+    display_name: str | None
+    origin_domain: str
+    seller_id: NotRequired[str]
+
+
+class ProductResearchOriginSourceValueLocator(TypedDict):
+    object_role: Literal[
+        "product",
+        "variant_parent",
+        "offer",
+        "embedded_product",
+        "product_meta",
+        "artifact_origin",
+    ]
+    path: str
+    raw_value_digest: ContentDigest
+
+
+class ProductResearchOriginFieldLocator(TypedDict):
+    field_path: str
+    source_values: list[ProductResearchOriginSourceValueLocator]
+    transformations: list[
+        Literal[
+            "trim_text",
+            "canonicalize_identifier",
+            "construct_product_variant",
+            "normalize_pack",
+            "resolve_public_url",
+            "decimal_currency_to_minor_units",
+            "normalize_availability",
+            "normalize_attribute",
+            "normalize_condition",
+            "normalize_seller_name",
+        ]
+    ]
+    observed_value_digest: ContentDigest
+
+
+class ProductResearchOriginReceipt(TypedDict):
+    artifact: Literal["static_http_body", "rendered_page"]
+    structure: Literal["json_ld", "embedded_product_json", "product_meta"]
+    source_block_index: int
+    product_index: int
+    offer_index: int | None
+    content_digest: ContentDigest
+    version_receipt: str | None
+
+
+class ProductResearchOriginFieldEvidenceBinding(TypedDict):
+    kind: Literal["origin"]
+    receipt: ProductResearchOriginReceipt
+    locators: list[ProductResearchOriginFieldLocator]
+
+
+ProductResearchMaterialOfferField: TypeAlias = Literal[
+    "variant_identity",
+    "seller_identity",
+    "condition",
+    "pack",
+    "item_price",
+    "shipping_price",
+    "tax_price",
+    "mandatory_fees",
+    "price_semantics",
+    "total_price",
+    "availability",
+    "destination_eligibility",
+    "purchase_url",
+]
+
+
+class ProductResearchStructuredFieldReference(TypedDict):
+    material_field: ProductResearchMaterialOfferField
+    source_version_id: str
+    evidence_span_ids: list[str]
+
+
+class ProductResearchStructuredFieldEvidenceBinding(TypedDict):
+    kind: Literal["structured"]
+    field_references: list[ProductResearchStructuredFieldReference]
+    assessment_bundle_digest: ContentDigest
+    assessment_digest: ContentDigest
+    observation_digest: ContentDigest
+    source_context_digest: ContentDigest
+    record_digest: ContentDigest
+    call_outcome_digest: ContentDigest
+    call_version_receipt: str
+    field_receipt_digest: ContentDigest
+
+
+ProductResearchFieldEvidenceBinding: TypeAlias = (
+    ProductResearchOriginFieldEvidenceBinding
+    | ProductResearchStructuredFieldEvidenceBinding
+)
+
+ProductResearchFieldDerivation: TypeAlias = Literal[
+    "publish_title",
+    "publish_family",
+    "publish_identity",
+    "publish_attribute",
+    "publish_pack",
+    "publish_condition",
+    "publish_origin_url",
+    "derive_merchant_origin",
+    "publish_seller_name",
+    "classify_listing_kind",
+    "classify_relationship",
+    "publish_item_price",
+    "derive_price_basis",
+    "derive_price_qualifiers",
+    "publish_availability",
+]
+
+
+class ProductResearchFieldEvidence(TypedDict):
+    field: str
+    verification_tier: ProductResearchVerificationTier
+    source_id: str
+    source_url: str
+    observed_at: IsoTimestamp
+    evidence_digest: ContentDigest | None
+    version_receipt: str | None
+    evidence_binding: ProductResearchFieldEvidenceBinding
+    derivations: list[ProductResearchFieldDerivation]
+
+
+class ProductResearchFamily(TypedDict):
+    brand: NotRequired[str]
+    name: NotRequired[str]
+    category: NotRequired[str]
+
+
+class ProductResearchDescriptiveIdentityEvidence(TypedDict):
+    basis: Literal["descriptive"]
+
+
+class ProductResearchHardIdentifierEvidence(TypedDict):
+    basis: Literal["hard_identifier"]
+    identifier: ProductIdentifier
+
+
+class ProductResearchCatalogSupportRecord(TypedDict):
+    record_digest: ContentDigest
+    source_id: str
+    source_version_id: str
+    independence_group: str
+    authority: Literal[
+        "manufacturer_catalog", "authorized_registry", "merchant_catalog"
+    ]
+    content_digest: ContentDigest
+    identity_binding_key: str
+
+
+class ProductResearchCatalogIdentityEvidence(TypedDict):
+    basis: Literal["catalog_corroboration"]
+    identifier: ProductIdentifier
+    resolution_digest: ContentDigest
+    resolved_target_digest: ContentDigest
+    independent_source_ids: list[str]
+    resolution_supporting_records: list[ProductResearchCatalogSupportRecord]
+    authoritative_source_id: str
+
+
+ProductResearchIdentityEvidence: TypeAlias = (
+    ProductResearchDescriptiveIdentityEvidence
+    | ProductResearchHardIdentifierEvidence
+    | ProductResearchCatalogIdentityEvidence
+)
+
+
+class ProductResearchCandidate(TypedDict):
+    candidate_id: ContentDigest
+    candidate_state: Literal["offer", "discovery"]
+    product_name: str
+    family: NotRequired[ProductResearchFamily]
+    identifiers: list[ProductIdentifier]
+    attributes: list[ProductAttribute]
+    pack: PackSpec | None
+    condition: ProductCondition
+    listing_kind: ProductResearchObservedListingKind
+    relationship: ProductResearchRelationship
+    price: ProductResearchPrice | None
+    delivery: ProductResearchDeliveryEvidence | None
+    availability: Literal["in_stock", "out_of_stock", "preorder", "unknown"]
+    merchant: ProductResearchMerchant
+    origin_url: str
+    observed_at: IsoTimestamp
+    expires_at: IsoTimestamp
+    verification_tier: ProductResearchVerificationTier
+    field_evidence: list[ProductResearchFieldEvidence]
+    identity_evidence: ProductResearchIdentityEvidence
+    conflict_codes: list[str]
+    discovered_by: list[str]
+
+
+class ProductResearchOffer(TypedDict):
+    offer_id: ContentDigest
+    rank: int
+    match_status: ProductResearchMatchStatus
+    title: str
+    origin_url: str
+    merchant: ProductResearchMerchant
+    listing_kind: ProductResearchListingKind
+    relationship: ProductResearchRelationship
+    condition: ProductCondition
+    pack: PackSpec | None
+    price: ProductResearchPrice | None
+    delivery: ProductResearchDeliveryEvidence | None
+    availability: Literal["in_stock", "out_of_stock", "preorder", "unknown"]
+    verification_tier: Literal["origin_verified", "structured_source_verified"]
+    observed_at: IsoTimestamp
+    expires_at: IsoTimestamp
+    field_evidence: list[ProductResearchFieldEvidence]
+    comparison_key: ContentDigest | None
+    price_label: Literal["lowest_comparable"] | None
+    warning_codes: list[str]
+
+
+class ProductResearchProductGroup(TypedDict):
+    group_id: ContentDigest
+    rank: int
+    match_status: ProductResearchMatchStatus
+    identity_basis: Literal[
+        "hard_identifier", "catalog_corroboration", "descriptive", "conflict"
+    ]
+    identity_receipt_digest: ContentDigest | None
+    product_name: str
+    family: NotRequired[ProductResearchFamily]
+    identifiers: list[ProductIdentifier]
+    attributes: list[ProductAttribute]
+    pack: PackSpec | None
+    condition: ProductCondition
+    listing_kind: ProductResearchListingKind
+    relationship: ProductResearchRelationship
+    offers: list[ProductResearchOffer]
+    conflict_codes: list[str]
+    refinement_codes: list[str]
+
+
+class ProductResearchUnverifiedDiscovery(TypedDict):
+    discovery_id: ContentDigest
+    title: Literal["Unverified web result"]
+    origin_url: str
+    merchant_domain: str
+    listing_kind: ProductResearchObservedListingKind
+    relationship: Literal["unknown"]
+    discovered_price: ProductResearchPrice | None
+    observed_at: IsoTimestamp
+    discovered_by: list[str]
+    verification_tier: Literal["discovered_unverified"]
+    possible_group_id: ContentDigest | None
+    warning_codes: list[str]
+
+
+class ProductResearchSourceOutcomeCounts(TypedDict):
+    succeeded: int
+    empty: int
+    failed: int
+    blocked: int
+    cancelled: int
+    deferred: int
+    unsearched: int
+
+
+class ProductResearchSourceLedgerEntry(TypedDict):
+    source_id: str
+    family: ProductResearchSourceFamily
+    origin_domain: str | None
+    disposition: Literal[
+        "succeeded",
+        "empty",
+        "failed",
+        "blocked",
+        "cancelled",
+        "deferred",
+        "unsearched",
+    ]
+    reason_code: str
+    reason_codes: list[str]
+    calls: int
+    outcome_counts: ProductResearchSourceOutcomeCounts
+    candidates_discovered: int
+    verified_offers: int
+    cost_micro_usd: int
+    avoided_cost_micro_usd: int
+
+
+class ProductResearchExecutionReceipt(TypedDict):
+    search_calls: int
+    fetch_calls: int
+    providers_configured: int
+    providers_succeeded: int
+    cost_micro_usd: int
+    cost_basis: Literal["reserved_ceiling"]
+    provider_estimated_cost_micro_usd: int | None
+    provider_estimated_cost_reported_search_calls: int
+    discovery_cache_hits: int
+    cost_avoided_micro_usd: int
+    browser_attempt_count: NotRequired[int]
+    first_useful_candidate_ms: int | None
+    elapsed_ms: int
+
+
+class ProductResearchCoverage(TypedDict):
+    claim: Literal["bounded_not_comprehensive"]
+    state: Literal["bounded", "bounded_with_known_gaps", "partial"]
+    source_ledger: list[ProductResearchSourceLedgerEntry]
+    execution_receipt: ProductResearchExecutionReceipt
+    source_families_attempted: list[ProductResearchSourceFamily]
+    merchant_origins_attempted: int
+    merchant_origins_succeeded: int
+    verified_offer_count: int
+    unverified_discovery_count: int
+    product_group_count: int
+    gap_codes: list[str]
+    stop_reason: Literal[
+        "coverage_satisfied",
+        "source_exhausted",
+        "budget_exhausted",
+        "deadline_reached",
+        "cancelled",
+        "upstream_unavailable",
+    ]
+
+
+class ProductResearchAuthority(TypedDict):
+    mode: Literal["review_only"]
+    action_authorized: Literal[False]
+    permission: Literal["withheld"]
+
+
+class ProductResearchWarning(TypedDict):
+    code: str
+    message: str
+    scope: Literal["request", "coverage", "group", "offer", "source"]
+    subject_id: str | None
+
+
+class ProductResearchRefinement(TypedDict):
+    field: Literal[
+        "brand",
+        "model",
+        "identifier",
+        "size",
+        "pack",
+        "condition",
+        "location",
+        "selection",
+    ]
+    reason_code: str
+    prompt: str
+    required_for: Literal[
+        "better_matches", "price_comparison", "delivered_price", "exact_handoff"
+    ]
+    options: list[str]
+
+
+class ProductResearchResult(TypedDict):
+    schema_revision: Literal[1]
+    research_id: str
+    request_digest: ContentDigest
+    operational_state: Literal["complete", "partial", "failed", "cancelled"]
+    research_state: Literal[
+        "offers_found", "refinement_required", "no_verified_offers", "not_completed"
+    ]
+    authority: ProductResearchAuthority
+    interpretation: ProductResearchQueryInterpretation
+    groups: list[ProductResearchProductGroup]
+    unverified_discoveries: list[ProductResearchUnverifiedDiscovery]
+    coverage: ProductResearchCoverage
+    warnings: list[ProductResearchWarning]
+    requested_refinements: list[ProductResearchRefinement]
+    started_at: IsoTimestamp
+    completed_at: IsoTimestamp
+    expires_at: IsoTimestamp
+
+
+class ProductResearchAcceptedEvent(TypedDict):
+    type: Literal["accepted"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    query: str
+
+
+class ProductResearchInterpretedEvent(TypedDict):
+    type: Literal["interpreted"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    interpretation: ProductResearchQueryInterpretation
+
+
+class ProductResearchSourceProgressEvent(TypedDict):
+    type: Literal["source_progress"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    source_id: str
+    family: ProductResearchSourceFamily
+    state: Literal["started", "succeeded", "empty", "failed", "blocked", "cancelled"]
+    reason_code: str | None
+
+
+class ProductResearchCandidateObservedEvent(TypedDict):
+    type: Literal["candidate_observed"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    candidate: ProductResearchCandidate
+
+
+class ProductResearchGroupUpdatedEvent(TypedDict):
+    type: Literal["group_updated"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    group: ProductResearchProductGroup
+
+
+class ProductResearchCompletedEvent(TypedDict):
+    type: Literal["completed"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    result: ProductResearchResult
+
+
+class ProductResearchFailedEvent(TypedDict):
+    type: Literal["failed"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    error_code: str
+    message: str
+    result: ProductResearchResult
+
+
+class ProductResearchCancelledEvent(TypedDict):
+    type: Literal["cancelled"]
+    research_id: str
+    request_digest: ContentDigest
+    sequence: int
+    observed_at: IsoTimestamp
+    reason_code: str
+    result: ProductResearchResult
+
+
+ProductResearchProgressEvent: TypeAlias = (
+    ProductResearchAcceptedEvent
+    | ProductResearchInterpretedEvent
+    | ProductResearchSourceProgressEvent
+    | ProductResearchCandidateObservedEvent
+    | ProductResearchGroupUpdatedEvent
+    | ProductResearchCompletedEvent
+    | ProductResearchFailedEvent
+    | ProductResearchCancelledEvent
+)
+
+
+class ProductResearchReplayEvent(TypedDict):
+    type: Literal["replay"]
+    sequence: int
+    replayed_at: IsoTimestamp
+    research_id: str
+    request_digest: ContentDigest
+    authority: ProductResearchAuthority
+
+
+ProductResearchStreamEvent: TypeAlias = (
+    ProductResearchProgressEvent | ProductResearchReplayEvent
+)
+
+
 __all__ = [
     "ActionContext",
     "ActionDecision",
@@ -1700,5 +2452,23 @@ __all__ = [
     "ProofGateResult",
     "ProofPacket",
     "ProductCatalogIdentityResolution",
+    "ProductResearchCandidate",
+    "ProductResearchCatalogIdentityEvidence",
+    "ProductResearchCatalogSupportRecord",
+    "ProductResearchFieldDerivation",
+    "ProductResearchFieldEvidence",
+    "ProductResearchFieldEvidenceBinding",
+    "ProductResearchInput",
+    "ProductResearchListingKind",
+    "ProductResearchObservedListingKind",
+    "ProductResearchOriginFieldLocator",
+    "ProductResearchOriginReceipt",
+    "ProductResearchOriginSourceValueLocator",
+    "ProductResearchProgressEvent",
+    "ProductResearchReplayEvent",
+    "ProductResearchRequest",
+    "ProductResearchResult",
+    "ProductResearchStructuredFieldReference",
+    "ProductResearchStreamEvent",
     "RecordRef",
 ]

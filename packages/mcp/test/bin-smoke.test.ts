@@ -58,6 +58,7 @@ describe("kaval-mcp bin (smoke)", () => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toEqual(
         expect.arrayContaining([
+          "product_research",
           "currentness_verify",
           "currentness_check",
           "currentness_extract_and_check",

@@ -20,19 +20,22 @@ API is still finalizing that operation.
 | [`kaval`](sdks/python)          | Python            | `pip install kaval`     | [sdks/python](sdks/python)   |
 | [`@usekaval/mcp`](packages/mcp) | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
-## Two workflows, one product
+## Two workflows, one evidence-gate product
 
-- **Find current evidence.** Offer Search takes a requested product and constraints, then researches
-  candidate price, stock, seller, destination, and freshness evidence. The current public result is
-  deliberately review-only until exact-variant resolution and representative calibration are proven
-  for that scope: it returns `NEEDS_REVIEW` or `NO_RELIABLE_OFFER`, never `ALLOW` or
+- **Find current offer evidence.** Product Research accepts product text with optional market,
+  destination, and filters—no ZIP, manufacturer, model, identifier, or customer-controlled execution
+  budget is required. It returns canonical exact/possible/conflicting groups, prices, availability,
+  refinements, warnings, and bounded coverage. A sufficiently identified result can enter the
+  optional exact-action Offer Search lane, which adds destination and action constraints. Both
+  surfaces remain review-only until representative calibration supports a narrower claim: they
+  return withheld authority, `NEEDS_REVIEW`, or `NO_RELIABLE_OFFER`, never `ALLOW` or
   `SAFE_TO_QUOTE`.
 - **React when evidence changes.** Build an action-bound proof, then gate reuse at the action
   boundary. A changed, expired, or invalidated dependency prevents an old permission from silently
   remaining valid.
 
-Both follow the same lifecycle: evidence → supported conclusion → permission for one action →
-expiry or evidence change → review, re-evaluation, or renewed permission.
+Both workflows follow the same lifecycle: evidence → supported conclusion → permission for one
+action → expiry or evidence change → review, re-evaluation, or renewed permission.
 
 ## Node
 
@@ -40,6 +43,18 @@ expiry or evidence change → review, re-evaluation, or renewed permission.
 import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
+
+const research = await kaval.researchProducts({
+  query: "cordless framing nailer",
+  market: { country_code: "US", preferred_currency: "USD" },
+});
+for await (const event of kaval.streamProductResearch({
+  query: "cordless framing nailer",
+})) {
+  if (event.type === "group_updated") renderProductGroup(event.group);
+  if (event.type === "completed") renderResearch(event.result);
+}
+// research.authority.permission === "withheld": Product Research never authorizes an action.
 
 const offers = await kaval.searchOffers(offerRequest);
 if (offers.action.state === "NEEDS_REVIEW") {
@@ -114,6 +129,12 @@ if (!act) {
 from kaval import KavalClient
 
 kaval = KavalClient(api_key=os.environ["KAVAL_API_KEY"])
+research = kaval.research_products({
+    "query": "cordless framing nailer",
+    "market": {"country_code": "US", "preferred_currency": "USD"},
+})
+# research["authority"]["permission"] == "withheld"
+
 offers = kaval.search_offers(offer_request)
 if offers["action"]["state"] == "NEEDS_REVIEW":
     queue_for_human_review(offers["candidates"])
@@ -135,7 +156,8 @@ if offers.get("lifecycle", {}).get("persistence") == "persisted":
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Exposes review-only `offer_search` + `offer_search_gate`, and `proof_audit` + `proof_gate` for the full evidence-gate protocol,
+Exposes primary review-only `product_research` with MCP progress, review-only
+`offer_search` + `offer_search_gate`, and `proof_audit` + `proof_gate` for the full evidence-gate protocol,
 plus legacy compatibility tools
 `currentness_verify`, `currentness_check`, `…_extract_and_check`, `…_scan_store`, `…_monitor`, and
 `report_outcome` over stdio. See [packages/mcp](packages/mcp).

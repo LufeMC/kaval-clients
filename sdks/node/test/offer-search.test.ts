@@ -288,6 +288,7 @@ describe("Offer Search", () => {
       body: REQUEST,
     });
     expect(result.action.state).toBe("NEEDS_REVIEW");
+    expect(result.receipt.browser_attempt_count).toBeUndefined();
   });
 
   it("keeps the representative strict wire fixture typed and review-only", async () => {
@@ -338,7 +339,71 @@ describe("Offer Search", () => {
         final_fence_checked: false,
       },
     });
+    expect(result.source_attempts[0]?.browser_attempted).toBe(true);
+    expect(result.receipt.browser_attempt_count).toBe(1);
     expect(JSON.stringify(result)).not.toContain("SAFE_TO_QUOTE");
+  });
+
+  it("accepts and preserves legacy recordings without browser metrics", async () => {
+    const payload = structuredClone(REPRESENTATIVE_WIRE_RESULT) as Record<
+      string,
+      any
+    >;
+    delete payload.source_attempts[0].browser_attempted;
+    delete payload.receipt.browser_attempt_count;
+    const client = new Kaval({
+      fetch: (async () =>
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch,
+    });
+
+    await expect(client.searchOffers(REQUEST)).resolves.toEqual(payload);
+  });
+
+  it.each([
+    {
+      name: "a non-boolean source-attempt flag",
+      mutate: (payload: Record<string, any>) => {
+        payload.source_attempts[0].browser_attempted = "yes";
+      },
+    },
+    {
+      name: "a negative receipt count",
+      mutate: (payload: Record<string, any>) => {
+        payload.receipt.browser_attempt_count = -1;
+      },
+    },
+    {
+      name: "a fractional receipt count",
+      mutate: (payload: Record<string, any>) => {
+        payload.receipt.browser_attempt_count = 0.5;
+      },
+    },
+    {
+      name: "an unsafe receipt count",
+      mutate: (payload: Record<string, any>) => {
+        payload.receipt.browser_attempt_count = Number.MAX_SAFE_INTEGER + 1;
+      },
+    },
+  ])("rejects $name", async ({ mutate }) => {
+    const payload = structuredClone(REPRESENTATIVE_WIRE_RESULT) as Record<
+      string,
+      any
+    >;
+    mutate(payload);
+    const client = new Kaval({
+      fetch: (async () =>
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch,
+    });
+
+    await expect(client.searchOffers(REQUEST)).rejects.toBeInstanceOf(
+      TypeError,
+    );
   });
 
   it("surfaces typed persisted lifecycle metadata without granting permission", async () => {

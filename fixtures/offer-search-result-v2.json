@@ -205,7 +205,8 @@
       "avoided_cost_micro_usd": 0,
       "result_count": 1,
       "http_status": 200,
-      "bytes_received": 8192
+      "bytes_received": 8192,
+      "browser_attempted": true
     }
   ],
   "receipt": {
@@ -219,6 +220,7 @@
     "provider_estimated_cost_reported_search_calls": 0,
     "discovery_cache_hits": 0,
     "cost_avoided_micro_usd": 0,
+    "browser_attempt_count": 1,
     "elapsed_ms": 120
   },
   "started_at": "2026-07-16T00:00:00.000Z",

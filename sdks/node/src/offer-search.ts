@@ -672,6 +672,8 @@ export interface CommerceLiveSourceAttempt {
   result_count: number | null;
   http_status: number | null;
   bytes_received: number | null;
+  /** True when the serialized-DOM browser boundary was invoked; absent on legacy recordings. */
+  browser_attempted?: boolean;
 }
 
 export type OfferSearchStopReason =
@@ -713,6 +715,8 @@ export interface LiveOfferSearchResult {
     provider_estimated_cost_reported_search_calls: number;
     discovery_cache_hits: number;
     cost_avoided_micro_usd: number;
+    /** Serialized-DOM browser fallbacks actually invoked; absent on legacy recordings. */
+    browser_attempt_count?: number;
     elapsed_ms: number;
   };
   started_at: string;
@@ -811,6 +815,32 @@ function stringArray(value: unknown): value is string[] {
 
 function digest(value: unknown): value is `sha256:${string}` {
   return typeof value === "string" && COMMERCE_DIGEST.test(value);
+}
+
+function validOfferSearchBrowserMetrics(
+  result: Record<string, unknown>,
+): boolean {
+  const attempts = result["source_attempts"];
+  const receipt = record(result["receipt"]);
+  if (
+    Array.isArray(attempts) &&
+    attempts.some((attempt) => {
+      const current = record(attempt);
+      return (
+        current !== null &&
+        current["browser_attempted"] !== undefined &&
+        typeof current["browser_attempted"] !== "boolean"
+      );
+    })
+  ) {
+    return false;
+  }
+  if (receipt === null) return true;
+  const count = receipt["browser_attempt_count"];
+  return (
+    count === undefined ||
+    (Number.isSafeInteger(count) && (count as number) >= 0)
+  );
 }
 
 function actionBinding(value: unknown): value is CommerceActionBinding {
@@ -1107,6 +1137,9 @@ export function reviewOnlyOfferSearchResult(
     throw new TypeError(
       "Offer Search returned a non-review-only response; shadow results cannot authorize an action",
     );
+  }
+  if (!validOfferSearchBrowserMetrics(result)) {
+    throw new TypeError("Offer Search returned invalid browser metrics");
   }
   if (result["lifecycle"] !== undefined) {
     commerceLifecycle(result["lifecycle"], candidates);

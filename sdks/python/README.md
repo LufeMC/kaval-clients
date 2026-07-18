@@ -17,7 +17,85 @@ pip install kaval
 **Sync-only for now.** `KavalClient` is built on `httpx.Client` (blocking I/O) and does not yet ship
 an `AsyncKavalClient`. If you need `async`/`await`, call the REST API with `httpx.AsyncClient`, wrap
 sync calls in `asyncio.to_thread()`, or use the Node SDK (`@usekaval/kaval`). Native async may land
-in a later release. `stream_offer_search()` is progressive but still synchronous.
+in a later release. `stream_product_research()` and `stream_offer_search()` are progressive but
+still synchronous.
+
+## Caller cancellation
+
+Product Research and Offer Search accept a thread-safe, one-shot cancellation token:
+
+```python
+from threading import Timer
+from kaval import KavalCancellationToken, KavalCancelledError, KavalClient
+
+token = KavalCancellationToken()
+timer = Timer(2.0, lambda: token.cancel("request no longer needed"))
+timer.start()
+try:
+    with KavalClient(api_key="kv_live_...") as client:
+        result = client.search_offers(
+            offer_request,
+            idempotency_key="your-stable-operation-id",
+            cancellation_token=token,
+        )
+except KavalCancelledError as error:
+    # Billable Product/Offer calls and streams retain their recovery key.
+    recoverable_operation_key = error.idempotency_key
+finally:
+    timer.cancel()
+```
+
+Pass `cancellation_token=` to `research_products()`, `stream_product_research()`,
+`search_offers()`, `stream_offer_search()`, or `gate_offer_search()`. A token cancelled before
+iteration/call entry performs no HTTP request. In flight, cancellation releases the blocked caller,
+never triggers the SDK's bounded retry, and requests best-effort closure of an open or
+later-arriving response. A cancelled live stream releases its blocked consumer immediately and
+requests response-body closure. The first `cancel(reason)` wins, and its reason is available on
+`KavalCancelledError`.
+
+The synchronous httpx public API has no portable hard-abort equivalent to JavaScript `AbortSignal`
+for blocking I/O. Kaval uses only the public `Response.close()` cleanup API; depending on the
+platform and transport phase, a daemon worker may remain until the underlying I/O returns or its
+configured `timeout=` expires. This can occur before response headers and when another thread is
+blocked reading a live response. Keep a finite timeout as the transport-level cleanup backstop.
+
+## Research products from ordinary text (review-only)
+
+```python
+from kaval import KavalClient, ProductResearchInput
+
+request: ProductResearchInput = {
+    "query": "cordless framing nailer",
+    "market": {"country_code": "US", "preferred_currency": "USD"},
+    "filters": {"condition": "new", "listing_kinds": ["purchase"]},
+}
+
+with KavalClient(api_key="kv_live_...") as client:
+    result = client.research_products(request)
+    stream = client.stream_product_research(request)
+    try:
+        for event in stream:
+            if event["type"] == "group_updated":
+                render_group(event["group"])
+            elif event["type"] == "completed":
+                result = event["result"]
+    finally:
+        stream.close()
+```
+
+Execution limits are server-owned and intentionally absent from `ProductResearchInput`. JSON may
+return a canonical complete, partial, failed, or cancelled result. SSE sequences are contiguous and
+zero-based, start with `accepted`, and terminate with `completed`, `failed`, or `cancelled`; durable
+same-key replay is explicit. Every terminal carries its exact canonical result, which the generator
+returns for completed, failed, and cancelled outcomes; genuine transport and typed SSE errors still
+raise. Response shape, timestamps, request binding, and review-only authority are validated before
+exposure. `authority["permission"]` is always `"withheld"` and never authorizes an action. Both
+methods support `idempotency_key=`, `timeout=`, and `cancellation_token=`; closing or cancelling
+early requests best-effort response closure, with the finite timeout bounding any blocking sync
+transport read that cannot be interrupted.
+Verified offers and candidate progress also fail closed unless every published material field has a
+unique exact evidence binding to the same tier, origin URL, observation, and receipt; merchant
+hostnames and listing-specific price semantics must match.
 
 ## Find current offer evidence (review-only)
 
@@ -77,8 +155,8 @@ try:
         else:
             show_progress(event["message"], event["details"])
 finally:
-    # A normal completed loop is already closed. Call close() when cancelling early so the
-    # response and hosted acquisition operation are released immediately.
+    # A normal completed loop is already closed. When stopping early, close() requests response
+    # cleanup; use a finite timeout to bound any sync transport read that cannot be interrupted.
     stream.close()
 ```
 
@@ -91,8 +169,9 @@ drift. The later `candidate` event has crossed the current final publication bou
 
 The client retries once with the same operation key only if the transport fails before stream
 headers arrive (or the API reports that the same operation is still being resolved). It never
-retries after a stream has begun. If a later read is interrupted or the stream ends before `final`,
-the exception carries `idempotency_key` for an explicit same-key recovery attempt.
+retries after a stream has begun or after caller cancellation. If a later read is interrupted or the
+stream ends before `final`, the exception carries `idempotency_key` for an explicit same-key
+recovery attempt.
 
 Offer Search researches permitted, accessible configured sources: structured catalogs and merchant
 feeds, retailer/search workers, direct origin re-fetches, serialized browser DOM when needed, and
@@ -176,10 +255,9 @@ with KavalClient(api_key="kv_live_...") as client:
     # existing action policy authoritative.
 ```
 
-The package exports the primary request/response `TypedDict` models at top level; `kaval.models`
-provides every nested proof object. The sync client cannot be externally cancelled mid-call; use
-constructor or per-call `timeout=` limits. Native cancellation is available in the Node client.
-Only an enforcement result with `controlApplied == True` controls execution. Shadow mode returns
+The package exports the primary request/response `TypedDict` models, `KavalCancellationToken`, and
+`KavalCancelledError` at top level; `kaval.models` provides every nested proof object. Only an
+enforcement result with `controlApplied == True` controls execution. Shadow mode returns
 `controlApplied == False`, `executionAllowed is None`, and `wouldAllow` for calibration.
 
 ### Pick a speed/depth tier
@@ -296,7 +374,7 @@ Timeouts surface as `httpx.TimeoutException` (not `KavalError`).
 
 ## API
 
-`search_offers` · `stream_offer_search` · `gate_offer_search` · `audit` · `gate_action` (`gate` alias) · `verify` · `check` · `extract_and_check` · `scan_store` ·
+`research_products` · `stream_product_research` · `search_offers` · `stream_offer_search` · `gate_offer_search` · `audit` · `gate_action` (`gate` alias) · `verify` · `check` · `extract_and_check` · `scan_store` ·
 `monitor` · `report_outcome` · `kaval` · `kaval_batch` · `health`. Billable methods accept the
 optional keyword `idempotency_key=`. Construct with `KavalClient(base_url=?, api_key=?)` —
 `base_url` defaults to `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
