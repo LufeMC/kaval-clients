@@ -4,33 +4,29 @@ using httpx.MockTransport (no network)."""
 import json
 import uuid
 from pathlib import Path
-from threading import Event, Thread
-from typing import get_type_hints
+from typing import get_args
 
 import httpx
 import pytest
 
+import kaval
 from kaval import (
-    CommerceLiveSourceAttempt,
     KavalCancellationToken,
     KavalCancelledError,
     KavalClient,
     KavalError,
-    OfferSearchReceipt,
+    KavalProofNotFoundError,
+    VerifyReceipt,
 )
 from kaval.client import DEFAULT_BASE_URL
 from kaval.models import (
     CalibrationSupportIdentity,
     ClaimAssessment,
-    CommerceAcquisitionSourceLedgerEntry,
-    CommerceCheckoutObservation,
-    CommerceCheckoutVerification,
-    LiveOfferSearchAcquisitionTrace,
-    LiveOfferSearchCandidate,
-    LiveOfferSearchResult,
-    OfferOriginEvidence,
-    ProductCatalogIdentityResolution,
+    ProofBillingClass,
+    ProofGateState,
 )
+
+FIXTURES = Path(__file__).resolve().parents[3] / "fixtures"
 
 GAP = {
     "id": "id_1",
@@ -42,181 +38,41 @@ GAP = {
     "discrepancy": {"kind": "stale", "signals": []},
 }
 
-OFFER_REQUEST = {
-    "schema_revision": 1,
-    "request_id": "offer-request-1",
-    "raw_description": "Makita XPH14Z 18V hammer drill, tool only",
-    "target": {
-        "schema_revision": 1,
-        "family": {"brand": "Makita", "name": "18V LXT hammer drill"},
-        "name": "Makita XPH14Z",
-        "identifiers": [{"scheme": "model", "value": "XPH14Z"}],
-        "attributes": [{"key": "kit", "value": False}],
-    },
-    "requested_condition": "new",
-    "destination": {"country_code": "US", "region": "CA", "postal_code": "94107"},
-    "match_policy": {
-        "identity_requirement": "shared_identifier",
-        "required_identifier_schemes": ["model"],
-        "required_attribute_keys": ["kit"],
-        "permitted_substitutions": [],
-    },
-    "seller_policy": {
-        "allowed_seller_ids": [],
-        "blocked_seller_ids": [],
-        "allowed_kinds": ["brand_direct", "authorized_retailer"],
-        "require_authorized": True,
-    },
-    "destination_policy": {
-        "require_eligible": True,
-        "require_exact_region": True,
-        "require_exact_postal_code": True,
-    },
-    "price_policy": {
-        "currency": "USD",
-        "require_complete_landed_total": True,
-        "allow_estimated_components": False,
-        "allow_member_price": False,
-        "allow_subscription_price": False,
-        "allow_coupon_price": False,
-        "allow_installment_display": False,
-        "allow_trade_in_price": False,
-    },
-    "source_policy": {
-        "allowed_source_ids": [],
-        "blocked_source_ids": [],
-        "require_origin_evidence": True,
-    },
-    "intended_action": {
-        "description": "Quote this exact item to a customer",
-        "materiality": "high",
-        "reversibility": "partially_reversible",
-    },
-    "freshness_maximum_age_ms": 300_000,
-    "max_results": 5,
-    "minimum_unique_sellers": 2,
-    "deadline_ms": 15_000,
-    "maximum_cost_micro_usd": 50_000,
-    "maximum_search_calls": 4,
-    "maximum_fetches": 12,
+# The representative /v1/verify success envelope: {status, receipt{..., packet}} with an
+# Ed25519-signed packet. Receipt-level expiry deliberately does not exist — it lives at
+# receipt.packet.action_decision.expires_at.
+VERIFY_RESULT = json.loads((FIXTURES / "py-verify-result-v1.json").read_text())
+
+# The representative 200 /v1/gate result (state "not_found" is an HTTP 404, never a 200).
+GATE_RESULT = json.loads((FIXTURES / "py-gate-result-v1.json").read_text())
+
+THRESHOLD = {
+    "policy_id": "pricing-current",
+    "policy_version": "1.0.0",
+    "materiality": "low",
+    "maximum_false_allow_risk": 0.01,
+    "minimum_evidence_coverage": 0.95,
+}
+ACTION = {
+    "description": "Display the current price",
+    "materiality": "low",
+    "reversibility": "reversible",
 }
 
-OFFER_RESULT = {
-    "schema_revision": 2,
-    "request_id": "offer-request-1",
-    "request_digest": f"sha256:{'a' * 64}",
-    "status": "complete",
-    "action": {"state": "NEEDS_REVIEW", "reason_codes": ["SHADOW_MODE"]},
-    "stop_reason": "source_exhausted",
-    "query": "Makita XPH14Z",
-    "candidates": [],
-    "source_attempts": [],
-    "receipt": {
-        "search_calls": 2,
-        "fetch_calls": 3,
-        "providers_configured": 2,
-        "providers_succeeded": 2,
-        "cost_micro_usd": 2_500,
-        "cost_basis": "reserved_ceiling",
-        "provider_estimated_cost_micro_usd": None,
-        "provider_estimated_cost_reported_search_calls": 0,
-        "discovery_cache_hits": 0,
-        "cost_avoided_micro_usd": 0,
-        "elapsed_ms": 120,
-    },
-    "started_at": "2026-07-15T00:00:00.000Z",
-    "completed_at": "2026-07-15T00:00:00.120Z",
-}
 
-ACTION_BINDING = {
-    "action_slot_key": "quote:line-item-1",
-    "action_input_digest": f"sha256:{'b' * 64}",
-    "action_consequence_digest": f"sha256:{'c' * 64}",
-}
+def make_client(handler):
+    return KavalClient(base_url="http://test", transport=httpx.MockTransport(handler))
 
-OFFER_GATE_REQUEST = {
-    "dependency_id": "offer:dependency-1",
-    "generation_id": "offer:generation-1",
-    "generation_number": 1,
-    "generation_digest": f"sha256:{'d' * 64}",
-    "action_binding": ACTION_BINDING,
-}
 
-OFFER_GATE_RESULT = {
-    "state": "current_review_only",
-    "disposition": "REVIEW",
-    "permission": "withheld",
-    "reason_codes": ["COMMERCE_PERMISSION_REVIEW_ONLY"],
-    "checked_at": "2026-07-15T00:00:00.130Z",
-    "final_fence_checked": True,
-    "generation_id": OFFER_GATE_REQUEST["generation_id"],
-    "generation_number": OFFER_GATE_REQUEST["generation_number"],
-    "generation_digest": OFFER_GATE_REQUEST["generation_digest"],
-    "expires_at": "2026-07-15T00:05:00.000Z",
-}
+def refusing_client():
+    return make_client(
+        lambda request: pytest.fail(f"unexpected request: {request.url}")
+    )
 
-CHECKOUT = {
-    "status": "verified",
-    "resolver": {
-        "schema_revision": 1,
-        "source_id": "retailer-checkout",
-        "adapter_revision": "checkout/2026-07-15.1",
-        "execution_mode": "live",
-        "estimated_cost_micro_usd": 700,
-    },
-    "request_digest": f"sha256:{'e' * 64}",
-    "observation": {
-        "destination_eligibility": "eligible",
-        "availability": "in_stock",
-        "seller_authorized": True,
-        "item_price": {"amount_minor": 18_999, "currency": "USD"},
-        "shipping_price": {"amount_minor": 0, "currency": "USD"},
-        "tax_price": {"amount_minor": 1_567, "currency": "USD"},
-        "mandatory_fees": {"amount_minor": 0, "currency": "USD"},
-        "declared_landed_total": {"amount_minor": 20_566, "currency": "USD"},
-        "quote_id": "checkout-quote-1",
-        "evidence_digest": f"sha256:{'f' * 64}",
-        "observed_at": "2026-07-15T00:00:00.050Z",
-        "expires_at": "2026-07-15T00:05:00.050Z",
-    },
-    "landed_price_validation": {
-        "state": "complete",
-        "expected_currency": "USD",
-        "calculated_landed_total": {"amount_minor": 20_566, "currency": "USD"},
-        "reason_codes": [],
-    },
-    "action": {
-        "state": "REVIEW",
-        "action_authorized": False,
-        "reason_codes": ["COMMERCE_PERMISSION_REVIEW_ONLY"],
-    },
-    "actual_cost_micro_usd": 650,
-    "version_receipt": "checkout/2026-07-15.1",
-    "operational_error_code": None,
-}
 
-SOURCE_LEDGER = [
-    {
-        "source_id": "catalog-primary",
-        "family": "catalog",
-        "disposition": "succeeded",
-        "reason_code": "COMPLETED",
-    },
-    {
-        "source_id": "open-web-tail",
-        "family": "open_web",
-        "disposition": "unsearched",
-        "reason_code": "COVERAGE_SATISFIED",
-    },
-]
-
-REPRESENTATIVE_WIRE_RESULT = json.loads(
-    (
-        Path(__file__).resolve().parents[3]
-        / "fixtures"
-        / "offer-search-result-v2.json"
-    ).read_text()
-)
+# ---------------------------------------------------------------------------
+# Model-shape guarantees
+# ---------------------------------------------------------------------------
 
 
 def test_proof_models_retain_required_calibration_support_identity():
@@ -229,81 +85,255 @@ def test_proof_models_retain_required_calibration_support_identity():
     }
 
 
-def test_offer_search_models_expose_checkout_and_acquisition_ledger_fields():
-    assert "checkout" in LiveOfferSearchCandidate.__annotations__
-    assert CommerceCheckoutVerification.__required_keys__ >= {
-        "status",
-        "observation",
-        "landed_price_validation",
-        "action",
+def test_verify_receipt_model_has_no_receipt_level_expiry():
+    assert VerifyReceipt.__required_keys__ == {
+        "proof_id",
+        "decision",
+        "reason",
+        "share_endpoint",
+        "packet",
     }
-    assert CommerceAcquisitionSourceLedgerEntry.__required_keys__ == {
-        "source_id",
-        "family",
-        "disposition",
-        "reason_code",
-    }
-    assert LiveOfferSearchAcquisitionTrace.__required_keys__ >= {
-        "coverage_claim",
-        "plan",
-        "plan_digest",
-        "source_ledger",
-    }
-    assert "delivery_promise" in CommerceCheckoutObservation.__annotations__
-    assert OfferOriginEvidence.__annotations__.keys() >= {
-        "artifact",
-        "version_receipt",
-    }
-    assert LiveOfferSearchResult.__annotations__.keys() >= {
-        "effective_request_digest",
-        "rejected_explanations",
-        "identity_resolution",
-    }
-    assert ProductCatalogIdentityResolution.__required_keys__ >= {
-        "resolver_version",
-        "resolution_state",
-        "resolved_target",
-        "resolved_variant",
-        "record_assessments",
-        "resolution_digest",
-    }
-    assert "NotRequired" in repr(
-        get_type_hints(CommerceLiveSourceAttempt, include_extras=True)[
-            "browser_attempted"
-        ]
-    )
-    assert "NotRequired" in repr(
-        get_type_hints(OfferSearchReceipt, include_extras=True)[
-            "browser_attempt_count"
-        ]
-    )
+    assert "expires_at" not in VerifyReceipt.__annotations__
 
 
-def make_client(handler):
-    return KavalClient(base_url="http://test", transport=httpx.MockTransport(handler))
+def test_gate_models_match_the_wire_contract():
+    assert set(get_args(ProofGateState)) == {
+        "current",
+        "not_yet_valid",
+        "expired",
+        "invalidated",
+        "dependency_changed",
+        "integrity_failed",
+        "policy_mismatch",
+        "operational_failure",
+    }
+    assert set(get_args(ProofBillingClass)) == {"action_gate", "operational_failure"}
 
 
-def test_check_sends_clean_body_and_parses_gap():
+def test_commerce_surface_is_gone():
+    for method in (
+        "research_products",
+        "stream_product_research",
+        "search_offers",
+        "stream_offer_search",
+        "gate_offer_search",
+    ):
+        assert not hasattr(KavalClient, method)
+    for export in ("ProductResearchInput", "OfferSearchInput", "LiveOfferSearchResult"):
+        assert not hasattr(kaval, export)
+        assert export not in kaval.__all__
+
+
+# ---------------------------------------------------------------------------
+# verify() — the primary conclusion + evidence_refs surface
+# ---------------------------------------------------------------------------
+
+
+def test_verify_posts_conclusion_and_evidence_refs_and_returns_receipt():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/check"
+        assert request.url.path == "/v1/verify"
         assert request.headers["content-type"] == "application/json"
         captured["idempotency_key"] = request.headers["idempotency-key"]
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json=GAP)
+        return httpx.Response(200, json=VERIFY_RESULT)
 
     with make_client(handler) as c:
-        out = c.check("Jane Doe is at Acme", freshness_sla="14d")
+        out = c.verify(
+            conclusion="The 2024 International Building Code is the current IBC edition.",
+            evidence_refs=["https://codes.iccsafe.org/content/IBC2024V2.0"],
+        )
 
-    assert out["status"] == "stale"
-    assert out["id"] == "id_1"
-    assert str(uuid.UUID(captured["idempotency_key"])) == captured["idempotency_key"]
-    # None-valued optionals are omitted (clean body).
-    assert captured["body"] == {"belief": "Jane Doe is at Acme", "freshness_sla": "14d"}
+    assert captured["body"] == {
+        "conclusion": "The 2024 International Building Code is the current IBC edition.",
+        "evidence_refs": ["https://codes.iccsafe.org/content/IBC2024V2.0"],
+    }
+    # Billable op: a fresh UUID idempotency key rides the wire automatically.
+    assert (
+        str(uuid.UUID(captured["idempotency_key"])) == captured["idempotency_key"]
+    )
+    assert out["status"] == "valid"
+    receipt = out["receipt"]
+    assert receipt["decision"] == "ALLOW"
+    assert receipt["share_endpoint"] == f"/v1/proofs/{receipt['proof_id']}/share"
+    # No receipt-level expiry: it lives on the packet's action decision.
+    assert "expires_at" not in receipt
+    assert receipt["packet"]["action_decision"]["expires_at"]
+    assert receipt["packet"]["signature"]["algorithm"] == "Ed25519"
+    assert receipt["packet"]["signature"]["key_id"] == "proof-ed25519-2026-07"
 
 
-def test_verify_returns_decision_with_act():
+def test_verify_accepts_the_canonical_request_mapping():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=VERIFY_RESULT)
+
+    with make_client(handler) as c:
+        out = c.verify(
+            {
+                "conclusion": "The 2024 International Building Code is the current IBC edition.",
+                "evidence_refs": ["https://codes.iccsafe.org/content/IBC2024V2.0"],
+                "materiality": "high",
+            }
+        )
+
+    assert captured["body"] == {
+        "conclusion": "The 2024 International Building Code is the current IBC edition.",
+        "evidence_refs": ["https://codes.iccsafe.org/content/IBC2024V2.0"],
+        "materiality": "high",
+    }
+    assert out == VERIFY_RESULT
+
+
+def test_verify_serializes_optional_fields_and_document_bound_refs_exactly():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=VERIFY_RESULT)
+
+    with make_client(handler) as c:
+        c.verify(
+            conclusion="Supplier X holds an active ISO 9001 certificate.",
+            evidence_refs=[
+                "https://registry.example/cert/123",
+                {"url": "https://supplier.example/quality", "document_id": "doc-1"},
+            ],
+            as_of="2026-07-20T10:00:00+00:00",
+            materiality="critical",
+            intended_action="Approve the supplier onboarding",
+            reversibility="irreversible",
+            jurisdiction="US",
+            context="procurement gate",
+        )
+
+    assert captured["body"] == {
+        "conclusion": "Supplier X holds an active ISO 9001 certificate.",
+        "evidence_refs": [
+            "https://registry.example/cert/123",
+            {"url": "https://supplier.example/quality", "document_id": "doc-1"},
+        ],
+        "as_of": "2026-07-20T10:00:00+00:00",
+        "materiality": "critical",
+        "intended_action": "Approve the supplier onboarding",
+        "reversibility": "irreversible",
+        "jurisdiction": "US",
+        "context": "procurement gate",
+    }
+
+
+def test_verify_rejects_mixing_mapping_and_keyword_fields_before_network():
+    with refusing_client() as c:
+        with pytest.raises(ValueError, match="not both"):
+            c.verify(
+                {"conclusion": "x", "evidence_refs": ["https://a.example/"]},
+                materiality="high",
+            )
+
+
+def test_verify_rejects_unknown_request_fields_before_network():
+    with refusing_client() as c:
+        with pytest.raises(ValueError, match="unknown verify request fields: belief"):
+            c.verify({"belief": "x", "evidence_refs": ["https://a.example/"]})
+
+
+def test_verify_requires_a_conclusion_before_network():
+    with refusing_client() as c:
+        with pytest.raises(ValueError, match="conclusion"):
+            c.verify(evidence_refs=["https://a.example/"])
+
+
+@pytest.mark.parametrize(
+    ("evidence_refs", "message"),
+    [
+        (None, "1 to 20"),
+        ([], "between 1 and 20"),
+        ([f"https://a.example/{i}" for i in range(21)], "between 1 and 20"),
+        # A bare object WITHOUT document_id is invalid — must be a plain string instead.
+        ([{"url": "https://a.example/"}], "pass a plain URL string"),
+        ([{"url": "https://a.example/", "document_id": ""}], "exactly"),
+        (
+            [{"url": "https://a.example/", "document_id": "d", "extra": 1}],
+            "exactly",
+        ),
+        ([7], "URL string"),
+        (
+            [
+                {"url": "https://a.example/", "document_id": "same"},
+                {"url": "https://b.example/", "document_id": "same"},
+            ],
+            "unique",
+        ),
+    ],
+)
+def test_verify_rejects_invalid_evidence_refs_before_network(evidence_refs, message):
+    with refusing_client() as c:
+        with pytest.raises(ValueError, match=message):
+            c.verify(conclusion="an assertable proposition", evidence_refs=evidence_refs)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        GAP,  # a legacy belief-freshness body is not a conclusion envelope
+        {"status": "current", "receipt": VERIFY_RESULT["receipt"]},
+        {"status": "valid"},
+        {"status": "valid", "receipt": {}},
+        {
+            "status": "valid",
+            "receipt": {**VERIFY_RESULT["receipt"], "decision": "SAFE"},
+        },
+        {
+            "status": "valid",
+            "receipt": {
+                key: value
+                for key, value in VERIFY_RESULT["receipt"].items()
+                if key != "packet"
+            },
+        },
+    ],
+)
+def test_verify_rejects_a_malformed_verdict_envelope(payload):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with make_client(handler) as c:
+        with pytest.raises(TypeError, match="conclusion-verification envelope"):
+            c.verify(conclusion="x is y", evidence_refs=["https://a.example/"])
+
+
+def test_verify_pre_cancel_skips_transport_and_retains_operation_key():
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=VERIFY_RESULT)
+
+    token = KavalCancellationToken()
+    token.cancel("cancelled before verify")
+    with make_client(handler) as client:
+        with pytest.raises(KavalCancelledError) as raised:
+            client.verify(
+                conclusion="x is y",
+                evidence_refs=["https://a.example/"],
+                idempotency_key="verify-pre-cancel-0001",
+                cancellation_token=token,
+            )
+
+    assert calls == 0
+    assert raised.value.idempotency_key == "verify-pre-cancel-0001"
+
+
+# ---------------------------------------------------------------------------
+# Legacy belief-freshness compatibility (the server still accepts this body)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_verify_belief_returns_decision_with_act():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -312,7 +342,7 @@ def test_verify_returns_decision_with_act():
         return httpx.Response(200, json={**GAP, "act": False})
 
     with make_client(handler) as c:
-        out = c.verify("Acme's CEO is Jane Doe", min_confidence=0.8)
+        out = c.legacy_verify_belief("Acme's CEO is Jane Doe", min_confidence=0.8)
 
     assert out["act"] is False
     assert out["status"] == "stale"
@@ -320,7 +350,7 @@ def test_verify_returns_decision_with_act():
     assert captured["body"] == {"belief": "Acme's CEO is Jane Doe", "minConfidence": 0.8}
 
 
-def test_verify_sends_mode_and_parses_tier():
+def test_legacy_verify_belief_sends_mode_and_parses_tier():
     captured = {}
     resp = {
         "id": "id_1",
@@ -344,13 +374,33 @@ def test_verify_sends_mode_and_parses_tier():
         return httpx.Response(200, json=resp)
 
     with make_client(handler) as c:
-        out = c.verify("Acme's CEO is Jane Doe", mode="deep")
+        out = c.legacy_verify_belief("Acme's CEO is Jane Doe", mode="deep")
 
     # `mode` rides the wire verbatim (no camelCase remap, unlike min_confidence).
     assert captured["body"] == {"belief": "Acme's CEO is Jane Doe", "mode": "deep"}
     assert out["tier"] == "deep"
     assert out["explanation"]["confidence"] == "high"
     assert out["explanation"]["citations"][0]["url"] == "http://acme.test/team"
+
+
+def test_check_sends_clean_body_and_parses_gap():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/check"
+        assert request.headers["content-type"] == "application/json"
+        captured["idempotency_key"] = request.headers["idempotency-key"]
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=GAP)
+
+    with make_client(handler) as c:
+        out = c.check("Jane Doe is at Acme", freshness_sla="14d")
+
+    assert out["status"] == "stale"
+    assert out["id"] == "id_1"
+    assert str(uuid.UUID(captured["idempotency_key"])) == captured["idempotency_key"]
+    # None-valued optionals are omitted (clean body).
+    assert captured["body"] == {"belief": "Jane Doe is at Acme", "freshness_sla": "14d"}
 
 
 def test_extract_and_check():
@@ -420,923 +470,9 @@ def test_monitor_sends_body_and_parses_result():
     assert out["state"]["riskyKeys"] == ["k1"]
 
 
-def test_search_offers_posts_exact_request_and_returns_review_only_result():
-    captured = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/search-offers"
-        captured["body"] = json.loads(request.content)
-        captured["key"] = request.headers["idempotency-key"]
-        captured["timeout"] = request.extensions.get("timeout")
-        return httpx.Response(200, json=OFFER_RESULT)
-
-    with make_client(handler) as c:
-        result = c.search_offers(
-            OFFER_REQUEST,
-            idempotency_key="offer-search-operation-0001",
-            timeout=12.0,
-        )
-
-    assert captured["body"] == OFFER_REQUEST
-    assert captured["key"] == "offer-search-operation-0001"
-    assert captured["timeout"]["read"] == 12.0
-    assert result["action"]["state"] == "NEEDS_REVIEW"
-
-
-def test_search_offers_pre_cancel_skips_transport_and_retains_operation_key():
-    calls = 0
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(200, json=OFFER_RESULT)
-
-    token = KavalCancellationToken()
-    token.cancel("cancelled before offer search")
-    with make_client(handler) as client:
-        with pytest.raises(KavalCancelledError) as raised:
-            client.search_offers(
-                OFFER_REQUEST,
-                idempotency_key="offer-search-pre-cancel-0001",
-                cancellation_token=token,
-            )
-
-    assert calls == 0
-    assert raised.value.idempotency_key == "offer-search-pre-cancel-0001"
-
-
-def test_search_offers_inflight_cancel_releases_caller_without_retry():
-    response_body_started = Event()
-    release_response_body = Event()
-    response_closed = Event()
-    calls = 0
-
-    class BlockingResponseStream(httpx.SyncByteStream):
-        def __iter__(self):
-            response_body_started.set()
-            assert release_response_body.wait(3)
-            if not response_closed.is_set():
-                yield json.dumps(OFFER_RESULT).encode()
-
-        def close(self):
-            response_closed.set()
-            release_response_body.set()
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(
-            200,
-            headers={"content-type": "application/json"},
-            stream=BlockingResponseStream(),
-        )
-
-    token = KavalCancellationToken()
-    outcome = []
-    client = make_client(handler)
-
-    def invoke() -> None:
-        try:
-            outcome.append(
-                client.search_offers(
-                    OFFER_REQUEST,
-                    idempotency_key="offer-search-inflight-cancel-0001",
-                    cancellation_token=token,
-                )
-            )
-        except BaseException as error:
-            outcome.append(error)
-
-    caller = Thread(target=invoke)
-    try:
-        caller.start()
-        assert response_body_started.wait(2)
-        token.cancel("caller cancelled offer search")
-        caller.join(2)
-
-        assert caller.is_alive() is False
-        assert response_closed.wait(2)
-        assert len(outcome) == 1
-        assert isinstance(outcome[0], KavalCancelledError)
-        assert str(outcome[0]) == "caller cancelled offer search"
-        assert outcome[0].idempotency_key == (
-            "offer-search-inflight-cancel-0001"
-        )
-        assert calls == 1
-    finally:
-        release_response_body.set()
-        caller.join(2)
-        client.close()
-
-
-def test_search_offers_preserves_representative_strict_wire_fixture():
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=REPRESENTATIVE_WIRE_RESULT)
-
-    with make_client(handler) as c:
-        result = c.search_offers(OFFER_REQUEST)
-
-    candidate = result["candidates"][0]
-    assert result["effective_request_digest"] == f"sha256:{'b' * 64}"
-    assert result["rejected_explanations"][0]["contender"] is False
-    assert result["identity_resolution"]["resolution_state"] == "exact_variant"
-    assert candidate["origin_evidence"]["artifact"] == "rendered_page"
-    assert (
-        candidate["origin_evidence"]["version_receipt"]
-        == "browser-renderer/2026-07-16.1"
-    )
-    assert candidate["origin_offer"]["field_provenance"][0]["field_path"] == (
-        "variant.identifiers"
-    )
-    assert candidate["checkout"]["observation"]["delivery_promise"] == {
-        "certainty": "estimated",
-        "earliest_at": "2026-07-18T00:00:00.000Z",
-        "latest_at": "2026-07-20T00:00:00.000Z",
-    }
-    assert result["lifecycle"]["action_time_gate"]["permission"] == "withheld"
-    assert result["source_attempts"][0]["browser_attempted"] is True
-    assert result["receipt"]["browser_attempt_count"] == 1
-    assert "SAFE_TO_QUOTE" not in json.dumps(result)
-
-
-def test_search_offers_accepts_legacy_recording_without_browser_metrics():
-    payload = json.loads(json.dumps(REPRESENTATIVE_WIRE_RESULT))
-    del payload["source_attempts"][0]["browser_attempted"]
-    del payload["receipt"]["browser_attempt_count"]
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload)
-
-    with make_client(handler) as client:
-        assert client.search_offers(OFFER_REQUEST) == payload
-
-
-@pytest.mark.parametrize(
-    ("target", "value"),
-    [
-        ("attempt", "yes"),
-        ("count", -1),
-        ("count", 0.5),
-        ("count", 9_007_199_254_740_992),
-    ],
-)
-def test_search_offers_rejects_invalid_optional_browser_metrics(target, value):
-    payload = json.loads(json.dumps(REPRESENTATIVE_WIRE_RESULT))
-    if target == "attempt":
-        payload["source_attempts"][0]["browser_attempted"] = value
-    else:
-        payload["receipt"]["browser_attempt_count"] = value
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload)
-
-    with make_client(handler) as client:
-        with pytest.raises(TypeError):
-            client.search_offers(OFFER_REQUEST)
-
-
-def test_search_offers_preserves_typed_checkout_and_acquisition_source_ledger():
-    response = {
-        **OFFER_RESULT,
-        "candidates": [
-            {
-                "candidate_id": f"sha256:{'1' * 64}",
-                "origin_url": "https://retailer.test/makita-xph14z",
-                "source_id": "catalog-primary",
-                "discovered_by": ["catalog-primary"],
-                "discovery_metadata": [
-                    {"provider": "catalog-primary", "title": "Makita XPH14Z"}
-                ],
-                "origin_evidence": {
-                    "kind": "json_ld",
-                    "content_digest": f"sha256:{'2' * 64}",
-                    "source_block_index": 0,
-                    "jsonld_product_index": 0,
-                    "jsonld_offer_index": 0,
-                },
-                "origin_offer": {},
-                "identity": {},
-                "disposition": "review",
-                "gaps": [],
-                "reason_codes": ["SHADOW_MODE"],
-                "checkout": CHECKOUT,
-            }
-        ],
-        "acquisition": {
-            "coverage_claim": "bounded_not_comprehensive",
-            "plan": {},
-            "plan_digest": f"sha256:{'3' * 64}",
-            "source_ledger": SOURCE_LEDGER,
-        },
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        result = c.search_offers(OFFER_REQUEST)
-
-    assert result["candidates"][0]["checkout"]["status"] == "verified"
-    assert (
-        result["candidates"][0]["checkout"]["observation"]["declared_landed_total"][
-            "amount_minor"
-        ]
-        == 20_566
-    )
-    assert result["acquisition"]["coverage_claim"] == "bounded_not_comprehensive"
-    assert result["acquisition"]["source_ledger"] == SOURCE_LEDGER
-
-
-def offer_search_sse(
-    *events: tuple[str, int, object],
-) -> bytes:
-    return "".join(
-        f"event: {name}\nid: {sequence}\ndata: {json.dumps(payload)}\n\n"
-        for name, sequence, payload in events
-    ).encode()
-
-
-def collect_offer_search_stream(stream):
-    events = []
-    while True:
-        try:
-            events.append(next(stream))
-        except StopIteration as completed:
-            return events, completed.value
-
-
-def test_stream_offer_search_inflight_cancel_closes_body_without_retry():
-    body_waiting = Event()
-    release_body = Event()
-    body_closed = Event()
-    calls = 0
-    accepted = {
-        "type": "accepted",
-        "sequence": 0,
-        "at": "2026-07-15T00:00:00.000Z",
-        "request_id": OFFER_REQUEST["request_id"],
-        "message": "admitted",
-        "authority": "research_only",
-        "action_state": "REVIEW",
-        "details": {},
-    }
-
-    class BlockingStream(httpx.SyncByteStream):
-        def __iter__(self):
-            yield offer_search_sse(("accepted", 0, accepted))
-            body_waiting.set()
-            assert release_body.wait(3)
-            if not body_closed.is_set():
-                yield offer_search_sse(("final", 1, OFFER_RESULT))
-
-        def close(self):
-            body_closed.set()
-            release_body.set()
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=BlockingStream(),
-        )
-
-    token = KavalCancellationToken()
-    with make_client(handler) as client:
-        stream = client.stream_offer_search(
-            OFFER_REQUEST,
-            idempotency_key="offer-stream-inflight-cancel-0001",
-            cancellation_token=token,
-        )
-        assert next(stream)["type"] == "accepted"
-        assert body_waiting.wait(2)
-        token.cancel("caller cancelled offer stream")
-        assert body_closed.wait(2)
-        with pytest.raises(KavalCancelledError) as raised:
-            next(stream)
-
-    assert calls == 1
-    assert str(raised.value) == "caller cancelled offer stream"
-    assert raised.value.idempotency_key == (
-        "offer-stream-inflight-cancel-0001"
-    )
-
-
-def test_stream_offer_search_retries_only_before_stream_with_same_operation_key():
-    attempts = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        attempts.append(request.headers["idempotency-key"])
-        assert request.headers["accept"] == "text/event-stream"
-        assert json.loads(request.content) == OFFER_REQUEST
-        if len(attempts) == 1:
-            raise httpx.ConnectError("connection failed before headers", request=request)
-        accepted = {
-            "type": "accepted",
-            "sequence": 0,
-            "at": "2026-07-15T00:00:00.000Z",
-            "request_id": OFFER_REQUEST["request_id"],
-            "message": "Offer Search was admitted; every result remains review-only.",
-            "authority": "research_only",
-            "action_state": "REVIEW",
-            "details": {"newly_admitted": True},
-        }
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream; charset=utf-8"},
-            content=offer_search_sse(
-                ("accepted", 0, accepted),
-                ("final", 1, OFFER_RESULT),
-            ),
-        )
-
-    with make_client(handler) as c:
-        events, final = collect_offer_search_stream(
-            c.stream_offer_search(
-                OFFER_REQUEST,
-                idempotency_key="offer-stream-operation-0001",
-                timeout=12.0,
-            )
-        )
-
-    assert attempts == [
-        "offer-stream-operation-0001",
-        "offer-stream-operation-0001",
-    ]
-    assert [event["type"] for event in events] == ["accepted", "final"]
-    assert events[-1]["result"] == OFFER_RESULT
-    assert final == OFFER_RESULT
-
-
-def test_stream_offer_search_accepts_explicit_same_key_replay_without_new_work():
-    replay = {
-        "type": "replay",
-        "sequence": 0,
-        "replayed_at": "2026-07-15T00:00:01.000Z",
-        "request_id": OFFER_REQUEST["request_id"],
-        "request_digest": OFFER_RESULT["request_digest"],
-        "authority": "research_only",
-        "action_state": "REVIEW",
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=offer_search_sse(
-                ("replay", 0, replay),
-                ("final", 1, OFFER_RESULT),
-            ),
-        )
-
-    with make_client(handler) as c:
-        events, final = collect_offer_search_stream(
-            c.stream_offer_search(OFFER_REQUEST)
-        )
-
-    assert events[0] == replay
-    assert final == OFFER_RESULT
-
-
-def test_stream_offer_search_exposes_explicit_non_actionable_provisional_candidate():
-    provisional = {
-        "type": "candidate_provisional",
-        "sequence": 0,
-        "at": "2026-07-15T00:00:00.000Z",
-        "request_id": OFFER_REQUEST["request_id"],
-        "message": (
-            "An origin-verified research candidate is available provisionally; "
-            "final publication is pending."
-        ),
-        "authority": "research_only",
-        "action_state": "REVIEW",
-        "details": {
-            "request_digest": OFFER_RESULT["request_digest"],
-            "origin_sequence": 2,
-            "publication_state": "provisional",
-            "durable": False,
-            "actionable": False,
-            "permission": "withheld",
-            "final_inclusion": "not_yet_determined",
-            "candidate": {
-                "candidate_id": f"sha256:{'1' * 64}",
-                "origin_url": "https://retailer.example/makita-xph14z",
-                "source_id": "origin:retailer.example",
-                "disposition": "review",
-            },
-        },
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=offer_search_sse(
-                ("candidate_provisional", 0, provisional),
-                ("final", 1, OFFER_RESULT),
-            ),
-        )
-
-    with make_client(handler) as c:
-        events, final = collect_offer_search_stream(
-            c.stream_offer_search(OFFER_REQUEST)
-        )
-
-    assert events[0] == provisional
-    assert events[0]["details"] == {
-        **provisional["details"],
-        "durable": False,
-        "actionable": False,
-        "permission": "withheld",
-        "final_inclusion": "not_yet_determined",
-    }
-    assert final == OFFER_RESULT
-
-
-def test_stream_offer_search_rejects_provisional_digest_drift_from_final():
-    provisional = {
-        "type": "candidate_provisional",
-        "sequence": 0,
-        "at": "2026-07-15T00:00:00.000Z",
-        "request_id": OFFER_REQUEST["request_id"],
-        "message": "Provisional research candidate.",
-        "authority": "research_only",
-        "action_state": "REVIEW",
-        "details": {
-            "request_digest": f"sha256:{'9' * 64}",
-            "origin_sequence": 2,
-            "publication_state": "provisional",
-            "durable": False,
-            "actionable": False,
-            "permission": "withheld",
-            "final_inclusion": "not_yet_determined",
-            "candidate": {
-                "candidate_id": f"sha256:{'1' * 64}",
-                "origin_url": "https://retailer.example/makita-xph14z",
-                "source_id": "origin:retailer.example",
-                "disposition": "review",
-            },
-        },
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=offer_search_sse(
-                ("candidate_provisional", 0, provisional),
-                ("final", 1, OFFER_RESULT),
-            ),
-        )
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match="bound to another final result"):
-            list(c.stream_offer_search(OFFER_REQUEST))
-
-
-@pytest.mark.parametrize(
-    "replay",
-    [
-        {
-            "type": "replay",
-            "sequence": 0,
-            "replayed_at": "2026-07-15T00:00:01.000Z",
-            "request_id": OFFER_REQUEST["request_id"],
-            "authority": "research_only",
-            "action_state": "REVIEW",
-        },
-        {
-            "type": "replay",
-            "sequence": 0,
-            "replayed_at": "2026-07-15T00:00:01.000Z",
-            "request_id": OFFER_REQUEST["request_id"],
-            "request_digest": "sha256:not-a-digest",
-            "authority": "research_only",
-            "action_state": "REVIEW",
-        },
-        {
-            "type": "replay",
-            "sequence": 0,
-            "replayed_at": "2026-07-15T00:00:01.000Z",
-            "request_id": "different-request",
-            "request_digest": OFFER_RESULT["request_digest"],
-            "authority": "research_only",
-            "action_state": "REVIEW",
-        },
-    ],
-)
-def test_stream_offer_search_rejects_missing_malformed_or_foreign_replay_binding(
-    replay,
-):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=offer_search_sse(("replay", 0, replay)),
-        )
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match="replay event"):
-            list(c.stream_offer_search(OFFER_REQUEST))
-
-
-def test_stream_offer_search_rejects_replay_digest_drift_from_final():
-    replay = {
-        "type": "replay",
-        "sequence": 0,
-        "replayed_at": "2026-07-15T00:00:01.000Z",
-        "request_id": OFFER_REQUEST["request_id"],
-        "request_digest": f"sha256:{'9' * 64}",
-        "authority": "research_only",
-        "action_state": "REVIEW",
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=offer_search_sse(
-                ("replay", 0, replay),
-                ("final", 1, OFFER_RESULT),
-            ),
-        )
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match="stream events are bound"):
-            list(c.stream_offer_search(OFFER_REQUEST))
-
-
-@pytest.mark.parametrize(
-    "events, message",
-    [
-        (
-            [
-                (
-                    "accepted",
-                    0,
-                    {
-                        "type": "accepted",
-                        "sequence": 0,
-                        "at": "2026-07-15T00:00:00.000Z",
-                        "request_id": OFFER_REQUEST["request_id"],
-                        "message": "admitted",
-                        "authority": "research_only",
-                        "action_state": "ALLOW",
-                        "details": {},
-                    },
-                )
-            ],
-            "authority-bearing progress event",
-        ),
-        (
-            [
-                (
-                    "accepted",
-                    1,
-                    {
-                        "type": "accepted",
-                        "sequence": 1,
-                        "at": "2026-07-15T00:00:00.000Z",
-                        "request_id": OFFER_REQUEST["request_id"],
-                        "message": "admitted",
-                        "authority": "research_only",
-                        "action_state": "REVIEW",
-                        "details": {},
-                    },
-                ),
-                (
-                    "coverage",
-                    1,
-                    {
-                        "type": "coverage",
-                        "sequence": 1,
-                        "at": "2026-07-15T00:00:00.010Z",
-                        "request_id": OFFER_REQUEST["request_id"],
-                        "message": "coverage recorded",
-                        "authority": "research_only",
-                        "action_state": "REVIEW",
-                        "details": {},
-                    },
-                ),
-            ],
-            "not monotonic",
-        ),
-        (
-            [
-                (
-                    "accepted",
-                    0,
-                    {
-                        "type": "accepted",
-                        "sequence": 0,
-                        "at": "2026-07-15T00:00:00.000Z",
-                        "request_id": "different-request",
-                        "message": "admitted",
-                        "authority": "research_only",
-                        "action_state": "REVIEW",
-                        "details": {},
-                    },
-                )
-            ],
-            "request ID",
-        ),
-    ],
-)
-def test_stream_offer_search_rejects_authority_or_sequence_drift(events, message):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=offer_search_sse(*events),
-        )
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match=message):
-            list(c.stream_offer_search(OFFER_REQUEST))
-
-
-def test_stream_offer_search_close_closes_the_http_response():
-    closed = False
-    accepted = {
-        "type": "accepted",
-        "sequence": 0,
-        "at": "2026-07-15T00:00:00.000Z",
-        "request_id": OFFER_REQUEST["request_id"],
-        "message": "admitted",
-        "authority": "research_only",
-        "action_state": "REVIEW",
-        "details": {},
-    }
-
-    class TrackingStream(httpx.SyncByteStream):
-        def __iter__(self):
-            yield offer_search_sse(("accepted", 0, accepted))
-            yield offer_search_sse(("final", 1, OFFER_RESULT))
-
-        def close(self):
-            nonlocal closed
-            closed = True
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            stream=TrackingStream(),
-        )
-
-    with make_client(handler) as c:
-        stream = c.stream_offer_search(OFFER_REQUEST)
-        assert next(stream)["type"] == "accepted"
-        stream.close()
-
-    assert closed is True
-
-
-def test_search_offers_surfaces_persisted_lifecycle_without_permission():
-    response = {
-        **OFFER_RESULT,
-        "candidates": [
-            {
-                "candidate_id": f"sha256:{'1' * 64}",
-                "disposition": "review",
-            }
-        ],
-        "lifecycle": {
-            "persistence": "persisted",
-            "dependency_id": OFFER_GATE_REQUEST["dependency_id"],
-            "generation_id": OFFER_GATE_REQUEST["generation_id"],
-            "generation_number": OFFER_GATE_REQUEST["generation_number"],
-            "generation_digest": OFFER_GATE_REQUEST["generation_digest"],
-            "selected_candidate_id": f"sha256:{'1' * 64}",
-            "expires_at": OFFER_GATE_RESULT["expires_at"],
-            "action_binding": ACTION_BINDING,
-            "action_time_gate": OFFER_GATE_RESULT,
-        },
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        result = c.search_offers(OFFER_REQUEST)
-
-    assert result["lifecycle"]["persistence"] == "persisted"
-    assert result["lifecycle"]["action_time_gate"]["disposition"] == "REVIEW"
-    assert result["lifecycle"]["action_time_gate"]["permission"] == "withheld"
-
-
-@pytest.mark.parametrize(
-    ("candidates", "gate"),
-    [
-        ([], OFFER_GATE_RESULT),
-        (
-            [
-                {
-                    "candidate_id": f"sha256:{'1' * 64}",
-                    "disposition": "review",
-                },
-                {
-                    "candidate_id": f"sha256:{'1' * 64}",
-                    "disposition": "review",
-                },
-            ],
-            OFFER_GATE_RESULT,
-        ),
-        (
-            [
-                {
-                    "candidate_id": f"sha256:{'1' * 64}",
-                    "disposition": "review",
-                }
-            ],
-            {**OFFER_GATE_RESULT, "generation_id": "offer:generation-other"},
-        ),
-        (
-            [
-                {
-                    "candidate_id": f"sha256:{'1' * 64}",
-                    "disposition": "review",
-                }
-            ],
-            {
-                **OFFER_GATE_RESULT,
-                "state": "stale_generation",
-                "generation_id": "offer:generation-other",
-            },
-        ),
-        (
-            [
-                {
-                    "candidate_id": f"sha256:{'1' * 64}",
-                    "disposition": "review",
-                }
-            ],
-            {**OFFER_GATE_RESULT, "final_fence_checked": False},
-        ),
-    ],
-)
-def test_search_offers_rejects_inconsistent_persisted_lifecycle(
-    candidates, gate
-):
-    response = {
-        **OFFER_RESULT,
-        "candidates": candidates,
-        "lifecycle": {
-            "persistence": "persisted",
-            "dependency_id": OFFER_GATE_REQUEST["dependency_id"],
-            "generation_id": OFFER_GATE_REQUEST["generation_id"],
-            "generation_number": OFFER_GATE_REQUEST["generation_number"],
-            "generation_digest": OFFER_GATE_REQUEST["generation_digest"],
-            "selected_candidate_id": f"sha256:{'1' * 64}",
-            "expires_at": OFFER_GATE_RESULT["expires_at"],
-            "action_binding": ACTION_BINDING,
-            "action_time_gate": gate,
-        },
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        with pytest.raises(
-            TypeError, match="invalid lifecycle|permission must remain withheld"
-        ):
-            c.search_offers(OFFER_REQUEST)
-
-
-def test_search_offers_surfaces_not_created_lifecycle_as_review_only_absence():
-    response = {
-        **OFFER_RESULT,
-        "lifecycle": {
-            "persistence": "not_created",
-            "reason_codes": ["NO_QUALIFIED_CHECKOUT_EVIDENCE"],
-            "action_time_gate": {
-                "state": "not_found",
-                "disposition": "REVIEW",
-                "permission": "withheld",
-                "reason_codes": ["COMMERCE_GENERATION_NOT_CREATED"],
-                "checked_at": "2026-07-15T00:00:00.130Z",
-                "final_fence_checked": False,
-            },
-        },
-    }
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        result = c.search_offers(OFFER_REQUEST)
-
-    assert result["lifecycle"]["persistence"] == "not_created"
-    assert result["lifecycle"]["action_time_gate"]["state"] == "not_found"
-    assert result["lifecycle"]["action_time_gate"]["permission"] == "withheld"
-
-
-def test_gate_offer_search_pre_cancel_skips_transport():
-    calls = 0
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(200, json=OFFER_GATE_RESULT)
-
-    token = KavalCancellationToken()
-    token.cancel("cancelled before final fence")
-    with make_client(handler) as client:
-        with pytest.raises(KavalCancelledError) as raised:
-            client.gate_offer_search(
-                OFFER_GATE_REQUEST,
-                cancellation_token=token,
-            )
-
-    assert calls == 0
-    assert str(raised.value) == "cancelled before final fence"
-    assert raised.value.idempotency_key is None
-
-
-def test_gate_offer_search_posts_exact_final_fence_request_and_stays_review_only():
-    captured = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/search-offers/gate"
-        captured["body"] = json.loads(request.content)
-        captured["key"] = request.headers.get("idempotency-key")
-        captured["timeout"] = request.extensions.get("timeout")
-        return httpx.Response(200, json=OFFER_GATE_RESULT)
-
-    with make_client(handler) as c:
-        result = c.gate_offer_search(OFFER_GATE_REQUEST, timeout=12.0)
-
-    assert captured["body"] == OFFER_GATE_REQUEST
-    assert captured["key"] is None
-    assert captured["timeout"]["read"] == 12.0
-    assert result["state"] == "current_review_only"
-    assert result["disposition"] == "REVIEW"
-    assert result["permission"] == "withheld"
-
-
-@pytest.mark.parametrize(
-    "drift",
-    [
-        {"disposition": "ALLOW"},
-        {"permission": "granted"},
-        {"decision": "BLOCK"},
-        {"nested": {"safe_to_quote": True}},
-        {"nested": {"permission": "granted"}},
-        {"final_fence_checked": False},
-        {"generation_id": "offer:generation-other"},
-        {"generation_number": 2},
-        {"generation_digest": f"sha256:{'e' * 64}"},
-    ],
-)
-def test_gate_offer_search_rejects_authority_drift(drift):
-    response = {**OFFER_GATE_RESULT, **drift}
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match="permission must remain withheld"):
-            c.gate_offer_search(OFFER_GATE_REQUEST)
-
-
-@pytest.mark.parametrize(
-    "drift",
-    [
-        {"decision": "ALLOW"},
-        {"action": {"state": "SAFE_TO_QUOTE", "reason_codes": []}},
-        {"candidates": [{"disposition": "eligible", "safe_to_quote": True}]},
-    ],
-)
-def test_search_offers_rejects_any_response_that_looks_like_permission(drift):
-    response = {**OFFER_RESULT, **drift}
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match="shadow results cannot authorize"):
-            c.search_offers(OFFER_REQUEST)
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        {key: value for key, value in OFFER_RESULT.items() if key != "request_digest"},
-        {**OFFER_RESULT, "request_digest": "sha256:not-a-digest"},
-        {**OFFER_RESULT, "request_id": "different-request"},
-    ],
-)
-def test_search_offers_rejects_missing_malformed_or_foreign_request_binding(
-    response,
-):
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response)
-
-    with make_client(handler) as c:
-        with pytest.raises(TypeError, match="request ID|digest|another request"):
-            c.search_offers(OFFER_REQUEST)
+# ---------------------------------------------------------------------------
+# audit() — build the proof (the expensive path)
+# ---------------------------------------------------------------------------
 
 
 def test_audit_sends_exact_proof_body_and_returns_packet():
@@ -1347,10 +483,7 @@ def test_audit_sends_exact_proof_body_and_returns_packet():
         captured["body"] = json.loads(request.content)
         captured["key"] = request.headers["idempotency-key"]
         captured["timeout"] = request.extensions.get("timeout")
-        return httpx.Response(
-            200,
-            json={"proof_id": "proof_1", "action_decision": {"decision": "REVIEW"}},
-        )
+        return httpx.Response(200, json=VERIFY_RESULT["receipt"]["packet"])
 
     with make_client(handler) as c:
         proof = c.audit(
@@ -1376,85 +509,157 @@ def test_audit_sends_exact_proof_body_and_returns_packet():
         "record": {"system": "billing", "table": "refunds", "id": "acme"},
     }
     assert captured["timeout"]["read"] == 12.0
-    assert proof["proof_id"] == "proof_1"
+    # The response is the raw ProofPacket, passed through unmodified.
+    assert proof == VERIFY_RESULT["receipt"]["packet"]
+    assert proof["action_decision"]["decision"] == "ALLOW"
+    assert proof["expiry"]["recheck_at"]
+    assert proof["signature"]["algorithm"] == "Ed25519"
 
 
-def test_gate_action_sends_one_locator_and_returns_enforcement():
+def test_audit_pre_cancel_skips_transport():
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=VERIFY_RESULT["receipt"]["packet"])
+
+    token = KavalCancellationToken()
+    token.cancel("cancelled before audit")
+    with make_client(handler) as client:
+        with pytest.raises(KavalCancelledError) as raised:
+            client.audit(
+                "Acme is eligible for a refund",
+                as_of="2026-07-10T20:00:00Z",
+                idempotency_key="audit-pre-cancel-0001",
+                cancellation_token=token,
+            )
+
+    assert calls == 0
+    assert raised.value.idempotency_key == "audit-pre-cancel-0001"
+
+
+# ---------------------------------------------------------------------------
+# gate() / gate_action() — apply the proof at act time
+# ---------------------------------------------------------------------------
+
+
+def test_gate_action_sends_one_locator_and_returns_the_wire_result():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/gate"
         captured["body"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "proofId": "proof_1",
-                "state": "current",
-                "decision": {"decision": "ALLOW"},
-                "billingClass": "action_gate",
-                "proofReused": True,
-                "researchPerformed": False,
-                "latencyMs": 4,
-                "enforcement": {
-                    "mode": "bounded",
-                    "controlApplied": True,
-                    "executionAllowed": True,
-                    "wouldAllow": True,
-                    "reason": "inside boundary",
-                },
-            },
-        )
+        return httpx.Response(200, json=GATE_RESULT)
 
-    threshold = {
-        "policy_id": "pricing-current",
-        "policy_version": "1.0.0",
-        "materiality": "low",
-        "maximum_false_allow_risk": 0.01,
-        "minimum_evidence_coverage": 0.95,
-    }
-    action = {
-        "description": "Display the current price",
-        "materiality": "low",
-        "reversibility": "reversible",
-    }
     with make_client(handler) as c:
         result = c.gate_action(
             proof_id="proof_1",
             material_claim_ids=["claim_1"],
-            threshold=threshold,
-            action=action,
+            threshold=THRESHOLD,
+            action=ACTION,
         )
 
     assert captured["body"] == {
         "proof_id": "proof_1",
         "material_claim_ids": ["claim_1"],
-        "threshold": threshold,
-        "action": action,
+        "threshold": THRESHOLD,
+        "action": ACTION,
     }
-    assert result["enforcement"]["executionAllowed"] is True
+    assert result == GATE_RESULT
+    assert result["state"] == "current"
+    assert result["billingClass"] == "action_gate"
+    assert result["researchPerformed"] is False
+    assert result["decision"]["decision"] == "ALLOW"
+
+
+def test_gate_alias_sends_proof_key_locator():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=GATE_RESULT)
+
+    with make_client(handler) as c:
+        result = c.gate(
+            proof_key="pricing:acme:refund",
+            material_claim_ids=["claim_1"],
+            threshold=THRESHOLD,
+            action=ACTION,
+            expected_dependency_versions={"src_iccsafe_codes": "sv_iccsafe_ibc2024"},
+        )
+
+    assert captured["body"]["proof_key"] == "pricing:acme:refund"
+    assert "proof_id" not in captured["body"]
+    assert captured["body"]["expected_dependency_versions"] == {
+        "src_iccsafe_codes": "sv_iccsafe_ibc2024"
+    }
+    assert result["proofId"] == GATE_RESULT["proofId"]
 
 
 def test_gate_action_rejects_missing_or_ambiguous_locator_before_network():
-    with make_client(lambda request: pytest.fail(f"unexpected request: {request.url}")) as c:
+    with refusing_client() as c:
         kwargs = {
             "material_claim_ids": ["claim_1"],
-            "threshold": {
-                "policy_id": "policy_1",
-                "policy_version": "1",
-                "materiality": "low",
-                "maximum_false_allow_risk": 0.01,
-                "minimum_evidence_coverage": 0.9,
-            },
-            "action": {
-                "description": "Display it",
-                "materiality": "low",
-                "reversibility": "reversible",
-            },
+            "threshold": THRESHOLD,
+            "action": ACTION,
         }
         with pytest.raises(ValueError, match="exactly one"):
             c.gate_action(**kwargs)
         with pytest.raises(ValueError, match="exactly one"):
             c.gate_action(**kwargs, proof_id="proof_1", proof_key="proof-key:1")
+
+
+def test_gate_surfaces_proof_not_found_as_a_typed_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/gate"
+        return httpx.Response(
+            404,
+            json={
+                "error": {
+                    "code": "proof_not_found",
+                    "message": "no matching proof packet",
+                }
+            },
+        )
+
+    with make_client(handler) as c:
+        with pytest.raises(KavalProofNotFoundError) as exc:
+            c.gate(
+                proof_id="proof_missing",
+                material_claim_ids=["claim_1"],
+                threshold=THRESHOLD,
+                action=ACTION,
+                idempotency_key="gate-not-found-0001",
+            )
+
+    assert isinstance(exc.value, KavalError)
+    assert exc.value.status_code == 404
+    assert exc.value.code == "proof_not_found"
+    assert exc.value.payload["error"]["code"] == "proof_not_found"
+    assert exc.value.idempotency_key == "gate-not-found-0001"
+
+
+def test_gate_other_errors_stay_plain_kaval_errors():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": {"code": "not_found"}})
+
+    with make_client(handler) as c:
+        with pytest.raises(KavalError) as exc:
+            c.gate(
+                proof_id="proof_1",
+                material_claim_ids=["claim_1"],
+                threshold=THRESHOLD,
+                action=ACTION,
+            )
+
+    assert not isinstance(exc.value, KavalProofNotFoundError)
+    assert exc.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Shared transport behavior
+# ---------------------------------------------------------------------------
 
 
 def test_report_outcome():
@@ -1505,35 +710,30 @@ def test_caller_idempotency_key_reaches_every_billable_method():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.url.path, request.headers.get("idempotency-key")))
-        return httpx.Response(
-            200,
-            json=OFFER_RESULT if request.url.path == "/v1/search-offers" else {},
-        )
+        if request.url.path == "/v1/verify" and "conclusion" in json.loads(
+            request.content
+        ):
+            return httpx.Response(200, json=VERIFY_RESULT)
+        return httpx.Response(200, json={})
 
     operation_key = "logical-operation-0001"
     with make_client(handler) as c:
         c.check("x", idempotency_key=operation_key)
-        c.verify("x", idempotency_key=operation_key)
+        c.verify(
+            conclusion="x is y",
+            evidence_refs=["https://a.example/"],
+            idempotency_key=operation_key,
+        )
+        c.legacy_verify_belief("x", idempotency_key=operation_key)
         c.extract_and_check("x", idempotency_key=operation_key)
         c.scan_store(["x"], idempotency_key=operation_key)
         c.monitor(["x"], idempotency_key=operation_key)
-        c.search_offers(OFFER_REQUEST, idempotency_key=operation_key)
         c.audit("x", as_of="2026-07-10T20:00:00Z", idempotency_key=operation_key)
         c.gate_action(
             proof_id="proof_1",
             material_claim_ids=["claim_1"],
-            threshold={
-                "policy_id": "policy_1",
-                "policy_version": "1",
-                "materiality": "low",
-                "maximum_false_allow_risk": 0.01,
-                "minimum_evidence_coverage": 0.9,
-            },
-            action={
-                "description": "Display it",
-                "materiality": "low",
-                "reversibility": "reversible",
-            },
+            threshold=THRESHOLD,
+            action=ACTION,
             idempotency_key=operation_key,
         )
         c.kaval({"fact_type": "x"}, idempotency_key=operation_key)
@@ -1542,10 +742,10 @@ def test_caller_idempotency_key_reaches_every_billable_method():
     assert [path for path, _ in captured] == [
         "/v1/check",
         "/v1/verify",
+        "/v1/verify",
         "/v1/extract-and-check",
         "/v1/scan-store",
         "/v1/monitor",
-        "/v1/search-offers",
         "/v1/audit",
         "/v1/gate",
         "/v1/kaval",

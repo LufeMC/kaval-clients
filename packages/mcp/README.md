@@ -1,10 +1,11 @@
 # @usekaval/mcp
 
-The [Kaval](https://usekaval.com) **evidence gate for AI agents** as an MCP server. Before an agent
-acts, Kaval checks that the current evidence still supports that exact action. It can find current
-offer evidence or react when evidence behind an existing conclusion changes.
+Before an AI agent acts, [Kaval](https://usekaval.com) verifies the facts the action relies on and
+returns a time-bounded signed proof your policy can enforce — **ALLOW**, **REVIEW**, or **BLOCK**.
+This package exposes that verification surface as an MCP server.
 
-**Search retrieves evidence. Kaval decides whether that evidence is sufficient for the action.**
+Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
+facts those rules depend on are still true.
 
 This package is a **thin client** over the hosted Kaval API. All classification, grounding, and
 retrieval run server-side, so you bring just a Kaval API key — no model or search keys, no local
@@ -44,74 +45,58 @@ It speaks MCP over stdio. Point any MCP client at it.
 
 ## Tools
 
-| Tool                            | What it does                                                                                             |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `product_research`              | Research ordinary product text with canonical groups, prices, and bounded coverage. Review-only.         |
-| `offer_search`                  | Find exact/possible offer evidence. Review-only: never `ALLOW` or `SAFE_TO_QUOTE`.                       |
-| `offer_search_gate`             | Final-fence one persisted offer generation. Always `REVIEW` with permission withheld.                    |
-| `currentness_verify`            | Pre-action gate: returns `act` (boolean) + a typed verdict + proof. Call before acting on a held belief. |
-| `currentness_check`             | The raw freshness verdict without the act/don't-act decision.                                            |
-| `currentness_extract_and_check` | Pull the checkable beliefs out of a paragraph and re-ground each.                                        |
-| `currentness_scan_store`        | Sweep a batch of beliefs for drift (summary + the riskiest).                                             |
-| `currentness_monitor`           | Sweep + POST the newly-risky beliefs to a webhook (run on a schedule).                                   |
-| `proof_audit`                   | Build a complete action-bound ProofPacket with exact evidence, policy, lineage, risk, and expiry.        |
-| `proof_gate`                    | Apply a durable proof to the exact action and return staged enforcement without repeating research.      |
-| `report_outcome`                | Report what actually happened for a prior check so the service can calibrate.                            |
+| Tool                            | What it does                                                                                              |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `verify`                        | Verify one load-bearing conclusion against its evidence references → `valid` / `invalidated` / `could_not_verify` + a signed proof receipt. |
+| `proof_audit`                   | Build the complete action-bound ProofPacket: claims, evidence, lineage, decision, expiry, Ed25519 signature. |
+| `proof_gate`                    | Apply an existing durable proof to the exact action at act time — no search, parsing, or model call.      |
+| `currentness_verify`            | Legacy held-belief compatibility: `act` (boolean) + a typed verdict + proof.                              |
+| `currentness_check`             | The raw freshness verdict without the act/don't-act decision.                                             |
+| `currentness_extract_and_check` | Pull the checkable beliefs out of a paragraph and re-ground each.                                         |
+| `currentness_scan_store`        | Sweep a batch of beliefs for drift (summary + the riskiest).                                              |
+| `currentness_monitor`           | Sweep + POST the newly-risky beliefs to a webhook (run on a schedule).                                    |
+| `report_outcome`                | Report what actually happened for a prior check so the service can calibrate.                             |
 
-`product_research` is Kaval's primary product-only workflow. It needs only a product query; market,
-destination, and filters are optional, while execution budgets remain server-owned. It returns the
-same canonical review-only result as REST, Node, and Python. When the MCP caller requests progress,
-the tool consumes ordered Product Research SSE and forwards accepted, interpreted, source,
-candidate, group, failed, cancelled, and replay events as `notifications/progress`, including the
-full canonical event under `usekaval.com/product-research-progress`. Every completed, failed, or
-cancelled terminal carries its exact canonical result; the tool returns that result directly without
-a follow-up JSON request. Transport errors remain errors, and cancellation propagates to the active
-operation. Authority remains `{ mode: "review_only", action_authorized: false, permission:
-"withheld" }`. The underlying client rejects verified offers and candidate progress whose material
-fields are not bound to the same tier, origin URL, observation, and exact evidence receipt.
+## The proof lifecycle
 
-`offer_search` resolves the requested product across permitted, accessible configured catalogs,
-feeds, retailer/search workers, origin pages, browser-rendered DOM, and checkout resolvers. It
-returns `NEEDS_REVIEW` or `NO_RELIABLE_OFFER` with candidates and evidence. The source ledger
-reports gaps rather than claiming exhaustive coverage of the entire internet. Current output is
-shadow-grade: every candidate must go to human review, and the tool does not authorize a quote or
-purchase.
+`proof_audit` builds the proof (the expensive path); `proof_gate` applies it at act time with no
+search, parsing, or model call; `verify` is the compatibility surface for single conclusions.
 
-When an MCP client requests progress for the tool call, Kaval consumes the hosted Offer Search SSE
-stream and forwards its monotonic `accepted`, acquisition, verification, coverage,
-`candidate_provisional`, candidate, and warning events as `notifications/progress`. The provisional
-event arrives before completion;
-its MCP message explicitly states `durable=false`, `actionable=false`, and
-`permission=withheld`, while final inclusion and lifecycle persistence are still pending. Its
-structured progress metadata preserves candidate ID, merchant, price, URL, verification, and action
-fields for clients that need more than the display message. The tool response remains the one
-canonical final result. Progress is explicitly `research_only` / `REVIEW`; a same-key durable replay
-is labeled as replayed work, carries the final request binding, and never fabricates acquisition.
-Clients that do not request progress use the ordinary JSON call.
+`verify` takes the exact `conclusion` the workflow intends to rely on plus 1–20 `evidence_refs` —
+each either a plain `https` URL string or a strict `{ url, document_id }` object with unique
+`document_id` values (a bare object without `document_id` is invalid; use the plain string form).
+It returns `status: valid | invalidated | could_not_verify` and a signed `receipt` with `proof_id`,
+`decision` (`ALLOW`, `REVIEW`, or `BLOCK`), `reason`, a `share_endpoint`, and the full signed
+`packet`. There is no receipt-level `expires_at` — expiry lives at
+`receipt.packet.action_decision.expires_at`.
 
-New runtime results can include destination-aware `candidate.checkout` evidence: price components,
-landed-total validation, stock, seller authorization, observation expiry, resolver version, and
-operational gaps. `result.acquisition.source_ledger` records every bounded source as succeeded,
-failed, cancelled, prohibited, deferred, or unsearched. This makes coverage limits inspectable; it
-does not make the shadow result safe to quote.
+`proof_audit` returns the raw ProofPacket: `research_contract`, `claim_dag`, `source_versions`,
+`evidence_spans`, `claim_assessments`, `action_decision` (with `expires_at`), `expiry` (with
+`recheck_at` and `invalidation_triggers`), and an Ed25519 `signature` (key ids like
+`proof-ed25519-2026-07`).
 
-When `offer_search` returns `lifecycle.persistence: "persisted"`, pass its dependency, generation,
-digest, and action binding to `offer_search_gate` immediately before the action boundary. The gate
-re-reads that exact generation and the latest stream head. It always returns `REVIEW` with
-`permission: "withheld"`; any non-current state requires refresh or human review, and even
-`current_review_only` is not permission to quote or purchase.
+`proof_gate` returns the proof `state` (`current`, `not_yet_valid`, `expired`, `invalidated`,
+`dependency_changed`, `integrity_failed`, `policy_mismatch`, or `operational_failure`), the full
+`decision`, `billingClass`, and reuse flags. A missing proof surfaces as a typed `proof_not_found`
+error, not a 200 state. Only when `enforcement.controlApplied` is `true` may Kaval control the
+action; then honor `enforcement.executionAllowed` exactly. `controlApplied: false` is shadow
+telemetry — the customer's existing action path remains authoritative. If `enforcement` is absent,
+fail closed unless the proof state is `current` and the decision is `ALLOW`.
 
-For consequential actions, call `proof_audit`, then `proof_gate` immediately before execution. Only
-when `enforcement.controlApplied` is `true` may Kaval control the action; then honor
-`enforcement.executionAllowed` exactly. In shadow mode `controlApplied` is `false`,
-`executionAllowed` is `null`, and `wouldAllow` is counterfactual telemetry—the customer's existing
-action path remains authoritative. If `enforcement` is absent, a direct integration should fail
-closed unless the proof state is `current` and the decision is `ALLOW`.
+Receipts are Ed25519-signed; anyone can verify one offline with the open verifier
+(`@kaval/receipt-verifier` in the main repo) against `GET /v1/proof-verification-keys/:kid`.
+
+**Honest boundaries:** demo results carry no organizational authority; a production `ALLOW`
+requires a customer-bound action policy and applicable empirical calibration; `REVIEW` is never
+permission to act.
+
+## Legacy currentness tools
 
 A verdict status is one of: `current`, `stale`, `contradicted`, `unsupported`, `conflicting`,
 `insufficient`. Treat anything other than `current` (or `act === false`) as "re-research before
-relying on it". These `currentness_*` tools preserve the original held-belief API for compatibility;
-the product category is the broader evidence gate.
+relying on it". These `currentness_*` tools preserve the original held-belief API for
+compatibility; prefer `verify` for single conclusions and `proof_audit` + `proof_gate` for
+consequential actions.
 
 ## Environment
 

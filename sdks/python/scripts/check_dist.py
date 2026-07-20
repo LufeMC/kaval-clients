@@ -107,9 +107,10 @@ def check_wheel(path: Path, version: str) -> None:
                 from kaval import (
                     KavalCancellationToken,
                     KavalClient,
-                    ProductResearchInput,
-                    ProductResearchResult,
-                    ProductResearchStreamEvent,
+                    KavalProofNotFoundError,
+                    ProofPacket,
+                    VerifyInput,
+                    VerifyResult,
                 )
 
                 module_path = Path(kaval.__file__).resolve()
@@ -119,9 +120,10 @@ def check_wheel(path: Path, version: str) -> None:
                 expected_exports = {
                     "KavalCancellationToken",
                     "KavalClient",
-                    "ProductResearchInput",
-                    "ProductResearchResult",
-                    "ProductResearchStreamEvent",
+                    "KavalProofNotFoundError",
+                    "ProofPacket",
+                    "VerifyInput",
+                    "VerifyResult",
                 }
                 missing_exports = expected_exports - set(kaval.__all__)
                 if missing_exports:
@@ -129,24 +131,38 @@ def check_wheel(path: Path, version: str) -> None:
                         "packed wheel omits exports: " + ", ".join(sorted(missing_exports))
                     )
 
-                for method_name in (
-                    "research_products",
-                    "stream_product_research",
-                ):
+                for method_name in ("verify", "audit", "gate_action", "gate"):
                     method = getattr(KavalClient, method_name, None)
                     if not callable(method):
                         raise SystemExit(f"packed wheel omits KavalClient.{method_name}")
-                    parameters = inspect.signature(method).parameters
+                for method_name in ("verify", "audit"):
+                    parameters = inspect.signature(
+                        getattr(KavalClient, method_name)
+                    ).parameters
                     if "cancellation_token" not in parameters:
                         raise SystemExit(
                             f"packed wheel omits cancellation_token on {method_name}"
                         )
 
+                # The removed commerce surface must never ship again.
+                for removed in (
+                    "research_products",
+                    "stream_product_research",
+                    "search_offers",
+                    "stream_offer_search",
+                    "gate_offer_search",
+                ):
+                    if hasattr(KavalClient, removed):
+                        raise SystemExit(
+                            f"packed wheel still ships removed KavalClient.{removed}"
+                        )
+
                 # These references make the import assertions explicit to static analyzers too.
                 assert KavalCancellationToken
-                assert ProductResearchInput
-                assert ProductResearchResult
-                assert ProductResearchStreamEvent
+                assert KavalProofNotFoundError
+                assert ProofPacket
+                assert VerifyInput
+                assert VerifyResult
                 """
             )
             completed = subprocess.run(

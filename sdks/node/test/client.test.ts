@@ -44,7 +44,7 @@ describe("Kaval", () => {
     expect(CALIBRATION_SUPPORT_IS_REQUIRED).toBe(true);
   });
 
-  it("verify() posts to /v1/verify with bearer auth and returns the decision", async () => {
+  it("verifyBelief() posts the legacy body to /v1/verify with bearer auth and returns the decision", async () => {
     let seen:
       | { url: string; auth?: string; idempotencyKey?: string; body: unknown }
       | undefined;
@@ -62,7 +62,7 @@ describe("Kaval", () => {
       }),
     });
 
-    const decision = await kaval.verify("Acme's CEO is Jane Doe");
+    const decision = await kaval.verifyBelief("Acme's CEO is Jane Doe");
 
     expect(seen?.url).toBe("https://api.usekaval.com/v1/verify");
     expect(seen?.auth).toBe("Bearer kv_live_abc");
@@ -74,7 +74,7 @@ describe("Kaval", () => {
     expect(decision.status).toBe("stale");
   });
 
-  it("verify() accepts a full input object (and omits undefined)", async () => {
+  it("verifyBelief() accepts a full input object (and omits undefined)", async () => {
     let body: unknown;
     const kaval = new Kaval({
       fetch: mockFetch((_u, init) => {
@@ -82,7 +82,7 @@ describe("Kaval", () => {
         return { json: { ...DECISION, act: true } };
       }),
     });
-    await kaval.verify({
+    await kaval.verifyBelief({
       belief: "x",
       minConfidence: 0.8,
       freshness_sla: "7d",
@@ -95,7 +95,7 @@ describe("Kaval", () => {
     });
   });
 
-  it("verify({ mode }) sends the tier and parses back tier + the deep explanation", async () => {
+  it("verifyBelief({ mode }) sends the tier and parses back tier + the deep explanation", async () => {
     let body: unknown;
     const explained = {
       ...DECISION,
@@ -114,7 +114,7 @@ describe("Kaval", () => {
         return { json: explained };
       }),
     });
-    const decision = await kaval.verify({ belief: "x", mode: "deep" });
+    const decision = await kaval.verifyBelief({ belief: "x", mode: "deep" });
     expect(body).toEqual({ belief: "x", mode: "deep" });
     expect(decision.tier).toBe("deep");
     expect(decision.explanation?.citations[0]?.url).toBe(
@@ -240,14 +240,14 @@ describe("Kaval", () => {
       proof_id: "proof_1",
       material_claim_ids: ["claim_1"],
       threshold: {
-        policy_id: "pricing-current",
+        policy_id: "filing-current",
         policy_version: "1.0.0",
         materiality: "low" as const,
         maximum_false_allow_risk: 0.01,
         minimum_evidence_coverage: 0.95,
       },
       action: {
-        description: "Display the current price",
+        description: "Display the current filing status",
         materiality: "low" as const,
         reversibility: "reversible" as const,
       },
@@ -283,7 +283,7 @@ describe("Kaval", () => {
         json: { error: { code: "bad_request" } },
       })),
     });
-    await expect(kaval.verify("x")).rejects.toBeInstanceOf(KavalError);
+    await expect(kaval.verifyBelief("x")).rejects.toBeInstanceOf(KavalError);
   });
 
   it("check() throws KavalError on a non-2xx response", async () => {
@@ -304,39 +304,25 @@ describe("Kaval", () => {
           path: new URL(url).pathname,
           key: (init?.headers as Record<string, string>)?.["idempotency-key"],
         });
-        return {
-          json:
-            new URL(url).pathname === "/v1/search-offers"
-              ? {
-                  schema_revision: 2,
-                  request_id: "offer-request-1",
-                  request_digest: `sha256:${"a".repeat(64)}`,
-                  action: { state: "NEEDS_REVIEW", reason_codes: [] },
-                  candidates: [],
-                }
-              : {},
-        };
+        return { json: {} };
       }),
     });
     const requestOptions = { idempotencyKey: "logical-operation-0001" };
 
     await kaval.check("x", requestOptions);
-    await kaval.verify("x", requestOptions);
+    await kaval.verify(
+      { conclusion: "x", evidence_refs: ["https://example.com/source"] },
+      requestOptions,
+    );
+    await kaval.verifyBelief("x", requestOptions);
     await kaval.extractAndCheck({ text: "x" }, requestOptions);
     await kaval.scanStore({ beliefs: ["x"] }, requestOptions);
     await kaval.monitor({ beliefs: ["x"] }, requestOptions);
-    await kaval.searchOffers(
-      {
-        schema_revision: 1,
-        request_id: "offer-request-1",
-      } as Parameters<Kaval["searchOffers"]>[0],
-      requestOptions,
-    );
     await kaval.audit(
       { text: "x", as_of: "2026-07-10T20:00:00Z" },
       requestOptions,
     );
-    await kaval.gateAction(
+    await kaval.gate(
       {
         proof_id: "proof_1",
         material_claim_ids: ["claim_1"],
@@ -361,10 +347,10 @@ describe("Kaval", () => {
     expect(seen.map(({ path }) => path)).toEqual([
       "/v1/check",
       "/v1/verify",
+      "/v1/verify",
       "/v1/extract-and-check",
       "/v1/scan-store",
       "/v1/monitor",
-      "/v1/search-offers",
       "/v1/audit",
       "/v1/gate",
       "/v1/kaval",
@@ -421,7 +407,7 @@ describe("Kaval", () => {
     }) as typeof fetch;
 
     await expect(
-      new Kaval({ fetch: fetchImpl }).verify("x"),
+      new Kaval({ fetch: fetchImpl }).verifyBelief("x"),
     ).resolves.toMatchObject({
       id: "id_1",
     });
@@ -457,7 +443,7 @@ describe("Kaval", () => {
       );
     }) as typeof fetch;
 
-    const out = await new Kaval({ fetch: fetchImpl }).verify("x", {
+    const out = await new Kaval({ fetch: fetchImpl }).verifyBelief("x", {
       idempotencyKey: "caller-operation-0001",
     });
     expect(out.id).toBe("id_1");

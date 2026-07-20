@@ -1,0 +1,38 @@
+{
+  "proofId": "proof_01JKAVAL0EXAMPLE00000000AA",
+  "state": "current",
+  "decision": {
+    "action_decision_id": "ad_01JKAVAL0EXAMPLE0000000AD",
+    "proof_id": "proof_01JKAVAL0EXAMPLE00000000AA",
+    "decision": "ALLOW",
+    "system_state": "complete",
+    "material_claim_ids": [
+      "claim_ibc_current_edition"
+    ],
+    "risk": {
+      "kind": "calibrated",
+      "point_estimate": 0.01,
+      "upper_bound": 0.015,
+      "calibration_version": "cal-2026-06",
+      "confidence_level": 0.95
+    },
+    "threshold": {
+      "policy_id": "policy_codes_current_edition",
+      "policy_version": "1.0.0",
+      "materiality": "high",
+      "maximum_false_allow_risk": 0.02,
+      "minimum_evidence_coverage": 0.9
+    },
+    "reason_codes": [
+      "all_material_claims_supported"
+    ],
+    "summary": "All material claims verified against current evidence.",
+    "unresolved_gap_ids": [],
+    "decided_at": "2026-07-20T10:59:45.000Z",
+    "expires_at": "2026-07-27T10:59:45.000Z"
+  },
+  "billingClass": "action_gate",
+  "proofReused": true,
+  "researchPerformed": false,
+  "latencyMs": 6
+}

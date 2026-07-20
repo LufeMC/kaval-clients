@@ -41,6 +41,26 @@ function expectToolOk(res: unknown) {
 }
 
 describe.skipIf(!apiKey)("MCP live tools (hosted API)", () => {
+  it("verify → /v1/verify returns a signed proof receipt", async () => {
+    const client = await connectLiveClient();
+    const out = expectToolOk(
+      await client.callTool({
+        name: "verify",
+        arguments: {
+          conclusion: "Tim Cook is the CEO of Apple",
+          evidence_refs: ["https://www.apple.com/leadership/"],
+        },
+      }),
+    );
+    expect(["valid", "invalidated", "could_not_verify"]).toContain(
+      String(out.status),
+    );
+    expect(typeof out.receipt?.proof_id).toBe("string");
+    expect(["ALLOW", "REVIEW", "BLOCK"]).toContain(
+      String(out.receipt?.decision),
+    );
+  }, 180_000);
+
   it("currentness_verify → /v1/verify returns a real decision", async () => {
     const client = await connectLiveClient();
     const out = expectToolOk(

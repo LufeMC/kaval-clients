@@ -44,7 +44,7 @@ describe("kaval-mcp bin (smoke)", () => {
     }
   });
 
-  it("starts and exposes the currentness tools over stdio", async () => {
+  it("starts and exposes the verification tools over stdio", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [binPath],
@@ -56,9 +56,12 @@ describe("kaval-mcp bin (smoke)", () => {
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name)).toEqual(
+      const names = tools.map((t) => t.name);
+      expect(names).toEqual(
         expect.arrayContaining([
-          "product_research",
+          "verify",
+          "proof_audit",
+          "proof_gate",
           "currentness_verify",
           "currentness_check",
           "currentness_extract_and_check",
@@ -67,6 +70,7 @@ describe("kaval-mcp bin (smoke)", () => {
           "report_outcome",
         ]),
       );
+      expect(names.join(" ")).not.toMatch(/offer|product/);
     } finally {
       await client.close();
     }

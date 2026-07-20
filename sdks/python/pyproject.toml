@@ -1,13 +1,13 @@
 [project]
 name = "kaval"
-version = "0.4.0"
-description = "Python SDK for Kaval product research, review-only offer evidence, and action-bound decisions."
+version = "0.5.0"
+description = "Python SDK for Kaval: verify the facts an AI agent's action relies on and enforce time-bounded signed proofs (ALLOW, REVIEW, BLOCK)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Lumaa, Inc. (dba Kaval)" }]
-keywords = ["kaval", "ai", "agents", "evidence", "commerce", "freshness", "rag", "verification"]
+keywords = ["kaval", "ai", "agents", "evidence", "verification", "proofs", "freshness", "rag"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",

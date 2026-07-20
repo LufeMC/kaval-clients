@@ -1,9 +1,9 @@
 {
   "name": "@usekaval/mcp",
   "mcpName": "io.github.LufeMC/kaval",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "Apache-2.0",
-  "description": "MCP evidence gate for AI agents: product research, review-only offer search, proof audit/gate, and currentness tools.",
+  "description": "MCP verification surface for AI agents: verify conclusions against evidence and enforce signed, time-bounded proofs — ALLOW, REVIEW, or BLOCK.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -26,7 +26,7 @@
     "ai",
     "agents",
     "evidence",
-    "commerce",
+    "proof",
     "freshness",
     "rag",
     "verification"

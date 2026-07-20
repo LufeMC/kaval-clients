@@ -1,8 +1,8 @@
 {
   "name": "@usekaval/kaval",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "Apache-2.0",
-  "description": "Evidence gates for AI agents: product research, review-only offer evidence, and action-bound decisions.",
+  "description": "Fact verification for AI agents: before an agent acts, Kaval verifies the facts the action relies on and returns a time-bounded, Ed25519-signed proof your policy can enforce.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,10 +20,11 @@
     "ai",
     "agents",
     "evidence",
-    "commerce",
+    "verification",
+    "proof",
+    "receipts",
     "freshness",
-    "rag",
-    "verification"
+    "rag"
   ],
   "engines": {
     "node": ">=18"

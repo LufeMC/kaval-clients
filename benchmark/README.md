@@ -6,6 +6,10 @@ returns a typed verdict — `current`, `stale`, `contradicted`, `unsupported`, `
 it says stop** and **honest when it can't be sure**, so we grade it against real, web-verified beliefs
 rather than a relevance score.
 
+> This benchmark grades the belief-freshness (currentness) surface, which remains available under
+> clearly-legacy names. The primary client surface is now `verify` / `audit` / `gate` — see the
+> [root README](../README.md).
+
 ## Headline numbers
 
 - **158 / 159 (99.4%)** on the graded eval set — a curated, web-verified suite spanning execs, entities,
@@ -23,12 +27,12 @@ rather than a relevance score.
 Same graded cases, same verdict taxonomy, same scoring — Kaval vs. a naive `OpenAI web_search` + prompt
 loop (the 140 verdict-graded cases):
 
-| | Accuracy | Confidently wrong | Cost / check | Latency |
-| --- | --- | --- | --- | --- |
-| **Kaval `verify()`** (live, auto tier) | **139/140 (99.3%)** | **1** | **$0.0099** | **3.3 s** |
-| OpenAI `web_search` + prompt (naive loop) | 135/140 (96.4%) | 5 | $0.0462 | 18.7 s |
+|                                           | Accuracy            | Confidently wrong | Latency   |
+| ----------------------------------------- | ------------------- | ----------------- | --------- |
+| **Kaval** (live, auto tier)               | **139/140 (99.3%)** | **1**             | **3.3 s** |
+| OpenAI `web_search` + prompt (naive loop) | 135/140 (96.4%)     | 5                 | 18.7 s    |
 
-More accurate, **5× fewer confidently-wrong answers**, ~4.7× cheaper, ~5.7× faster. Two of the naive
+More accurate, **5× fewer confidently-wrong answers**, ~5.7× faster. Two of the naive
 loop's five errors were adversarial injection cases it was talked into — where the gate holds the line.
 
 ## Reproduce it
@@ -36,7 +40,7 @@ loop's five errors were adversarial injection cases it was talked into — where
 - **Fastest:** type any claim into the live demo at **[usekaval.com](https://usekaval.com)** — that is the
   same engine returning a live verdict on a belief of your choosing.
 - **See what's tested:** [`eval-sample.json`](./eval-sample.json) is a representative subset of the graded
-  cases — subject, fact type, and the acceptable verdicts for each. `expected` is a *set* of acceptable
+  cases — subject, fact type, and the acceptable verdicts for each. `expected` is a _set_ of acceptable
   statuses (a former exec may read `stale`, `contradicted`, or `unsupported` depending on the source); a
   few strict fact types (SOC-2 Type-II, live pricing, funding) are left to manual assessment because they
   demand strong primary proof and often **correctly abstain** rather than over-claim.

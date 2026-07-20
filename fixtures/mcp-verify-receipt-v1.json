@@ -1,0 +1,69 @@
+{
+  "status": "valid",
+  "receipt": {
+    "proof_id": "proof_01JMCPVERIFY000000000001",
+    "decision": "ALLOW",
+    "reason": "All material claims verified against current evidence.",
+    "share_endpoint": "/v1/proofs/proof_01JMCPVERIFY000000000001/share",
+    "packet": {
+      "proof_id": "proof_01JMCPVERIFY000000000001",
+      "created_at": "2026-07-20T12:00:01.000Z",
+      "research_contract": {
+        "held_belief": "The 2024 International Building Code is the current IBC edition.",
+        "as_of": "2026-07-20T12:00:00.000Z",
+        "action": {
+          "description": "Cite the current IBC edition in a permit filing",
+          "materiality": "high",
+          "reversibility": "partially_reversible"
+        }
+      },
+      "claim_dag": {
+        "claims": [
+          "claim:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "roots": [
+          "claim:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "dependency_edges": []
+      },
+      "source_versions": [
+        {
+          "source_id": "origin:codes.iccsafe.org",
+          "url": "https://codes.iccsafe.org/content/IBC2024V2.0",
+          "observed_at": "2026-07-20T12:00:00.500Z",
+          "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "evidence_spans": [
+        {
+          "claim_id": "claim:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "source_id": "origin:codes.iccsafe.org",
+          "quote": "2024 International Building Code",
+          "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "claim_assessments": [
+        {
+          "claim_id": "claim:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "verdict": "supported",
+          "confidence": 0.98
+        }
+      ],
+      "action_decision": {
+        "decision": "ALLOW",
+        "summary": "All material claims verified against current evidence.",
+        "expires_at": "2026-07-21T12:00:01.000Z"
+      },
+      "expiry": {
+        "recheck_at": "2026-07-20T18:00:01.000Z",
+        "expires_at": "2026-07-21T12:00:01.000Z",
+        "invalidation_triggers": ["source_changed"]
+      },
+      "signature": {
+        "algorithm": "Ed25519",
+        "key_id": "proof-ed25519-2026-07",
+        "signature": "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    }
+  }
+}

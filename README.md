@@ -1,11 +1,11 @@
 # Kaval clients
 
-Open-source client libraries for [Kaval](https://usekaval.com), the **evidence gate for AI agents**.
-Before an AI agent acts, Kaval checks that the current evidence still supports the action. It returns
-`ALLOW`, `REVIEW`, or `BLOCK` with supporting evidence; when that evidence changes or expires, the
-permission does too.
+Open-source client libraries for [Kaval](https://usekaval.com). Before an AI agent acts, Kaval
+verifies the facts the action relies on and returns a time-bounded signed proof your policy can
+enforce — `ALLOW`, `REVIEW`, or `BLOCK`.
 
-**Search retrieves evidence. Kaval decides whether that evidence is sufficient for the action.**
+**Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
+facts those rules depend on are still true.**
 
 These are **thin HTTP clients** for the hosted Kaval API (`https://api.usekaval.com`). Create an API
 key at [usekaval.com](https://usekaval.com).
@@ -20,134 +20,66 @@ API is still finalizing that operation.
 | [`kaval`](sdks/python)          | Python            | `pip install kaval`     | [sdks/python](sdks/python)   |
 | [`@usekaval/mcp`](packages/mcp) | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
-## Two workflows, one evidence-gate product
+## One verification surface
 
-- **Find current offer evidence.** Product Research accepts product text with optional market,
-  destination, and filters—no ZIP, manufacturer, model, identifier, or customer-controlled execution
-  budget is required. It returns canonical exact/possible/conflicting groups, prices, availability,
-  refinements, warnings, and bounded coverage. A sufficiently identified result can enter the
-  optional exact-action Offer Search lane, which adds destination and action constraints. Both
-  surfaces remain review-only until representative calibration supports a narrower claim: they
-  return withheld authority, `NEEDS_REVIEW`, or `NO_RELIABLE_OFFER`, never `ALLOW` or
-  `SAFE_TO_QUOTE`.
-- **React when evidence changes.** Build an action-bound proof, then gate reuse at the action
-  boundary. A changed, expired, or invalidated dependency prevents an old permission from silently
-  remaining valid.
+- **`audit()`** builds the proof — the expensive path. It re-derives the facts behind an intended
+  action and returns a full signed proof packet with a typed action decision and expiry.
+- **`gate()`** applies that proof at act time — no search, no parsing, no model call. It answers
+  "is this proof still valid for this action, right now?" with a typed state and decision.
+- **`verify()`** is the compatibility surface for single conclusions: one assertable proposition
+  plus the evidence it rests on, in; a bounded status plus a signed receipt, out.
 
-Both workflows follow the same lifecycle: evidence → supported conclusion → permission for one
-action → expiry or evidence change → review, re-evaluation, or renewed permission.
-
-## Node
+## Verify a conclusion (Node)
 
 ```ts
 import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
 
-const research = await kaval.researchProducts({
-  query: "cordless framing nailer",
-  market: { country_code: "US", preferred_currency: "USD" },
-});
-for await (const event of kaval.streamProductResearch({
-  query: "cordless framing nailer",
-})) {
-  if (event.type === "group_updated") renderProductGroup(event.group);
-  if (event.type === "completed") renderResearch(event.result);
-}
-// research.authority.permission === "withheld": Product Research never authorizes an action.
-
-const offers = await kaval.searchOffers(offerRequest);
-if (offers.action.state === "NEEDS_REVIEW") {
-  await queueForHumanReview(offers.candidates);
-}
-// Never quote or purchase from current Offer Search output without review.
-
-if (offers.lifecycle?.persistence === "persisted") {
-  const finalFence = await kaval.gateOfferSearch({
-    dependency_id: offers.lifecycle.dependency_id,
-    generation_id: offers.lifecycle.generation_id,
-    generation_number: offers.lifecycle.generation_number,
-    generation_digest: offers.lifecycle.generation_digest,
-    action_binding: offers.lifecycle.action_binding,
-  });
-  // Every state remains REVIEW-only with permission withheld. Refresh any non-current generation.
-  if (finalFence.state !== "current_review_only") await refreshOfferEvidence();
-}
-
-// The SSE surface emits research-only progress, or `replay` for an already-completed same-key
-// operation, followed by the same canonical final result.
-for await (const event of kaval.streamOfferSearch(offerRequest)) {
-  if (event.type === "candidate_provisional") {
-    // Display-only: not durable, not actionable, permission is withheld, final inclusion is pending.
-    renderProvisionalOffer(event.details.candidate);
-  } else if (event.type === "final") {
-    await queueForHumanReview(event.result.candidates);
-  }
-}
-
-const proof = await kaval.audit({
-  text: "Acme is eligible for a $12,000 refund",
+const result = await kaval.verify({
+  conclusion:
+    "The 2024 International Building Code is the current IBC edition.",
+  evidence_refs: [
+    "https://codes.iccsafe.org/content/IBC2024V2.0",
+    {
+      url: "https://www.iccsafe.org/products-and-services/",
+      document_id: "icc-catalog-2026",
+    },
+  ],
   as_of: new Date().toISOString(),
-  intended_action: "Issue the refund",
-  materiality: "critical",
-  reversibility: "irreversible",
+  materiality: "high",
 });
-const gate = await kaval.gateAction({
-  proof_id: proof.proof_id,
-  material_claim_ids: proof.action_decision.material_claim_ids,
-  threshold: proof.action_decision.threshold,
-  action: proof.research_contract.action,
-});
-if (
-  gate.enforcement?.controlApplied === true &&
-  gate.enforcement.executionAllowed !== true
-) {
-  throw new Error("Kaval blocked the action");
-}
-if (
-  gate.enforcement === undefined &&
-  (gate.state !== "current" || gate.decision.decision !== "ALLOW")
-) {
-  throw new Error("Kaval did not allow the action");
-}
-// controlApplied === false is shadow mode: observe wouldAllow without controlling the action.
 
-// Legacy held-belief compatibility remains available:
-const { act, status, reason } = await kaval.verify({
-  belief: "Acme is on our Enterprise plan",
-  url: "https://billing.acme.com/account",
-  held_at: "2026-03-01T00:00:00Z",
-});
-if (!act) {
-  // status ∈ stale | contradicted | unsupported | insufficient — re-research before acting.
-}
+// result.status: "valid" | "invalidated" | "could_not_verify"
+if (result.status !== "valid") holdWorkflow(result);
+
+// result.receipt: { proof_id, decision: "ALLOW" | "BLOCK" | "REVIEW", reason,
+//                   share_endpoint: "/v1/proofs/<id>/share", packet: <full signed ProofPacket> }
+// Expiry lives on the signed packet: result.receipt.packet.action_decision.expires_at
+await saveReceipt(result.receipt);
 ```
 
-## Python
+`evidence_refs` takes 1–20 entries; each is either a plain `https` URL string or a strict
+`{ url, document_id }` object (an object without `document_id` is invalid — use the plain string
+form instead), and `document_id` values must be unique. Optional fields: `as_of` (RFC 3339 with
+offset), `materiality` (`low | medium | high | critical`), `intended_action`, `reversibility`
+(`reversible | partially_reversible | irreversible | unknown`), `jurisdiction`, `context`. Unknown
+fields are rejected.
+
+## Verify a conclusion (Python)
 
 ```python
 from kaval import KavalClient
 
 kaval = KavalClient(api_key=os.environ["KAVAL_API_KEY"])
-research = kaval.research_products({
-    "query": "cordless framing nailer",
-    "market": {"country_code": "US", "preferred_currency": "USD"},
+
+result = kaval.verify({
+    "conclusion": "The 2024 International Building Code is the current IBC edition.",
+    "evidence_refs": ["https://codes.iccsafe.org/content/IBC2024V2.0"],
 })
-# research["authority"]["permission"] == "withheld"
-
-offers = kaval.search_offers(offer_request)
-if offers["action"]["state"] == "NEEDS_REVIEW":
-    queue_for_human_review(offers["candidates"])
-
-if offers.get("lifecycle", {}).get("persistence") == "persisted":
-    lifecycle = offers["lifecycle"]
-    final_fence = kaval.gate_offer_search({
-        "dependency_id": lifecycle["dependency_id"],
-        "generation_id": lifecycle["generation_id"],
-        "generation_number": lifecycle["generation_number"],
-        "generation_digest": lifecycle["generation_digest"],
-        "action_binding": lifecycle["action_binding"],
-    })
+if result["status"] != "valid":
+    hold_workflow(result)
+save_receipt(result["receipt"])  # receipt["decision"] is "ALLOW" | "BLOCK" | "REVIEW"
 ```
 
 ## MCP
@@ -156,11 +88,61 @@ if offers.get("lifecycle", {}).get("persistence") == "persisted":
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Exposes primary review-only `product_research` with MCP progress, review-only
-`offer_search` + `offer_search_gate`, and `proof_audit` + `proof_gate` for the full evidence-gate protocol,
-plus legacy compatibility tools
-`currentness_verify`, `currentness_check`, `…_extract_and_check`, `…_scan_store`, `…_monitor`, and
-`report_outcome` over stdio. See [packages/mcp](packages/mcp).
+Exposes the verification surface (`verify`, `proof_audit`, `proof_gate`) plus the legacy
+compatibility tools (`currentness_check`, `currentness_extract_and_check`, `currentness_scan_store`,
+`currentness_monitor`, the legacy-named belief verify, and `report_outcome`) over stdio. See
+[packages/mcp](packages/mcp).
+
+## Build a proof, then gate the action (Node)
+
+```ts
+const proof = await kaval.audit({
+  text: "Acme Corp's vendor security attestation is active and unexpired",
+  as_of: new Date().toISOString(),
+  intended_action: "Grant Acme's integration production data access",
+  materiality: "critical",
+  reversibility: "irreversible",
+});
+// proof is the full signed ProofPacket: proof_id, research_contract, claim_dag,
+// source_versions, evidence_spans, claim_assessments, action_decision, expiry, signature.
+
+const gate = await kaval.gate({
+  proof_id: proof.proof_id,
+  material_claim_ids: proof.action_decision.material_claim_ids,
+  threshold: proof.action_decision.threshold,
+  action: proof.research_contract.action,
+});
+// gate.state: "current" | "not_yet_valid" | "expired" | "invalidated" | "dependency_changed"
+//           | "integrity_failed" | "policy_mismatch" | "operational_failure"
+// (an unknown proof surfaces as a typed proof_not_found error, not a state)
+if (gate.state === "current" && gate.decision.decision === "ALLOW") {
+  await performAction();
+} else {
+  holdAction(gate); // REVIEW is never permission
+}
+```
+
+A changed, expired, or invalidated dependency prevents an old permission from silently remaining
+valid — the gate returns a typed non-`current` state instead of reusing the proof.
+
+## Signed receipts, verifiable offline
+
+Every proof packet carries a signature — `{ "algorithm": "Ed25519", "key_id":
+"proof-ed25519-2026-07", "signature": "…" }`. Anyone can verify a receipt offline with the open
+verifier (`@kaval/receipt-verifier` in the main repo) against the public JWK served at
+`GET /v1/proof-verification-keys/:kid` — no Kaval account required.
+
+**Honest boundaries:** demo results carry no organizational authority; a production `ALLOW`
+requires a customer-bound action policy and applicable empirical calibration; `REVIEW` is never
+permission.
+
+## Legacy surfaces
+
+The pre-proof belief-freshness surfaces still work and stay supported: `check`,
+`extract-and-check`, `scan-store`, `monitor`, the structured `kaval` / `kaval-batch` endpoints,
+`report-outcome`, and `health`. The legacy belief-freshness verify remains available under a
+clearly-legacy name (see each package's README) — `verify` itself is the conclusion-verification
+surface above.
 
 ## API origin env vars
 

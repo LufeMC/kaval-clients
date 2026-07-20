@@ -1,37 +1,21 @@
 /**
- * @usekaval/kaval — the evidence gate for AI agents. A typed, dependency-light HTTP client for the Kaval API.
- * Mirrors the Python SDK (`pip install kaval`). Uses the global `fetch` (Node 18+, browsers, edge).
+ * @usekaval/kaval — before an AI agent acts, Kaval verifies the facts the action relies on and
+ * returns a time-bounded signed proof your policy can enforce — ALLOW, REVIEW, or BLOCK.
+ * A typed, dependency-light HTTP client for the Kaval API. Mirrors the Python SDK
+ * (`pip install kaval`). Uses the global `fetch` (Node 18+, browsers, edge).
  */
 
 import type {
   AuditInput,
+  EvidenceRef,
   ProofGateInput,
   ProofGateResult,
   ProofPacket,
+  VerifyRequest,
+  VerifyResponse,
 } from "./proof.js";
-import {
-  reviewOnlyCommerceActionTimeGateResult,
-  reviewOnlyOfferSearchProgressEvent,
-  reviewOnlyOfferSearchReplayEvent,
-  reviewOnlyOfferSearchResult,
-  type CommerceActionTimeGateInput,
-  type CommerceActionTimeGateResult,
-  type LiveOfferSearchResult,
-  type OfferSearchInput,
-  type OfferSearchStreamEvent,
-} from "./offer-search.js";
-import {
-  reviewOnlyProductResearchProgressEvent,
-  reviewOnlyProductResearchReplayEvent,
-  reviewOnlyProductResearchResult,
-  type ProductResearchInput,
-  type ProductResearchResult,
-  type ProductResearchStreamEvent,
-} from "./product-research.js";
 
 export type * from "./proof.js";
-export type * from "./offer-search.js";
-export type * from "./product-research.js";
 
 export type VerdictStatus =
   | "current"
@@ -41,7 +25,7 @@ export type VerdictStatus =
   | "conflicting"
   | "insufficient";
 
-/** Speed/depth tier for a verify() call. */
+/** Speed/depth tier for a legacy belief-freshness call. */
 export type VerifyMode = "instant" | "fast" | "auto" | "deep";
 
 export interface Evidence {
@@ -136,7 +120,9 @@ export type OutcomeKind =
   | "stale_was_false_alarm"
   | "relied_and_correct";
 
-export interface VerifyInput {
+/** LEGACY input for the belief-freshness fallback on /v1/verify. Prefer `VerifyRequest`
+ *  (a conclusion + evidence_refs) via `verify()` for new integrations. */
+export interface VerifyBeliefInput {
   belief: string;
   context?: string;
   url?: string;
@@ -185,6 +171,18 @@ export class KavalError extends Error {
   ) {
     super(`kaval ${status}: ${JSON.stringify(payload)}`);
     this.name = "KavalError";
+  }
+}
+
+/** Thrown when POST /v1/gate returns HTTP 404 `proof_not_found`: no durable proof matches the
+ *  supplied `proof_id`/`proof_key` in this workspace. Build one with `audit()` before gating —
+ *  a missing proof is never a 200 gate state. */
+export class ProofNotFoundError extends KavalError {
+  readonly code = "proof_not_found";
+
+  constructor(payload: unknown, idempotencyKey?: string) {
+    super(404, payload, idempotencyKey);
+    this.name = "ProofNotFoundError";
   }
 }
 
@@ -282,6 +280,37 @@ function apiErrorCode(payload: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+/** Fail fast on the wire-invalid evidence_refs shapes the server strictly rejects, before any
+ *  network call or idempotency-key spend. */
+function assertEvidenceRefs(refs: readonly EvidenceRef[]): void {
+  if (!Array.isArray(refs) || refs.length < 1 || refs.length > 20) {
+    throw new TypeError(
+      "evidence_refs must contain between 1 and 20 references",
+    );
+  }
+  const documentIds = new Set<string>();
+  for (const ref of refs) {
+    if (typeof ref === "string") continue;
+    const url = (ref as { url?: unknown })?.url;
+    const documentId = (ref as { document_id?: unknown })?.document_id;
+    if (
+      !ref ||
+      typeof ref !== "object" ||
+      typeof url !== "string" ||
+      typeof documentId !== "string" ||
+      documentId.length === 0
+    ) {
+      throw new TypeError(
+        "each evidence reference must be a plain https URL string or a { url, document_id } object; a bare { url } object without document_id is invalid — pass the plain string instead",
+      );
+    }
+    if (documentIds.has(documentId)) {
+      throw new TypeError("evidence_refs document_id values must be unique");
+    }
+    documentIds.add(documentId);
+  }
+}
+
 function requestSignal(
   external: AbortSignal | undefined,
   timeoutMs: number | null,
@@ -310,7 +339,8 @@ function requestSignal(
   };
 }
 
-/** The Kaval client: evidence in, an action-bound decision or review-only research result out. */
+/** The Kaval client: build a signed proof with `audit()`, enforce it at act time with `gate()`,
+ *  or verify one conclusion with `verify()`. */
 export class Kaval {
   private readonly base: string;
   private readonly headers: Record<string, string>;
@@ -419,9 +449,59 @@ export class Kaval {
     }
   }
 
-  /** Pre-action gate: the verdict plus `act`. Treat `act === false` as "re-fetch before relying on it". */
-  verify(
-    input: string | VerifyInput,
+  /** Build, sign, and persist a complete action-bound proof packet (the expensive research path). */
+  audit(input: AuditInput, options?: RequestOptions): Promise<ProofPacket> {
+    return this.billablePost("/v1/audit", input, options);
+  }
+
+  /** Apply a current durable proof to the exact action at act time — no search, parsing, or model
+   * call. A missing proof is HTTP 404 `proof_not_found`, thrown as `ProofNotFoundError`. */
+  async gate(
+    input: ProofGateInput,
+    options?: RequestOptions,
+  ): Promise<ProofGateResult> {
+    try {
+      return await this.billablePost<ProofGateResult>(
+        "/v1/gate",
+        input,
+        options,
+      );
+    } catch (error) {
+      if (
+        error instanceof KavalError &&
+        error.status === 404 &&
+        apiErrorCode(error.payload) === "proof_not_found"
+      ) {
+        throw new ProofNotFoundError(error.payload, error.idempotencyKey);
+      }
+      throw error;
+    }
+  }
+
+  /** Alias for gate(), kept for callers of the previous method name. */
+  gateAction(
+    input: ProofGateInput,
+    options?: RequestOptions,
+  ): Promise<ProofGateResult> {
+    return this.gate(input, options);
+  }
+
+  /** Compatibility surface: verify one load-bearing conclusion against its evidence references.
+   * Returns `valid` | `invalidated` | `could_not_verify` plus a signed proof receipt. Production
+   * actions should build proof with `audit()` and enforce it with `gate()`. */
+  async verify(
+    request: VerifyRequest,
+    options?: RequestOptions,
+  ): Promise<VerifyResponse> {
+    assertEvidenceRefs(request.evidence_refs);
+    return this.billablePost("/v1/verify", request, options);
+  }
+
+  /** LEGACY belief-freshness fallback (accepted on the same /v1/verify route): the verdict plus
+   * `act`. Treat `act === false` as "re-fetch before relying on it". New integrations should call
+   * `verify()` with a conclusion + evidence_refs, or `audit()`/`gate()` for production actions. */
+  verifyBelief(
+    input: string | VerifyBeliefInput,
     options?: RequestOptions,
   ): Promise<Decision> {
     return this.billablePost(
@@ -468,516 +548,6 @@ export class Kaval {
     return this.billablePost("/v1/monitor", input, options);
   }
 
-  /** Research a product from ordinary product text. The canonical result is bounded,
-   * review-only evidence and never grants permission to quote, buy, or execute an action. */
-  async researchProducts(
-    input: ProductResearchInput,
-    options?: RequestOptions,
-  ): Promise<ProductResearchResult> {
-    const result = await this.billablePost<unknown>(
-      "/v1/product-research",
-      input,
-      options,
-    );
-    return reviewOnlyProductResearchResult(result, { query: input.query });
-  }
-
-  /** Stream canonical, contiguous Product Research events. A live stream begins with
-   * `accepted`; a durable same-key replay begins with `replay`. */
-  async *streamProductResearch(
-    input: ProductResearchInput,
-    options: RequestOptions = {},
-  ): AsyncGenerator<ProductResearchStreamEvent, ProductResearchResult, void> {
-    const idempotencyKey = options.idempotencyKey ?? generatedIdempotencyKey();
-    const headers = {
-      ...this.headers,
-      accept: "text/event-stream",
-      "idempotency-key": idempotencyKey,
-    };
-    const request = requestSignal(
-      options.signal,
-      options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
-    );
-
-    let response: Response | undefined;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    try {
-      for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
-        try {
-          response = await this.f(`${this.base}/v1/product-research`, {
-            method: "POST",
-            headers,
-            signal: request.signal,
-            body: JSON.stringify(input),
-          });
-        } catch (error) {
-          if (request.signal?.aborted || attempt + 1 >= MAX_BILLABLE_ATTEMPTS) {
-            throw attachIdempotencyKey(error, idempotencyKey);
-          }
-          continue;
-        }
-
-        if (response.ok) break;
-        const responseText = await response.text();
-        let payload: unknown = responseText;
-        try {
-          payload = JSON.parse(responseText);
-        } catch {
-          // A non-Kaval intermediary may return a plain-text error.
-        }
-        const code = apiErrorCode(payload);
-        if (
-          attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
-          code !== undefined &&
-          AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
-        ) {
-          response = undefined;
-          continue;
-        }
-        throw new KavalError(response.status, payload, idempotencyKey);
-      }
-
-      if (!response?.ok)
-        throw new Error("unreachable Product Research stream request state");
-      if (
-        !response.headers.get("content-type")?.includes("text/event-stream")
-      ) {
-        throw attachIdempotencyKey(
-          new TypeError("Product Research stream returned a non-SSE response"),
-          idempotencyKey,
-        );
-      }
-      if (!response.body) {
-        throw attachIdempotencyKey(
-          new TypeError("Product Research stream response has no body"),
-          idempotencyKey,
-        );
-      }
-
-      reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let lastSequence = -1;
-      let lastObservedAt: number | undefined;
-      let streamResearchId: string | undefined;
-      let streamRequestDigest: string | undefined;
-      let terminal:
-        | {
-            kind: "completed" | "failed" | "cancelled";
-            result: ProductResearchResult;
-          }
-        | undefined;
-
-      const consumeFrame = (
-        frame: string,
-      ): ProductResearchStreamEvent | null => {
-        const lines = frame.split("\n");
-        const eventName = lines
-          .find((line) => line.startsWith("event:"))
-          ?.slice("event:".length)
-          .trim();
-        const idText = lines
-          .find((line) => line.startsWith("id:"))
-          ?.slice("id:".length)
-          .trim();
-        const dataText = lines
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice("data:".length).trimStart())
-          .join("\n");
-        if (!eventName || !dataText) return null;
-
-        let payload: unknown;
-        try {
-          payload = JSON.parse(dataText);
-        } catch (error) {
-          throw attachIdempotencyKey(error, idempotencyKey);
-        }
-
-        if (eventName === "error") {
-          const error = payload as { status?: unknown };
-          throw new KavalError(
-            typeof error?.status === "number" ? error.status : 500,
-            payload,
-            idempotencyKey,
-          );
-        }
-
-        if (idText === undefined || !/^(0|[1-9][0-9]*)$/u.test(idText)) {
-          throw new TypeError("Product Research stream event ID is invalid");
-        }
-        const id = Number(idText);
-        if (!Number.isSafeInteger(id) || id !== lastSequence + 1) {
-          throw new TypeError(
-            "Product Research stream sequence is not contiguous and zero-based",
-          );
-        }
-
-        if (eventName === "replay") {
-          const event = reviewOnlyProductResearchReplayEvent(payload);
-          if (
-            event.sequence !== id ||
-            (lastSequence === -1 && event.sequence !== 0) ||
-            (lastSequence !== -1 &&
-              (event.research_id !== streamResearchId ||
-                event.request_digest !== streamRequestDigest))
-          ) {
-            throw new TypeError(
-              "Product Research replay sequence or request binding is invalid",
-            );
-          }
-          if (lastSequence === -1) {
-            streamResearchId = event.research_id;
-            streamRequestDigest = event.request_digest;
-          }
-          lastSequence = event.sequence;
-          return event;
-        }
-
-        const event = reviewOnlyProductResearchProgressEvent(payload, {
-          ...(streamResearchId ? { research_id: streamResearchId } : {}),
-          ...(streamRequestDigest
-            ? { request_digest: streamRequestDigest }
-            : {}),
-          query: input.query,
-        });
-        if (event.type !== eventName || event.sequence !== id) {
-          throw new TypeError(
-            "Product Research stream event sequence or type is invalid",
-          );
-        }
-        if (lastSequence === -1 && event.type !== "accepted") {
-          throw new TypeError(
-            "Live Product Research progress must begin with accepted",
-          );
-        }
-        if (streamResearchId === undefined) {
-          streamResearchId = event.research_id;
-          streamRequestDigest = event.request_digest;
-        }
-        const observedAt = Date.parse(event.observed_at);
-        if (lastObservedAt !== undefined && observedAt < lastObservedAt) {
-          throw new TypeError(
-            "Product Research stream timestamps are not monotonic",
-          );
-        }
-        lastObservedAt = observedAt;
-        lastSequence = event.sequence;
-        if (
-          event.type === "completed" ||
-          event.type === "failed" ||
-          event.type === "cancelled"
-        ) {
-          terminal = { kind: event.type, result: event.result };
-        }
-        return event;
-      };
-
-      while (true) {
-        const chunk = await reader.read();
-        buffer =
-          `${buffer}${decoder.decode(chunk.value, { stream: !chunk.done })}`.replaceAll(
-            "\r\n",
-            "\n",
-          );
-        let boundary = buffer.indexOf("\n\n");
-        while (boundary >= 0) {
-          const frame = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
-          const event = consumeFrame(frame);
-          if (event) yield event;
-          if (terminal) return terminal.result;
-          boundary = buffer.indexOf("\n\n");
-        }
-        if (chunk.done) break;
-      }
-
-      if (buffer.trim().length > 0) {
-        const event = consumeFrame(buffer);
-        if (event) yield event;
-        if (terminal) return terminal.result;
-      }
-      throw attachIdempotencyKey(
-        new TypeError(
-          "Product Research stream ended before a canonical terminal event",
-        ),
-        idempotencyKey,
-      );
-    } catch (error) {
-      throw attachIdempotencyKey(error, idempotencyKey);
-    } finally {
-      await reader?.cancel().catch(() => undefined);
-      request.cleanup();
-    }
-  }
-
-  /** Search the accessible configured web for exact or possible offers. Current results are
-   * research-only: action.state is NEEDS_REVIEW or NO_RELIABLE_OFFER, never permission to quote. */
-  async searchOffers(
-    input: OfferSearchInput,
-    options?: RequestOptions,
-  ): Promise<LiveOfferSearchResult> {
-    const result = await this.billablePost<unknown>(
-      "/v1/search-offers",
-      input,
-      options,
-    );
-    return reviewOnlyOfferSearchResult(result, input.request_id);
-  }
-
-  /** Stream bounded, review-only acquisition progress followed by one canonical final result.
-   * Cancellation closes the response body and propagates to the hosted acquisition operation. */
-  async *streamOfferSearch(
-    input: OfferSearchInput,
-    options: RequestOptions = {},
-  ): AsyncGenerator<OfferSearchStreamEvent, LiveOfferSearchResult, void> {
-    const idempotencyKey = options.idempotencyKey ?? generatedIdempotencyKey();
-    const headers = {
-      ...this.headers,
-      accept: "text/event-stream",
-      "idempotency-key": idempotencyKey,
-    };
-    const request = requestSignal(
-      options.signal,
-      options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
-    );
-
-    let response: Response | undefined;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    try {
-      for (let attempt = 0; attempt < MAX_BILLABLE_ATTEMPTS; attempt += 1) {
-        try {
-          response = await this.f(`${this.base}/v1/search-offers`, {
-            method: "POST",
-            headers,
-            signal: request.signal,
-            body: JSON.stringify(input),
-          });
-        } catch (error) {
-          if (request.signal?.aborted || attempt + 1 >= MAX_BILLABLE_ATTEMPTS) {
-            throw attachIdempotencyKey(error, idempotencyKey);
-          }
-          continue;
-        }
-
-        if (response.ok) break;
-        const responseText = await response.text();
-        let payload: unknown = responseText;
-        try {
-          payload = JSON.parse(responseText);
-        } catch {
-          // A non-Kaval intermediary may return a plain-text error.
-        }
-        const code = apiErrorCode(payload);
-        if (
-          attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
-          code !== undefined &&
-          AMBIGUOUS_IDEMPOTENCY_CODES.has(code)
-        ) {
-          response = undefined;
-          continue;
-        }
-        throw new KavalError(response.status, payload, idempotencyKey);
-      }
-
-      if (!response?.ok)
-        throw new Error("unreachable Offer Search stream request state");
-      if (
-        !response.headers.get("content-type")?.includes("text/event-stream")
-      ) {
-        throw attachIdempotencyKey(
-          new TypeError("Offer Search stream returned a non-SSE response"),
-          idempotencyKey,
-        );
-      }
-      if (!response.body) {
-        throw attachIdempotencyKey(
-          new TypeError("Offer Search stream response has no body"),
-          idempotencyKey,
-        );
-      }
-
-      reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let lastSequence = -1;
-      let finalResult: LiveOfferSearchResult | undefined;
-      let streamRequestDigest: string | undefined;
-
-      const consumeFrame = (frame: string): OfferSearchStreamEvent | null => {
-        const lines = frame.split("\n");
-        const eventName = lines
-          .find((line) => line.startsWith("event:"))
-          ?.slice("event:".length)
-          .trim();
-        const idText = lines
-          .find((line) => line.startsWith("id:"))
-          ?.slice("id:".length)
-          .trim();
-        const dataText = lines
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice("data:".length).trimStart())
-          .join("\n");
-        if (!eventName || !dataText) return null;
-
-        let payload: unknown;
-        try {
-          payload = JSON.parse(dataText);
-        } catch (error) {
-          throw attachIdempotencyKey(error, idempotencyKey);
-        }
-        const id = idText === undefined ? undefined : Number(idText);
-        if (idText !== undefined && (!Number.isInteger(id) || id! < 0)) {
-          throw new TypeError("Offer Search stream event ID is invalid");
-        }
-
-        if (eventName === "error") {
-          const error = payload as { status?: unknown };
-          throw new KavalError(
-            typeof error?.status === "number" ? error.status : 500,
-            payload,
-            idempotencyKey,
-          );
-        }
-        if (eventName === "final") {
-          const result = reviewOnlyOfferSearchResult(payload, input.request_id);
-          if (
-            streamRequestDigest !== undefined &&
-            result.request_digest !== streamRequestDigest
-          ) {
-            throw new TypeError(
-              "Offer Search stream events are bound to another final result",
-            );
-          }
-          const sequence = Number.isInteger(id) ? id! : lastSequence + 1;
-          if (sequence <= lastSequence) {
-            throw new TypeError(
-              "Offer Search stream sequence is not monotonic",
-            );
-          }
-          lastSequence = sequence;
-          finalResult = result;
-          return { type: "final", sequence, result };
-        }
-
-        if (eventName === "replay") {
-          const event = reviewOnlyOfferSearchReplayEvent(
-            payload,
-            input.request_id,
-          );
-          if (
-            (id !== undefined && id !== event.sequence) ||
-            event.sequence <= lastSequence
-          ) {
-            throw new TypeError(
-              "Offer Search stream replay sequence is invalid",
-            );
-          }
-          if (
-            streamRequestDigest !== undefined &&
-            event.request_digest !== streamRequestDigest
-          ) {
-            throw new TypeError("Offer Search replay request binding changed");
-          }
-          streamRequestDigest = event.request_digest;
-          lastSequence = event.sequence;
-          return event;
-        }
-
-        const event = reviewOnlyOfferSearchProgressEvent(payload);
-        if (
-          event.type !== eventName ||
-          event.request_id !== input.request_id ||
-          (id !== undefined && id !== event.sequence) ||
-          event.sequence <= lastSequence
-        ) {
-          throw new TypeError(
-            "Offer Search stream event sequence or type is invalid",
-          );
-        }
-        if (event.type === "candidate_provisional") {
-          if (
-            streamRequestDigest !== undefined &&
-            event.details.request_digest !== streamRequestDigest
-          ) {
-            throw new TypeError(
-              "Offer Search provisional candidate request binding changed",
-            );
-          }
-          streamRequestDigest = event.details.request_digest;
-        }
-        lastSequence = event.sequence;
-        return event;
-      };
-
-      while (true) {
-        const chunk = await reader.read();
-        buffer =
-          `${buffer}${decoder.decode(chunk.value, { stream: !chunk.done })}`.replaceAll(
-            "\r\n",
-            "\n",
-          );
-        let boundary = buffer.indexOf("\n\n");
-        while (boundary >= 0) {
-          const frame = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
-          const event = consumeFrame(frame);
-          if (event) yield event;
-          if (finalResult) return finalResult;
-          boundary = buffer.indexOf("\n\n");
-        }
-        if (chunk.done) break;
-      }
-
-      if (buffer.trim().length > 0) {
-        const event = consumeFrame(buffer);
-        if (event) yield event;
-        if (finalResult) return finalResult;
-      }
-      throw attachIdempotencyKey(
-        new TypeError("Offer Search stream ended before its final result"),
-        idempotencyKey,
-      );
-    } finally {
-      await reader?.cancel().catch(() => undefined);
-      request.cleanup();
-    }
-  }
-
-  /** Re-read one persisted offer generation at the exact action boundary. This final fence always
-   * returns REVIEW with commerce permission withheld; it never authorizes quoting or purchasing. */
-  async gateOfferSearch(
-    input: CommerceActionTimeGateInput,
-    options?: Pick<RequestOptions, "signal" | "timeoutMs">,
-  ): Promise<CommerceActionTimeGateResult> {
-    const result = await this.post<unknown>(
-      "/v1/search-offers/gate",
-      input,
-      options,
-    );
-    return reviewOnlyCommerceActionTimeGateResult(result, input);
-  }
-
-  /** Build, sign, and persist a complete action-bound proof packet. */
-  audit(input: AuditInput, options?: RequestOptions): Promise<ProofPacket> {
-    return this.billablePost("/v1/audit", input, options);
-  }
-
-  /** Apply a current durable proof to the exact action without repeating research. */
-  gateAction(
-    input: ProofGateInput,
-    options?: RequestOptions,
-  ): Promise<ProofGateResult> {
-    return this.billablePost("/v1/gate", input, options);
-  }
-
-  /** Short alias for gateAction(). */
-  gate(
-    input: ProofGateInput,
-    options?: RequestOptions,
-  ): Promise<ProofGateResult> {
-    return this.gateAction(input, options);
-  }
-
   /** Report what actually happened, to calibrate trust over time. */
   reportOutcome(input: {
     id: string;
@@ -988,7 +558,7 @@ export class Kaval {
   }
 
   /** Lower-level structured passthrough: a `KavalRequest` in, the raw `Verdict` out. Prefer
-   *  `verify`/`check` unless you need the structured fact-type form. Mirrors the Python `kaval()`. */
+   *  `verifyBelief`/`check` unless you need the structured fact-type form. Mirrors the Python `kaval()`. */
   kaval(
     request: Record<string, unknown>,
     options?: RequestOptions,

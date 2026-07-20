@@ -6,6 +6,10 @@ unsupported belief raises ``ModelRetry`` with the engine's evidence-backed reaso
 re-answers with the correction in context instead of shipping the stale fact. This is
 verify-and-auto-refresh: Pydantic AI's retry loop IS the refresh.
 
+The adapter rides Kaval's legacy belief-freshness compatibility surface
+(:meth:`kaval.KavalClient.legacy_verify_belief`); production actions should build proof with
+``audit()`` and enforce it with ``gate()``.
+
 Usage (the whole integration)::
 
     from pydantic_ai import Agent
@@ -99,7 +103,7 @@ def verify_output(
         claims = [c for c in claims if isinstance(c, str) and c.strip()][:_MAX_BELIEFS]
         verdicts: list[dict[str, Any]] = []
         for claim in claims:
-            v = kv.verify(
+            v = kv.legacy_verify_belief(
                 claim,
                 mode=mode,
                 min_confidence=min_confidence,

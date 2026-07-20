@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "proof_not_found",
+    "message": "no matching proof packet"
+  }
+}

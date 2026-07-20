@@ -1,0 +1,25 @@
+{
+  "proofId": "proof_01JMCPAUDIT0000000000001",
+  "state": "current",
+  "decision": {
+    "decision": "ALLOW",
+    "summary": "The current proof covers the exact action.",
+    "risk": {
+      "kind": "calibrated",
+      "upper_bound": 0.003,
+      "calibration_version": "cal-2026-07"
+    },
+    "expires_at": "2026-07-11T20:00:01.000Z"
+  },
+  "billingClass": "action_gate",
+  "proofReused": true,
+  "researchPerformed": false,
+  "latencyMs": 7.4,
+  "enforcement": {
+    "mode": "bounded",
+    "controlApplied": true,
+    "executionAllowed": true,
+    "wouldAllow": true,
+    "reason": "inside boundary"
+  }
+}

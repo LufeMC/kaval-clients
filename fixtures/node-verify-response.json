@@ -1,0 +1,436 @@
+{
+  "status": "valid",
+  "receipt": {
+    "proof_id": "proof_01JKAVAL0EXAMPLE00000000AA",
+    "decision": "ALLOW",
+    "reason": "All material claims verified against current evidence.",
+    "share_endpoint": "/v1/proofs/proof_01JKAVAL0EXAMPLE00000000AA/share",
+    "packet": {
+      "proof_id": "proof_01JKAVAL0EXAMPLE00000000AA",
+      "created_at": "2026-07-20T11:00:00.000Z",
+      "research_contract": {
+        "held_belief": "The 2024 International Building Code is the current IBC edition.",
+        "as_of": "2026-07-20T10:59:00.000Z",
+        "action": {
+          "description": "Cite the current IBC edition in a permit filing",
+          "materiality": "high",
+          "reversibility": "partially_reversible",
+          "false_allow_cost_usd": 25000
+        },
+        "jurisdiction": "US"
+      },
+      "protocol": {
+        "protocol": "kaval-proof",
+        "protocol_version": "1.2.0",
+        "schema_version": "2026-07-01",
+        "compiler_version": "compiler-3.4.1",
+        "planner_version": "planner-2.9.0",
+        "adjudicator_version": "adjudicator-4.1.2",
+        "model_versions": {
+          "adjudication": "adjudicator-lm-2026-06"
+        },
+        "tool_versions": {
+          "fetcher": "origin-fetch-1.8.0"
+        },
+        "parser_versions": {
+          "html": "html-parse-2.3.0"
+        }
+      },
+      "claim_dag": {
+        "schema_version": "2026-07-01",
+        "claims": [
+          {
+            "id": "claim_ibc_current_edition",
+            "text": "The 2024 International Building Code is the current IBC edition.",
+            "subject": {
+              "name": "International Building Code",
+              "type": "publication"
+            },
+            "predicate": "current_edition_is",
+            "object": "2024",
+            "claim_type": "policy",
+            "negated": false,
+            "modality": "asserted",
+            "as_of": "2026-07-20T10:59:00.000Z",
+            "jurisdiction": "US",
+            "materiality": "high",
+            "dependencies": []
+          }
+        ],
+        "roots": [
+          "claim_ibc_current_edition"
+        ],
+        "dependency_edges": []
+      },
+      "policies": [
+        {
+          "policy_id": "policy_codes_current_edition",
+          "version": "1.0.0",
+          "effective_from": "2026-01-01T00:00:00.000Z",
+          "claim_types": [
+            "policy",
+            "legal"
+          ],
+          "semantics": "open_world",
+          "admissibility": {
+            "allowed_source_classes": [
+              "official_registry",
+              "regulator",
+              "first_party"
+            ],
+            "forbidden_source_classes": [
+              "aggregator",
+              "web"
+            ],
+            "allowed_artifact_kinds": [
+              "html",
+              "pdf",
+              "json"
+            ],
+            "required_structured_fields": [],
+            "require_raw_artifact": true,
+            "allow_user_supplied_as_decisive": false
+          },
+          "authority": {
+            "minimum_legacy_authority": "primary",
+            "minimum_proximity": "direct_record",
+            "must_include_any_source_class": [
+              "official_registry",
+              "first_party"
+            ],
+            "require_authenticity": true,
+            "require_claim_specific_fitness": true,
+            "claim_specific_rule": "edition currency must come from the publisher of record"
+          },
+          "independence": {
+            "minimum_evidence_families": 1,
+            "minimum_publishers": 1,
+            "maximum_members_per_family_counted": 2,
+            "require_lineage_resolution": true,
+            "require_source_family_removal_test": false,
+            "maximum_family_removal_delta": 0.2
+          },
+          "temporal": {
+            "maximum_evidence_age_s": 604800,
+            "require_valid_time_overlap": true,
+            "require_published_by_as_of": true,
+            "require_known_by_as_of": true,
+            "allow_future_effective_evidence": false,
+            "future_effective_grace_s": 0,
+            "archive_requirement": "when_historical"
+          },
+          "challenge": {
+            "required": true,
+            "strategies": [
+              "negated_search",
+              "correction_retraction_search"
+            ],
+            "minimum_counterevidence_queries": 2,
+            "require_strongest_opposing_interpretation": true,
+            "require_stopping_reason": true
+          },
+          "conflict_resolution": [
+            "prefer_publisher_of_record"
+          ],
+          "force_review_conditions": [
+            "publisher_announces_new_edition"
+          ],
+          "expiry": {
+            "ttl_s": 604800,
+            "recheck_before_expiry_s": 86400,
+            "invalidation_triggers": [
+              "source_changed",
+              "newer_authoritative_evidence"
+            ]
+          },
+          "action_thresholds": [
+            {
+              "materiality": "high",
+              "maximum_false_allow_risk": 0.02,
+              "minimum_evidence_coverage": 0.9,
+              "minimum_support_probability": 0.95,
+              "on_uncalibrated": "REVIEW",
+              "on_degraded": "REVIEW"
+            }
+          ]
+        }
+      ],
+      "policy_bindings": [
+        {
+          "claim_id": "claim_ibc_current_edition",
+          "policy_id": "policy_codes_current_edition",
+          "policy_version": "1.0.0",
+          "policy_hash": "sha256:1f4c9a7e2b8d6f0a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a"
+        }
+      ],
+      "source_versions": [
+        {
+          "source_version_id": "sv_iccsafe_ibc2024",
+          "source_id": "src_iccsafe_codes",
+          "source_signature": "codes.iccsafe.org/content/IBC2024V2.0",
+          "source_class": "first_party",
+          "legacy_authority": "primary",
+          "canonical_url": "https://codes.iccsafe.org/content/IBC2024V2.0",
+          "raw_artifact": {
+            "artifact_id": "art_ibc2024_html",
+            "storage_ref": "artifacts/2026/07/20/art_ibc2024_html",
+            "kind": "html",
+            "media_type": "text/html",
+            "byte_length": 48213,
+            "content_hash": "sha256:9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e",
+            "captured_at": "2026-07-20T10:59:20.000Z",
+            "compression": "gzip",
+            "redaction_state": "none"
+          },
+          "http": {
+            "status": 200,
+            "content_type": "text/html; charset=utf-8",
+            "requested_url": "https://codes.iccsafe.org/content/IBC2024V2.0",
+            "final_url": "https://codes.iccsafe.org/content/IBC2024V2.0"
+          },
+          "version_state": "active",
+          "published_at": "2026-05-01T00:00:00.000Z",
+          "observed_at": "2026-07-20T10:59:20.000Z",
+          "known_at": "2026-07-20T10:59:20.000Z",
+          "publisher_id": "pub_icc",
+          "discovery_providers": [
+            "origin_fetch"
+          ],
+          "acquisition_activity_id": "act_fetch_001"
+        }
+      ],
+      "evidence_spans": [
+        {
+          "evidence_span_id": "span_ibc2024_title",
+          "source_version_id": "sv_iccsafe_ibc2024",
+          "locator": {
+            "kind": "html_selector",
+            "selector": "h1.code-title"
+          },
+          "quote": "2024 International Building Code (IBC)",
+          "span_hash": "sha256:5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d",
+          "language": "en",
+          "extracted_at": "2026-07-20T10:59:25.000Z",
+          "visibility": "public",
+          "quarantined": false,
+          "injection_detected": false
+        }
+      ],
+      "evidence_families": [
+        {
+          "evidence_family_id": "fam_icc_publisher",
+          "label": "ICC publisher of record",
+          "member_source_version_ids": [
+            "sv_iccsafe_ibc2024"
+          ],
+          "origin_source_version_ids": [
+            "sv_iccsafe_ibc2024"
+          ],
+          "lineage_edge_ids": [],
+          "methods": [
+            "publisher_ownership"
+          ],
+          "publisher_group_id": "pubgrp_icc",
+          "confidence": 0.98,
+          "independence_rationale": "Single-family evidence drawn directly from the publisher of record."
+        }
+      ],
+      "lineage_edges": [],
+      "claim_assessments": [
+        {
+          "claim_assessment_id": "ca_ibc_current_edition",
+          "claim_id": "claim_ibc_current_edition",
+          "claim_state": "supported",
+          "temporal_state": "current",
+          "system_state": "complete",
+          "stance": {
+            "support": 0.97,
+            "refute": 0.01,
+            "neutral": 0.02
+          },
+          "evidence_coverage": 0.96,
+          "calibrated_support": {
+            "probability": 0.97,
+            "calibration_version": "cal-2026-06"
+          },
+          "calibration_support": {
+            "feature_schema_version": "fs-1.4",
+            "feature_schema_hash": "sha256:7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e",
+            "support_fingerprint": "sha256:3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c",
+            "feature_vector": {
+              "source_class": "first_party",
+              "claim_type": "policy"
+            }
+          },
+          "risk_upper_bound": 0.015,
+          "evidence_assessments": [
+            {
+              "evidence_assessment_id": "ea_ibc_title",
+              "claim_id": "claim_ibc_current_edition",
+              "evidence_span_id": "span_ibc2024_title",
+              "evidence_family_id": "fam_icc_publisher",
+              "stance": {
+                "support": 0.98,
+                "refute": 0.0,
+                "neutral": 0.02
+              },
+              "entity_match": {
+                "state": "match",
+                "score": 0.99,
+                "rationale": "Same publication and publisher."
+              },
+              "scope_fit": {
+                "state": "exact",
+                "score": 0.97,
+                "rationale": "Edition currency is stated on the code page."
+              },
+              "temporal_fit": {
+                "state": "applicable",
+                "score": 0.98,
+                "rationale": "Observed within the freshness window."
+              },
+              "extraction_confidence": 0.99,
+              "source_fitness": 0.97,
+              "support_mode": "direct",
+              "admissible": true
+            }
+          ],
+          "decisive_evidence_span_ids": [
+            "span_ibc2024_title"
+          ],
+          "counterevidence_span_ids": [],
+          "unresolved_gaps": [],
+          "what_would_change_this": [
+            "ICC publishes a newer IBC edition"
+          ],
+          "assessed_at": "2026-07-20T10:59:40.000Z"
+        }
+      ],
+      "action_decision": {
+        "action_decision_id": "ad_01JKAVAL0EXAMPLE0000000AD",
+        "proof_id": "proof_01JKAVAL0EXAMPLE00000000AA",
+        "decision": "ALLOW",
+        "system_state": "complete",
+        "material_claim_ids": [
+          "claim_ibc_current_edition"
+        ],
+        "risk": {
+          "kind": "calibrated",
+          "point_estimate": 0.01,
+          "upper_bound": 0.015,
+          "calibration_version": "cal-2026-06",
+          "confidence_level": 0.95
+        },
+        "threshold": {
+          "policy_id": "policy_codes_current_edition",
+          "policy_version": "1.0.0",
+          "materiality": "high",
+          "maximum_false_allow_risk": 0.02,
+          "minimum_evidence_coverage": 0.9
+        },
+        "reason_codes": [
+          "all_material_claims_supported"
+        ],
+        "summary": "All material claims verified against current evidence.",
+        "unresolved_gap_ids": [],
+        "decided_at": "2026-07-20T10:59:45.000Z",
+        "expires_at": "2026-07-27T10:59:45.000Z"
+      },
+      "calibration": {
+        "status": "calibrated",
+        "version": "cal-2026-06",
+        "protocol_version": "1.2.0",
+        "training_dataset_hash": "sha256:1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d",
+        "evaluation_dataset_hash": "sha256:5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a",
+        "feature_schema_version": "fs-1.4",
+        "feature_schema_hash": "sha256:7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e",
+        "method": "isotonic",
+        "trained_through": "2026-06-30T00:00:00.000Z",
+        "applicable_claim_types": [
+          "policy",
+          "legal"
+        ],
+        "applicable_domains": [
+          "building_codes"
+        ],
+        "metrics": {
+          "brier_score": 0.04,
+          "log_loss": 0.16,
+          "expected_calibration_error": 0.02,
+          "sample_size": 1056
+        }
+      },
+      "provenance": {
+        "activities": [
+          {
+            "activity_id": "act_compile_001",
+            "kind": "compile",
+            "parent_activity_ids": [],
+            "status": "completed",
+            "parameters_hash": "sha256:9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c",
+            "input_hashes": [],
+            "output_hashes": [
+              "sha256:1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a"
+            ],
+            "started_at": "2026-07-20T10:59:05.000Z",
+            "completed_at": "2026-07-20T10:59:10.000Z"
+          },
+          {
+            "activity_id": "act_fetch_001",
+            "kind": "fetch",
+            "parent_activity_ids": [
+              "act_compile_001"
+            ],
+            "status": "completed",
+            "provider": "origin_fetch",
+            "tool_version": "origin-fetch-1.8.0",
+            "parameters_hash": "sha256:3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e",
+            "input_hashes": [
+              "sha256:1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a"
+            ],
+            "output_hashes": [
+              "sha256:9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e"
+            ],
+            "started_at": "2026-07-20T10:59:12.000Z",
+            "completed_at": "2026-07-20T10:59:20.000Z"
+          },
+          {
+            "activity_id": "act_decide_001",
+            "kind": "decide",
+            "parent_activity_ids": [
+              "act_fetch_001"
+            ],
+            "status": "completed",
+            "parameters_hash": "sha256:5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e",
+            "input_hashes": [
+              "sha256:9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e"
+            ],
+            "output_hashes": [
+              "sha256:7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b"
+            ],
+            "started_at": "2026-07-20T10:59:40.000Z",
+            "completed_at": "2026-07-20T10:59:45.000Z"
+          }
+        ],
+        "root_activity_ids": [
+          "act_compile_001"
+        ],
+        "research_stopping_reason": "decisive_primary_evidence_with_counterevidence_search_exhausted"
+      },
+      "expiry": {
+        "issued_at": "2026-07-20T11:00:00.000Z",
+        "expires_at": "2026-07-27T10:59:45.000Z",
+        "recheck_at": "2026-07-26T10:59:45.000Z",
+        "invalidation_triggers": [
+          "source_changed",
+          "newer_authoritative_evidence"
+        ]
+      },
+      "signature": {
+        "algorithm": "Ed25519",
+        "key_id": "proof-ed25519-2026-07",
+        "signature": "kx1uY2FsaWJyYXRlZC1wcm9vZi1zaWduYXR1cmUtZXhhbXBsZS1ieXRlcy1ub3QtcmVhbA=="
+      }
+    }
+  }
+}

@@ -649,23 +649,58 @@ export type ProofGateInput = ProofGateInputBase &
     | { proof_key: string; proof_id?: never }
   );
 
+/** Every state /v1/gate can return as a 200. A missing proof is HTTP 404 `proof_not_found`
+ *  (thrown as `ProofNotFoundError`), never a 200 state. */
 export type ProofGateState =
   | "current"
-  | "expired"
   | "not_yet_valid"
+  | "expired"
   | "invalidated"
   | "dependency_changed"
   | "integrity_failed"
   | "policy_mismatch"
-  | "not_found"
   | "operational_failure";
 
-export type ProofBillingClass =
-  | "action_gate"
-  | "direct_refresh"
-  | "web_refresh"
-  | "deep_refresh"
-  | "operational_failure";
+export type ProofBillingClass = "action_gate" | "operational_failure";
+
+/** One evidence reference for POST /v1/verify: EITHER a plain https URL string OR a strict
+ *  `{ url, document_id }` pair. A bare `{ url }` object without `document_id` is invalid on the
+ *  wire — pass the plain string instead. `document_id` values must be unique per request. */
+export type EvidenceRef = string | { url: string; document_id: string };
+
+/** POST /v1/verify body — the compatibility surface for one load-bearing conclusion. */
+export interface VerifyRequest {
+  /** The exact conclusion the downstream workflow intends to rely on. */
+  conclusion: string;
+  /** 1–20 references to the records or source versions that support the conclusion. */
+  evidence_refs: EvidenceRef[];
+  /** RFC 3339 datetime with offset. */
+  as_of?: IsoTimestamp;
+  materiality?: Materiality;
+  intended_action?: string;
+  reversibility?: ActionReversibility;
+  jurisdiction?: string;
+  context?: string;
+}
+
+export type VerifyStatus = "valid" | "invalidated" | "could_not_verify";
+
+/** The signed receipt inside a /v1/verify response. There is no receipt-level `expires_at`;
+ *  expiry lives at `packet.action_decision.expires_at`. */
+export interface VerifyReceipt {
+  proof_id: string;
+  decision: ActionDisposition;
+  reason: string;
+  /** Follow-up endpoint (`/v1/proofs/<id>/share`), deliberately not a raw bearer URL. */
+  share_endpoint: string;
+  /** The full signed proof packet backing this receipt. */
+  packet: ProofPacket;
+}
+
+export interface VerifyResponse {
+  status: VerifyStatus;
+  receipt: VerifyReceipt;
+}
 
 export interface ProofEnforcementResult {
   mode: "shadow" | "block_only" | "bounded";
