@@ -16,6 +16,14 @@ permissions:
 jobs:
   npm:
     name: Publish Node SDK (@usekaval/kaval) to npm
+    # DO NOT ADD A LIVE / STAGING GATE HERE, and do not re-add one to any job below.
+    # There is no staging deployment and there never was: the only Kaval server is production, and
+    # this repository holds exactly one secret (NPM_TOKEN). A gate on staging credentials fails
+    # every release forever, and repointing it at production would write test sources, receipts and
+    # outcome reports into the live product on every tag. This repo publishes on what it can
+    # honestly run by itself — build, lint, typecheck, and the hermetic suites. The real
+    # client↔server contract test belongs in the private repo's CI, which is the only place both
+    # these clients and a real server exist.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -46,6 +54,9 @@ jobs:
 
   mcp:
     name: Publish MCP server (@usekaval/mcp) to npm
+    # A real ordering dependency: `pnpm publish` rewrites the `workspace:^` range below into a
+    # semver range on `@usekaval/kaval`, so that version has to exist on npm before this tarball is
+    # installable.
     needs: [npm]
     runs-on: ubuntu-latest
     permissions:
@@ -79,6 +90,10 @@ jobs:
 
   pypi:
     name: Publish Python SDK (kaval) to PyPI
+    # Not a build dependency — a release-ordering edge. A tag is one release across three
+    # registries, so a failed npm publish should stop this one rather than leave a version that
+    # exists on PyPI and nowhere else.
+    needs: [npm]
     runs-on: ubuntu-latest
     # Uses PyPI Trusted Publishing (OIDC) — configure a trusted publisher for `kaval` on PyPI first,
     # pointing at this repo + workflow. No PYPI_TOKEN secret needed. (Set up an environment named `pypi`.)

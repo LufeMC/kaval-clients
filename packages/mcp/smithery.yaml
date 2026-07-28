@@ -21,13 +21,25 @@ startCommand:
           https://usekaval.com. Sent to the local MCP process as the
           KAVAL_API_KEY environment variable; used as a bearer token
           against the hosted Kaval API.
+      # Without this, a Smithery install is hard-wired to api.usekaval.com — there is no other
+      # way to reach a self-hosted deployment, which SELFHOST.md requires for MCP.
+      kavalBaseUrl:
+        type: string
+        title: Kaval API Base URL
+        description: >-
+          Optional. Point at a self-hosted or staging Kaval API, e.g.
+          https://kaval.internal.example.com. Leave empty to use the
+          hosted API at https://api.usekaval.com.
 
   # Returns { command, args, env } for the local stdio process.
   commandFunction: |-
     (config) => ({
       command: 'npx',
       args: ['-y', '@usekaval/mcp'],
-      env: { KAVAL_API_KEY: config.kavalApiKey }
+      env: {
+        KAVAL_API_KEY: config.kavalApiKey,
+        ...(config.kavalBaseUrl ? { KAVAL_BASE_URL: config.kavalBaseUrl } : {})
+      }
     })
 
   # Placeholder shown in the Smithery UI / playground (never a real key).

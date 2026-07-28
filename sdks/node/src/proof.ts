@@ -613,56 +613,6 @@ export interface ProofPacket {
   signature?: { algorithm: string; key_id: string; signature: string };
 }
 
-/** POST /v1/audit body. `domain` is descriptive metadata; it never expands calibration support. */
-export interface AuditInput {
-  text: string;
-  as_of: IsoTimestamp;
-  materiality?: Materiality;
-  intended_action?: string;
-  reversibility?: ActionReversibility;
-  false_allow_cost_usd?: number;
-  false_block_cost_usd?: number;
-  wait_cost_usd?: number;
-  domain?: string;
-  subject_hint?: string;
-  jurisdiction?: string;
-  geography?: string;
-  units?: string;
-  context?: string;
-  aliases?: string[];
-  origin_urls?: string[];
-  record?: RecordRef;
-  record_field?: string;
-}
-
-interface ProofGateInputBase {
-  expected_dependency_versions?: Record<string, string>;
-  material_claim_ids: string[];
-  threshold: DecisionThreshold;
-  action: ActionContext;
-}
-
-/** POST /v1/gate requires exactly one durable proof locator. */
-export type ProofGateInput = ProofGateInputBase &
-  (
-    | { proof_id: string; proof_key?: never }
-    | { proof_key: string; proof_id?: never }
-  );
-
-/** Every state /v1/gate can return as a 200. A missing proof is HTTP 404 `proof_not_found`
- *  (thrown as `ProofNotFoundError`), never a 200 state. */
-export type ProofGateState =
-  | "current"
-  | "not_yet_valid"
-  | "expired"
-  | "invalidated"
-  | "dependency_changed"
-  | "integrity_failed"
-  | "policy_mismatch"
-  | "operational_failure";
-
-export type ProofBillingClass = "action_gate" | "operational_failure";
-
 /** One evidence reference for POST /v1/verify: EITHER a plain https URL string OR a strict
  *  `{ url, document_id }` pair. A bare `{ url }` object without `document_id` is invalid on the
  *  wire — pass the plain string instead. `document_id` values must be unique per request. */
@@ -700,25 +650,4 @@ export interface VerifyReceipt {
 export interface VerifyResponse {
   status: VerifyStatus;
   receipt: VerifyReceipt;
-}
-
-export interface ProofEnforcementResult {
-  mode: "shadow" | "block_only" | "bounded";
-  controlApplied: boolean;
-  executionAllowed: boolean | null;
-  wouldAllow: boolean;
-  reason: string;
-}
-
-export interface ProofGateResult {
-  proofId: string;
-  state: ProofGateState;
-  decision: ActionDecision;
-  billingClass: ProofBillingClass;
-  proofReused: boolean;
-  researchPerformed: false;
-  humanOverrideApplied?: true;
-  latencyMs: number;
-  reason?: string;
-  enforcement?: ProofEnforcementResult;
 }

@@ -1,165 +1,52 @@
 /**
- * @usekaval/kaval — before an AI agent acts, Kaval verifies the facts the action relies on and
- * returns a time-bounded signed proof your policy can enforce — ALLOW, REVIEW, or BLOCK.
- * A typed, dependency-light HTTP client for the Kaval API. Mirrors the Python SDK
- * (`pip install kaval`). Uses the global `fetch` (Node 18+, browsers, edge).
+ * @usekaval/kaval — before an AI agent acts, Kaval verifies the facts the action depends on and
+ * returns ALLOW, REVIEW, or BLOCK with a signed receipt. A typed, dependency-light HTTP client for
+ * the Kaval API. Mirrors the Python SDK (`pip install kaval`). Uses the global `fetch`
+ * (Node 18+, browsers, edge).
+ *
+ * One call does the work: `check()`. Register what Kaval should watch with `addSource()`, push your
+ * own documents with `sendEvent()`, and subscribe to `fact_state.delta` webhooks with
+ * `subscribeFactStateDeltas()` so you are told when a fact flips instead of polling for it.
  */
 
 import type {
-  AuditInput,
+  AddSourceInput,
+  AddSourceResult,
+  CheckInput,
+  CheckReceipt,
+  CheckResult,
+  CreateWebhookInput,
+  CreateWebhookResult,
+  RecompileSourceResult,
+  RotateWebhookSigningKeyResult,
+  SourceEventInput,
+  SourceEventResult,
+  WatchedSource,
+  WebhookDeliveryPage,
+  WebhookSubscription,
+} from "./check.js";
+import { FACT_STATE_DELTA_EVENT_TYPE } from "./check.js";
+import type {
   EvidenceRef,
-  ProofGateInput,
-  ProofGateResult,
-  ProofPacket,
+  IsoTimestamp,
   VerifyRequest,
   VerifyResponse,
 } from "./proof.js";
 
 export type * from "./proof.js";
-
-export type VerdictStatus =
-  | "current"
-  | "stale"
-  | "contradicted"
-  | "unsupported"
-  | "conflicting"
-  | "insufficient";
-
-/** Speed/depth tier for a legacy belief-freshness call. */
-export type VerifyMode = "instant" | "fast" | "auto" | "deep";
-
-export interface Evidence {
-  /** Canonical source signature (host/path). */
-  source: string;
-  url?: string;
-  fetched_at: string;
-  http_status?: number;
-  content_hash?: string;
-  extracted: { statement: string; [k: string]: unknown };
-  authority?: number | string;
-}
-
-/** A source backing a deep-tier explanation; `[n]` in the content refers to `citations[n-1]`. */
-export interface Citation {
-  url: string;
-  title?: string;
-}
-
-/** The deep tier's cited synthesis: markdown `content` with `[n]` citations + an overall grounding band. */
-export interface Explanation {
-  content: string;
-  citations: Citation[];
-  confidence: "high" | "medium" | "low";
-}
-
-/** A typed freshness verdict for a belief. */
-export interface Verdict {
-  id: string;
-  status: VerdictStatus;
-  /** Calibrated 0–1. */
-  confidence: number;
-  reason: string;
-  /** ISO timestamp — the freshness guarantee. */
-  checked_at: string;
-  evidence: Evidence[];
-  /** Present iff `status !== "current"`. */
-  discrepancy?: { kind: string; [k: string]: unknown };
-  freshness_delta_s?: number;
-  /** The tier that produced this verdict (echoes the requested `mode`, default "auto"). */
-  tier?: VerifyMode;
-  /** Deep tier only: a cited synthesis explaining the verdict. */
-  explanation?: Explanation;
-}
-
-/** A verdict plus `act` — true only when the belief is `current` and confident enough to rely on. */
-export interface Decision extends Verdict {
-  act: boolean;
-}
-
-export interface CheckedBelief extends Verdict {
-  belief: string;
-}
-
-export interface ScanRisk {
-  id: string;
-  belief?: string;
-  status: VerdictStatus;
-  confidence: number;
-  reason: string;
-  source?: string;
-}
-
-export interface ScanResult {
-  total: number;
-  summary: Partial<Record<VerdictStatus, number>>;
-  /** The beliefs most likely to have drifted, worst first. */
-  riskiest: ScanRisk[];
-  /** The tier the sweep ran at (echoes `input.mode`, default "fast"). Always present. */
-  tier: VerifyMode;
-}
-
-/** Cross-run memory so a monitor delivers only NEWLY-risky beliefs. Persist it between runs (cron) or
- *  pass the previous response's `state` straight back in. */
-export interface MonitorState {
-  riskyKeys: string[];
-}
-
-export interface MonitorResult extends ScanResult {
-  checked_at: string;
-  /** How many newly-risky beliefs were delivered to the webhook. */
-  delivered: number;
-  webhookOk?: boolean;
-  /** This sweep's risky keys — pass it back as `input.state` next run so a still-stale belief isn't
-   *  re-delivered every sweep. */
-  state: MonitorState;
-}
+export type * from "./check.js";
+export {
+  DEFAULT_CHECK_MAX_WAIT_MS,
+  FACT_STATE_DELTA_EVENT_TYPE,
+  MAX_CHECK_MAX_WAIT_MS,
+  MIN_CHECK_MAX_WAIT_MS,
+} from "./check.js";
 
 export type OutcomeKind =
   | "current_later_contradicted"
   | "stale_caught_real"
   | "stale_was_false_alarm"
   | "relied_and_correct";
-
-/** LEGACY input for the belief-freshness fallback on /v1/verify. Prefer `VerifyRequest`
- *  (a conclusion + evidence_refs) via `verify()` for new integrations. */
-export interface VerifyBeliefInput {
-  belief: string;
-  context?: string;
-  url?: string;
-  held_at?: string;
-  held_content_hash?: string;
-  held_evidence?: string[];
-  freshness_sla?: string;
-  proof_standard?: string;
-  /** Act only if confidence ≥ this (default 0.7). */
-  minConfidence?: number;
-  /** Speed/depth tier: instant (cache/prior only, no LLM) | fast (cheap model) | auto (default) |
-   *  deep (strongest model, max accuracy + a cited `explanation`). The response echoes `tier`. */
-  mode?: VerifyMode;
-}
-
-export interface CheckInput {
-  belief: string;
-  context?: string;
-  held_evidence?: string[];
-  freshness_sla?: string;
-  proof_standard?: string;
-}
-
-export interface ScanInput {
-  beliefs: string[];
-  freshness_sla?: string;
-  concurrency?: number;
-  /** Speed/depth tier for the whole sweep (default "fast"). */
-  mode?: VerifyMode;
-}
-
-export interface MonitorInput extends ScanInput {
-  /** URL that receives a POST with the newly-risky beliefs. */
-  webhook?: string;
-  /** Last sweep's risky keys (from the previous response's `state`) → deliver only newly-risky beliefs. */
-  state?: MonitorState;
-}
 
 /** Thrown on any non-2xx response. */
 export class KavalError extends Error {
@@ -174,15 +61,28 @@ export class KavalError extends Error {
   }
 }
 
-/** Thrown when POST /v1/gate returns HTTP 404 `proof_not_found`: no durable proof matches the
- *  supplied `proof_id`/`proof_key` in this workspace. Build one with `audit()` before gating —
- *  a missing proof is never a 200 gate state. */
-export class ProofNotFoundError extends KavalError {
-  readonly code = "proof_not_found";
+/**
+ * Thrown when the API answers `410 tool_retired`. Every pre-0.6 verification endpoint
+ * (`/v1/audit`, `/v1/gate`, `/v1/kaval`, `/v1/scan-store`, `/v1/extract-and-check`, `/v1/monitor`,
+ * and the belief routes) collapsed into `POST /v1/check`. Call `check()` instead — the message says
+ * so explicitly rather than leaving an agent to guess at an unexplained HTTP error.
+ */
+export class KavalRetiredError extends KavalError {
+  readonly code = "tool_retired";
+  /** The endpoint that replaced the one you called — always `/v1/check` today. */
+  readonly replacement: string;
 
-  constructor(payload: unknown, idempotencyKey?: string) {
-    super(404, payload, idempotencyKey);
-    this.name = "ProofNotFoundError";
+  constructor(payload: unknown, path: string, idempotencyKey?: string) {
+    const replacement =
+      (payload as { replacement?: unknown } | null)?.replacement ?? "/v1/check";
+    super(410, payload, idempotencyKey);
+    this.name = "KavalRetiredError";
+    this.replacement =
+      typeof replacement === "string" ? replacement : "/v1/check";
+    this.message =
+      `kaval 410: ${path} was retired in v0.6 — use ${this.replacement} ` +
+      `(the \`check()\` method) instead. One call verifies the facts an action depends on and ` +
+      `returns ALLOW, REVIEW, or BLOCK with a signed receipt.`;
   }
 }
 
@@ -207,13 +107,14 @@ export interface KavalOptions {
   baseUrl?: string;
   /** Inject a fetch implementation (tests, custom agents). Defaults to the global `fetch`. */
   fetch?: typeof fetch;
-  /** Default deadline for each HTTP operation. Defaults to 30 seconds; set null to disable. */
+  /** Default deadline for each HTTP operation. Defaults to 150 seconds; set null to disable. */
   timeoutMs?: number | null;
 }
 
-/** Transport options for one billable API operation. Kaval generates a UUID by default. Supply the
- * same key when coordinating a retry outside this client after an ambiguous/no-response failure. */
+/** Transport options for one API operation. */
 export interface RequestOptions {
+  /** Billable operations only. Kaval generates a UUID by default; supply the same key when
+   * coordinating a retry outside this client after an ambiguous/no-response failure. */
   idempotencyKey?: string;
   /** Cancels the operation and every bounded retry. */
   signal?: AbortSignal;
@@ -221,11 +122,16 @@ export interface RequestOptions {
   timeoutMs?: number | null;
 }
 
-export interface KavalBatchOptions extends RequestOptions {
-  concurrency?: number;
-}
-
 const DEFAULT_BASE_URL = "https://api.usekaval.com";
+/**
+ * Matches the API's own handler deadline, which is `MAX_CHECK_MAX_WAIT_MS` plus headroom for
+ * compile and receipt signing. 30s was shorter than the research budget the server applies by
+ * default, so the client aborted the quickstart's very first cold `check()` — a client-side
+ * deadline below the server's is a guaranteed failure, not a safety margin. Callers who want a
+ * shorter wall clock should send `max_wait_ms` (or `mode: "fast"`), which returns a real verdict
+ * instead of an `AbortError`.
+ */
+const DEFAULT_TIMEOUT_MS = 150_000;
 const MAX_BILLABLE_ATTEMPTS = 2;
 const AMBIGUOUS_IDEMPOTENCY_CODES = new Set([
   "idempotency_in_progress",
@@ -278,6 +184,15 @@ function apiErrorCode(payload: unknown): string | undefined {
     return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === "string" ? code : undefined;
+}
+
+/** The retired-route body is a FLAT `{error:"tool_retired"}`, not the `{error:{code}}` envelope. */
+function isRetiredPayload(payload: unknown): boolean {
+  return (
+    !!payload &&
+    typeof payload === "object" &&
+    (payload as { error?: unknown }).error === "tool_retired"
+  );
 }
 
 /** Fail fast on the wire-invalid evidence_refs shapes the server strictly rejects, before any
@@ -339,8 +254,20 @@ function requestSignal(
   };
 }
 
-/** The Kaval client: build a signed proof with `audit()`, enforce it at act time with `gate()`,
- *  or verify one conclusion with `verify()`. */
+function encodeId(id: string): string {
+  if (typeof id !== "string" || id.trim().length === 0) {
+    throw new TypeError("an id is required");
+  }
+  return encodeURIComponent(id.trim());
+}
+
+/**
+ * The Kaval client.
+ *
+ * `check()` is the whole product: send the action an agent is about to take (or the claims it
+ * rests on) and get ALLOW / REVIEW / BLOCK plus a signed receipt. Everything else configures what
+ * Kaval watches so that check stays a warm database read instead of a research run.
+ */
 export class Kaval {
   private readonly base: string;
   private readonly headers: Record<string, string>;
@@ -350,7 +277,8 @@ export class Kaval {
   constructor(opts: KavalOptions = {}) {
     this.base = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
     this.f = opts.fetch ?? fetch;
-    this.timeoutMs = opts.timeoutMs === undefined ? 30_000 : opts.timeoutMs;
+    this.timeoutMs =
+      opts.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : opts.timeoutMs;
     if (
       this.timeoutMs !== null &&
       (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0)
@@ -407,6 +335,9 @@ export class Kaval {
         }
         if (res.ok) return payload as T;
 
+        if (res.status === 410 && isRetiredPayload(payload)) {
+          throw new KavalRetiredError(payload, path, idempotencyKey);
+        }
         const code = apiErrorCode(payload);
         if (
           attempt + 1 < MAX_BILLABLE_ATTEMPTS &&
@@ -424,10 +355,13 @@ export class Kaval {
     throw new Error("unreachable billable request state");
   }
 
-  private async post<T>(
+  /** One request, no idempotency key. Used by reads and by routes the server treats as reads. */
+  private async request<T>(
+    method: string,
     path: string,
     body: unknown,
-    options: Pick<RequestOptions, "signal" | "timeoutMs"> = {},
+    options: RequestOptions = {},
+    extraHeaders: Record<string, string> = {},
   ): Promise<T> {
     const request = requestSignal(
       options.signal,
@@ -435,60 +369,339 @@ export class Kaval {
     );
     try {
       const res = await this.f(`${this.base}${path}`, {
-        method: "POST",
-        headers: this.headers,
+        method,
+        headers: { ...this.headers, ...extraHeaders },
         signal: request.signal,
         // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
-        body: JSON.stringify(body),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const payload: unknown = await res.json().catch(() => null);
-      if (!res.ok) throw new KavalError(res.status, payload);
+      if (!res.ok) {
+        if (res.status === 410 && isRetiredPayload(payload)) {
+          throw new KavalRetiredError(payload, path);
+        }
+        throw new KavalError(res.status, payload);
+      }
       return payload as T;
     } finally {
       request.cleanup();
     }
   }
 
-  /** Build, sign, and persist a complete action-bound proof packet (the expensive research path). */
-  audit(input: AuditInput, options?: RequestOptions): Promise<ProofPacket> {
-    return this.billablePost("/v1/audit", input, options);
-  }
+  /* ------------------------------- the one call ------------------------------ */
 
-  /** Apply a current durable proof to the exact action at act time — no search, parsing, or model
-   * call. A missing proof is HTTP 404 `proof_not_found`, thrown as `ProofNotFoundError`. */
-  async gate(
-    input: ProofGateInput,
-    options?: RequestOptions,
-  ): Promise<ProofGateResult> {
-    try {
-      return await this.billablePost<ProofGateResult>(
-        "/v1/gate",
-        input,
-        options,
-      );
-    } catch (error) {
-      if (
-        error instanceof KavalError &&
-        error.status === 404 &&
-        apiErrorCode(error.payload) === "proof_not_found"
-      ) {
-        throw new ProofNotFoundError(error.payload, error.idempotencyKey);
-      }
-      throw error;
+  /**
+   * Verify the facts an action depends on, before acting on it.
+   *
+   * Send `action` (what the agent is about to do) and optionally `context`, or send `claims`
+   * directly when you already know which facts matter. Kaval compiles the action into atomic
+   * facts, answers each from watched-source state (warm: no model call, no fetch), falls back to
+   * bounded live research for anything stale or novel, and returns:
+   *
+   *   - `decision` — **ALLOW** (every material fact still holds on a fresh basis), **REVIEW**
+   *     (something is unknown, changed at low/medium materiality, or mid-re-evaluation), or
+   *     **BLOCK** (a high/critical fact changed, or a critical fact is unknown).
+   *   - `reason_codes` — why, from a closed eight-code taxonomy.
+   *   - `facts` — one row per fact with its status and the sources it rests on.
+   *   - `receipt` — the id + Ed25519 signature of a document that re-derives this verdict offline.
+   *
+   * Only ALLOW means "safe to act". REVIEW is never permission to act.
+   */
+  check(input: CheckInput, options?: RequestOptions): Promise<CheckResult> {
+    if (input?.action === undefined && input?.claims === undefined) {
+      throw new TypeError("check requires at least one of action or claims");
     }
+    // A check is a read of current state, so the server deliberately does not replay it under an
+    // idempotency key — a retry is free to recompute.
+    return this.request("POST", "/v1/check", input, options);
   }
 
-  /** Alias for gate(), kept for callers of the previous method name. */
-  gateAction(
-    input: ProofGateInput,
+  /** Fetch a signed check receipt exactly as it was signed, by `result.receipt.id`. */
+  async getReceipt(
+    receiptId: string,
     options?: RequestOptions,
-  ): Promise<ProofGateResult> {
-    return this.gate(input, options);
+  ): Promise<CheckReceipt> {
+    const { receipt } = await this.request<{ receipt: CheckReceipt }>(
+      "GET",
+      `/v1/receipts/${encodeId(receiptId)}`,
+      undefined,
+      options,
+    );
+    return receipt;
   }
 
-  /** Compatibility surface: verify one load-bearing conclusion against its evidence references.
-   * Returns `valid` | `invalidated` | `could_not_verify` plus a signed proof receipt. Production
-   * actions should build proof with `audit()` and enforce it with `gate()`. */
+  /* --------------------------------- sources --------------------------------- */
+
+  /**
+   * Register something for Kaval to watch. A URL is polled conditionally; an `entity` (a plain
+   * name plus what you care about, e.g. `{kind:"entity", name:"Aetna", intent:"payer policy
+   * bulletins"}`) is resolved to the URLs that publish it; a `push` source is a document you send
+   * to `sendEvent()`. Facts learned from a watched source stay warm, so checks on them are a
+   * database read.
+   */
+  addSource(
+    input: AddSourceInput,
+    options?: RequestOptions,
+  ): Promise<AddSourceResult> {
+    if (input?.locator === undefined && input?.name === undefined) {
+      throw new TypeError(
+        "addSource requires locator (or name for kind: 'entity')",
+      );
+    }
+    return this.request("POST", "/v1/sources", input, options);
+  }
+
+  /** List the watched sources for this workspace, including any auto-discovered by a check. */
+  async listSources(
+    options?: RequestOptions & { includeInactive?: boolean },
+  ): Promise<WatchedSource[]> {
+    const query = options?.includeInactive ? "?include_inactive=true" : "";
+    const { sources } = await this.request<{ sources: WatchedSource[] }>(
+      "GET",
+      `/v1/sources${query}`,
+      undefined,
+      options,
+    );
+    return sources;
+  }
+
+  async getSource(
+    sourceId: string,
+    options?: RequestOptions,
+  ): Promise<WatchedSource> {
+    const { source } = await this.request<{ source: WatchedSource }>(
+      "GET",
+      `/v1/sources/${encodeId(sourceId)}`,
+      undefined,
+      options,
+    );
+    return source;
+  }
+
+  deleteSource(
+    sourceId: string,
+    options?: RequestOptions,
+  ): Promise<{ deleted: true; id: string }> {
+    return this.request(
+      "DELETE",
+      `/v1/sources/${encodeId(sourceId)}`,
+      undefined,
+      options,
+    );
+  }
+
+  /**
+   * Re-derive a source's acquisition plan — how Kaval fetches and parses it. Enqueued rather than
+   * compiled inline, so this answers `202` with a `job_id` while the worker does the work.
+   *
+   * This is the recovery path when a plan breaks (the site moved its content, or the parser stopped
+   * matching), and the way to get a plan at all for a source registered directly as `kind: "url"`.
+   * Pressing it bypasses the per-source cooldown, which is what a human pressing a button means.
+   * `503 discovery_unavailable` means the deployment has no discovery worker configured.
+   */
+  recompileSource(
+    sourceId: string,
+    options?: RequestOptions,
+  ): Promise<RecompileSourceResult> {
+    return this.request(
+      "POST",
+      `/v1/sources/${encodeId(sourceId)}/recompile`,
+      {},
+      options,
+    );
+  }
+
+  /** Stop polling a source without forgetting it or the facts that depend on it. */
+  async pauseSource(
+    sourceId: string,
+    options?: RequestOptions,
+  ): Promise<WatchedSource> {
+    const { source } = await this.request<{ source: WatchedSource }>(
+      "POST",
+      `/v1/sources/${encodeId(sourceId)}/pause`,
+      {},
+      options,
+    );
+    return source;
+  }
+
+  async resumeSource(
+    sourceId: string,
+    options?: RequestOptions,
+  ): Promise<WatchedSource> {
+    const { source } = await this.request<{ source: WatchedSource }>(
+      "POST",
+      `/v1/sources/${encodeId(sourceId)}/resume`,
+      {},
+      options,
+    );
+    return source;
+  }
+
+  /* ---------------------------------- events --------------------------------- */
+
+  /**
+   * Push a document you own. Kaval stores the version, diffs it against the previous one, marks
+   * the dependent facts stale, re-evaluates them in the background, and delivers a
+   * `fact_state.delta` webhook naming what flipped. Address the document by `source_id`, or by
+   * `namespace` + `document_id` (created on first sight).
+   */
+  sendEvent(
+    input: SourceEventInput,
+    options?: RequestOptions,
+  ): Promise<SourceEventResult> {
+    return this.request("POST", "/v1/events", input, options);
+  }
+
+  /* --------------------------------- webhooks -------------------------------- */
+
+  /**
+   * Subscribe to `fact_state.delta` — the outbound half of the whole mechanism. Without a
+   * subscription the background loops still keep fact state fresh, but nothing tells you a fact
+   * flipped until your next `check()`. `external_scope_ids` filters deliveries to the scope keys
+   * you care about. The returned `webhook_verification` is the only time the signing secret is
+   * shown; store it and verify every inbound delivery with it.
+   */
+  subscribeFactStateDeltas(
+    input: { callback_url: string } & Omit<
+      CreateWebhookInput,
+      "subscription_kind" | "event_types" | "callback_url"
+    >,
+    options?: RequestOptions,
+  ): Promise<CreateWebhookResult> {
+    return this.createWebhook(
+      {
+        ...input,
+        subscription_kind: "fact_state",
+        event_types: [FACT_STATE_DELTA_EVENT_TYPE],
+      },
+      options,
+    );
+  }
+
+  /** Register any webhook subscription. `POST /v1/webhooks` requires an Idempotency-Key. */
+  createWebhook(
+    input: CreateWebhookInput,
+    options?: RequestOptions,
+  ): Promise<CreateWebhookResult> {
+    if (!input?.callback_url?.startsWith("https://")) {
+      throw new TypeError("callback_url must be an https URL");
+    }
+    return this.request("POST", "/v1/webhooks", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  async listWebhooks(options?: RequestOptions): Promise<WebhookSubscription[]> {
+    const { subscriptions } = await this.request<{
+      subscriptions: WebhookSubscription[];
+    }>("GET", "/v1/webhooks", undefined, options);
+    return subscriptions;
+  }
+
+  /** Pause or resume deliveries without losing the subscription's signing key or history. */
+  setWebhookEnabled(
+    subscriptionId: string,
+    enabled: boolean,
+    options?: RequestOptions,
+  ): Promise<WebhookSubscription> {
+    return this.request(
+      "PATCH",
+      `/v1/webhooks/${encodeId(subscriptionId)}`,
+      { enabled },
+      options,
+    );
+  }
+
+  deleteWebhook(
+    subscriptionId: string,
+    options?: RequestOptions,
+  ): Promise<WebhookSubscription> {
+    return this.request(
+      "DELETE",
+      `/v1/webhooks/${encodeId(subscriptionId)}`,
+      undefined,
+      options,
+    );
+  }
+
+  /**
+   * The delivery log for one subscription, newest first — what was sent, what the endpoint
+   * answered, and what is dead-lettered. This is the only place a `delivery_id` is published, so it
+   * is also how you find the argument for `replayWebhookDelivery()`.
+   *
+   * Page with `before` (an RFC 3339 timestamp; the response's `next_before` is the next cursor, and
+   * null on the last page). `limit` is 1–200 and defaults to 50 server-side.
+   */
+  listWebhookDeliveries(
+    subscriptionId: string,
+    options?: RequestOptions & { before?: IsoTimestamp; limit?: number },
+  ): Promise<WebhookDeliveryPage> {
+    const query = new URLSearchParams();
+    if (options?.before !== undefined) query.set("before", options.before);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/webhooks/${encodeId(subscriptionId)}/deliveries${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /**
+   * Roll the subscription's signing key. `overlap_until` (RFC 3339, in the future and within 30
+   * days) keeps the previous generation verifying until then, so a receiver can accept both while
+   * it redeploys. The returned `webhook_verification.secret` is shown exactly once.
+   */
+  rotateWebhookSigningKey(
+    subscriptionId: string,
+    input: { overlap_until: IsoTimestamp },
+    options?: RequestOptions,
+  ): Promise<RotateWebhookSigningKeyResult> {
+    if (!input?.overlap_until) {
+      throw new TypeError(
+        "rotateWebhookSigningKey requires overlap_until, the instant the previous signing key stops verifying",
+      );
+    }
+    return this.request(
+      "POST",
+      `/v1/webhooks/${encodeId(subscriptionId)}/rotate`,
+      input,
+      options,
+    );
+  }
+
+  /** Re-deliver one dead-lettered delivery after fixing the receiving endpoint. */
+  replayWebhookDelivery(
+    deliveryId: string,
+    options?: RequestOptions,
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/webhook-deliveries/${encodeId(deliveryId)}/replay`,
+      {},
+      options,
+    );
+  }
+
+  /* --------------------------------- outcomes -------------------------------- */
+
+  /** Report what actually happened for a prior check (by `result.receipt.id`), to calibrate. */
+  reportOutcome(
+    input: { id: string; kind: OutcomeKind; note?: string },
+    options?: RequestOptions,
+  ): Promise<{ ok: true }> {
+    return this.request("POST", "/v1/report-outcome", input, options);
+  }
+
+  /* ------------------------------- pilot alias -------------------------------- */
+
+  /**
+   * @deprecated Pilot compatibility only — use {@link check}. Verifies one load-bearing conclusion
+   * against explicit evidence references and returns a ProofPacket receipt. Kept while the Matey
+   * pilot migrates; it will be removed once both pilots are on `check()`.
+   */
   async verify(
     request: VerifyRequest,
     options?: RequestOptions,
@@ -497,96 +710,15 @@ export class Kaval {
     return this.billablePost("/v1/verify", request, options);
   }
 
-  /** LEGACY belief-freshness fallback (accepted on the same /v1/verify route): the verdict plus
-   * `act`. Treat `act === false` as "re-fetch before relying on it". New integrations should call
-   * `verify()` with a conclusion + evidence_refs, or `audit()`/`gate()` for production actions. */
-  verifyBelief(
-    input: string | VerifyBeliefInput,
+  /**
+   * Liveness probe. Goes through the same transport as everything else so the documented
+   * `{ signal, timeoutMs }` contract holds here too — a health check that could hang forever is the
+   * one call where hanging is least acceptable.
+   */
+  health(
     options?: RequestOptions,
-  ): Promise<Decision> {
-    return this.billablePost(
-      "/v1/verify",
-      typeof input === "string" ? { belief: input } : input,
-      options,
-    );
-  }
-
-  /** Re-ground a held belief → the raw freshness verdict (no act decision). */
-  check(
-    input: string | CheckInput,
-    options?: RequestOptions,
-  ): Promise<Verdict> {
-    return this.billablePost(
-      "/v1/check",
-      typeof input === "string" ? { belief: input } : input,
-      options,
-    );
-  }
-
-  /** Pull every factual belief out of a paragraph and check each. */
-  extractAndCheck(
-    input: {
-      text: string;
-      context?: string;
-      freshness_sla?: string;
-    },
-    options?: RequestOptions,
-  ): Promise<{ beliefs: CheckedBelief[] }> {
-    return this.billablePost("/v1/extract-and-check", input, options);
-  }
-
-  /** Sweep a belief store for drift, worst first. */
-  scanStore(input: ScanInput, options?: RequestOptions): Promise<ScanResult> {
-    return this.billablePost("/v1/scan-store", input, options);
-  }
-
-  /** Sweep + POST the newly-risky beliefs to a `webhook` (server-side delivery). */
-  monitor(
-    input: MonitorInput,
-    options?: RequestOptions,
-  ): Promise<MonitorResult> {
-    return this.billablePost("/v1/monitor", input, options);
-  }
-
-  /** Report what actually happened, to calibrate trust over time. */
-  reportOutcome(input: {
-    id: string;
-    kind: OutcomeKind;
-    note?: string;
-  }): Promise<{ ok: true }> {
-    return this.post("/v1/report-outcome", input);
-  }
-
-  /** Lower-level structured passthrough: a `KavalRequest` in, the raw `Verdict` out. Prefer
-   *  `verifyBelief`/`check` unless you need the structured fact-type form. Mirrors the Python `kaval()`. */
-  kaval(
-    request: Record<string, unknown>,
-    options?: RequestOptions,
-  ): Promise<Verdict> {
-    return this.billablePost("/v1/kaval", request, options);
-  }
-
-  /** Batch of structured `KavalRequest`s → a `Verdict` per request (same order). Mirrors the Python
-   *  `kaval_batch()`. */
-  kavalBatch(
-    requests: Record<string, unknown>[],
-    opts: KavalBatchOptions = {},
-  ): Promise<Verdict[]> {
-    return this.billablePost(
-      "/v1/kaval-batch",
-      {
-        requests,
-        concurrency: opts.concurrency,
-      },
-      opts,
-    );
-  }
-
-  async health(): Promise<{ ok: boolean; name: string; version: string }> {
-    const res = await this.f(`${this.base}/health`);
-    const payload: unknown = await res.json().catch(() => null);
-    if (!res.ok) throw new KavalError(res.status, payload);
-    return payload as { ok: boolean; name: string; version: string };
+  ): Promise<{ ok: boolean; name: string; version: string }> {
+    return this.request("GET", "/health", undefined, options);
   }
 }
 

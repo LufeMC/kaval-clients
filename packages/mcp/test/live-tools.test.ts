@@ -1,30 +1,32 @@
 /**
  * Opt-in live test: every MCP tool → real /v1/* on the hosted API.
  * Run: KAVAL_API_KEY=kv_live_… pnpm test test/live-tools.test.ts
+ * Point at a local server with KAVAL_BASE_URL=http://localhost:4000.
  */
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Kaval } from "@usekaval/kaval";
 import { describe, expect, it } from "vitest";
 import { createClientFromEnv } from "../src/env.js";
 import { createMcpServer } from "../src/server.js";
 import { parseToolText } from "./helpers/fake-api.js";
 
 const apiKey = process.env.KAVAL_API_KEY;
-const STATUSES = new Set([
-  "current",
-  "stale",
-  "contradicted",
-  "unsupported",
-  "conflicting",
-  "insufficient",
+const VERDICTS = new Set(["ALLOW", "REVIEW", "BLOCK"]);
+const REASON_CODES = new Set([
+  "ALL_FACTS_HOLD",
+  "FACT_CHANGED",
+  "FACT_EXPIRED",
+  "FACT_UNKNOWN",
+  "SOURCE_UPDATED_PENDING_REVIEW",
+  "SOURCE_UNREACHABLE",
+  "NEW_FACT_UNVERIFIED",
+  "COMPILATION_UNCERTAIN",
 ]);
 
 async function connectLiveClient(): Promise<McpClient> {
-  const kaval = apiKey
-    ? new Kaval({ apiKey, baseUrl: process.env.KAVAL_BASE_URL })
-    : createClientFromEnv();
-  const server = createMcpServer(kaval);
+  // Build the client exactly the way the shipped bin does — including its transport deadline. A
+  // hand-rolled `new Kaval(...)` here would have tested a client no user ever runs.
+  const server = createMcpServer(createClientFromEnv());
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const client = new McpClient({ name: "live-tools", version: "0.0.0" });
@@ -41,7 +43,130 @@ function expectToolOk(res: unknown) {
 }
 
 describe.skipIf(!apiKey)("MCP live tools (hosted API)", () => {
-  it("verify → /v1/verify returns a signed proof receipt", async () => {
+  it("check → /v1/check returns a verdict, reason codes, and a receipt", async () => {
+    const client = await connectLiveClient();
+    const out = expectToolOk(
+      await client.callTool({
+        name: "check",
+        arguments: {
+          action: "Publish a note stating that Tim Cook is the CEO of Apple",
+          origin_urls: ["https://www.apple.com/leadership/"],
+        },
+      }),
+    );
+    expect(VERDICTS.has(String(out.decision))).toBe(true);
+    expect(Array.isArray(out.reason_codes)).toBe(true);
+    for (const code of out.reason_codes ?? []) {
+      expect(REASON_CODES.has(code)).toBe(true);
+    }
+    expect(typeof out.receipt?.id).toBe("string");
+    expect(typeof out.latency_ms?.total).toBe("number");
+  }, 120_000);
+
+  it("check with structured claims takes the zero-extraction path", async () => {
+    const client = await connectLiveClient();
+    const out = expectToolOk(
+      await client.callTool({
+        name: "check",
+        arguments: {
+          claims: [
+            {
+              subject: "Apple",
+              predicate: "chief_executive_officer",
+              object: "Tim Cook",
+            },
+          ],
+          mode: "fast",
+        },
+      }),
+    );
+    expect(VERDICTS.has(String(out.decision))).toBe(true);
+    expect(out.facts?.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it("get_receipt → /v1/receipts/:id returns the signed document behind a check", async () => {
+    const client = await connectLiveClient();
+    const check = expectToolOk(
+      await client.callTool({
+        name: "check",
+        arguments: {
+          action: "Publish a note stating that Tim Cook is the CEO of Apple",
+          mode: "fast",
+        },
+      }),
+    );
+    const out = expectToolOk(
+      await client.callTool({
+        name: "get_receipt",
+        arguments: { receipt_id: check.receipt!.id! },
+      }),
+    );
+    expect(out.receipt?.id).toBe(check.receipt?.id);
+    // The whole point of the tool: the fields `check` does not return.
+    expect(typeof out.receipt?.decision_rule_version).toBe("string");
+    expect(Array.isArray(out.receipt?.facts)).toBe(true);
+  }, 120_000);
+
+  it("add_source → list_sources → remove_source round-trips through the registry", async () => {
+    const client = await connectLiveClient();
+    const added = expectToolOk(
+      await client.callTool({
+        name: "add_source",
+        arguments: {
+          kind: "url",
+          locator: "https://www.apple.com/leadership/",
+          intent: "executive leadership roster",
+        },
+      }),
+    );
+    const sourceId = added.source?.["id"];
+    expect(typeof sourceId).toBe("string");
+
+    const listed = expectToolOk(
+      await client.callTool({ name: "list_sources", arguments: {} }),
+    );
+    expect(Array.isArray(listed.sources)).toBe(true);
+    expect(listed.sources?.some((source) => source["id"] === sourceId)).toBe(
+      true,
+    );
+
+    // Leaving the source behind would spend one slot of the tenant's active-source cap per run.
+    const removed = expectToolOk(
+      await client.callTool({
+        name: "remove_source",
+        arguments: { id: String(sourceId) },
+      }),
+    );
+    expect(removed.deleted).toBe(true);
+  }, 120_000);
+
+  it("report_outcome → /v1/report-outcome accepts the receipt id from a check", async () => {
+    const client = await connectLiveClient();
+    const check = expectToolOk(
+      await client.callTool({
+        name: "check",
+        arguments: {
+          action: "Publish a note stating that Tim Cook is the CEO of Apple",
+          mode: "fast",
+        },
+      }),
+    );
+    expect(typeof check.receipt?.id).toBe("string");
+
+    const out = expectToolOk(
+      await client.callTool({
+        name: "report_outcome",
+        arguments: {
+          id: check.receipt!.id!,
+          kind: "relied_and_correct",
+          note: "mcp live-tools test",
+        },
+      }),
+    );
+    expect(out.ok).toBe(true);
+  }, 120_000);
+
+  it("verify (deprecated alias) → /v1/verify still returns a signed proof receipt", async () => {
     const client = await connectLiveClient();
     const out = expectToolOk(
       await client.callTool({
@@ -56,118 +181,6 @@ describe.skipIf(!apiKey)("MCP live tools (hosted API)", () => {
       String(out.status),
     );
     expect(typeof out.receipt?.proof_id).toBe("string");
-    expect(["ALLOW", "REVIEW", "BLOCK"]).toContain(
-      String(out.receipt?.decision),
-    );
-  }, 180_000);
-
-  it("currentness_verify → /v1/verify returns a real decision", async () => {
-    const client = await connectLiveClient();
-    const out = expectToolOk(
-      await client.callTool({
-        name: "currentness_verify",
-        arguments: {
-          belief: "Tim Cook is the CEO of Apple",
-          mode: "fast",
-        },
-      }),
-    );
-    expect(typeof out.id).toBe("string");
-    expect(STATUSES.has(String(out.status))).toBe(true);
-    expect(typeof (out as { act?: boolean }).act).toBe("boolean");
-  }, 120_000);
-
-  it("currentness_check → /v1/check returns a real verdict", async () => {
-    const client = await connectLiveClient();
-    const out = expectToolOk(
-      await client.callTool({
-        name: "currentness_check",
-        arguments: {
-          belief: "Satya Nadella is the CEO of Microsoft",
-          freshness_sla: "30d",
-        },
-      }),
-    );
-    expect(typeof out.id).toBe("string");
-    expect(STATUSES.has(String(out.status))).toBe(true);
-  }, 120_000);
-
-  it("currentness_extract_and_check → /v1/extract-and-check returns beliefs", async () => {
-    const client = await connectLiveClient();
-    const out = expectToolOk(
-      await client.callTool({
-        name: "currentness_extract_and_check",
-        arguments: {
-          text: "Tim Cook is CEO of Apple. Apple is headquartered in Cupertino.",
-        },
-      }),
-    );
-    expect(Array.isArray(out.beliefs)).toBe(true);
-    expect(out.beliefs!.length).toBeGreaterThan(0);
-  }, 180_000);
-
-  it("currentness_scan_store → /v1/scan-store returns a sweep summary", async () => {
-    const client = await connectLiveClient();
-    const out = expectToolOk(
-      await client.callTool({
-        name: "currentness_scan_store",
-        arguments: {
-          beliefs: [
-            "Tim Cook is the CEO of Apple",
-            "Satya Nadella is the CEO of Microsoft",
-          ],
-          mode: "fast",
-        },
-      }),
-    );
-    expect(typeof (out as { total?: number }).total).toBe("number");
-    expect(typeof out.tier).toBe("string");
-    expect(Array.isArray((out as { riskiest?: unknown[] }).riskiest)).toBe(
-      true,
-    );
-  }, 180_000);
-
-  it("currentness_monitor → /v1/monitor returns delivery + state", async () => {
-    const client = await connectLiveClient();
-    const out = expectToolOk(
-      await client.callTool({
-        name: "currentness_monitor",
-        arguments: {
-          beliefs: ["Tim Cook is the CEO of Apple"],
-          mode: "fast",
-          webhook: "https://example.com/hooks/stale",
-        },
-      }),
-    );
-    expect(typeof (out as { delivered?: number }).delivered).toBe("number");
-    expect(
-      (out as { state?: { riskyKeys?: unknown[] } }).state?.riskyKeys,
-    ).toBeDefined();
-  }, 180_000);
-
-  it("report_outcome → /v1/report-outcome accepts an id from verify", async () => {
-    const client = await connectLiveClient();
-    const verify = expectToolOk(
-      await client.callTool({
-        name: "currentness_verify",
-        arguments: {
-          belief: "Tim Cook is the CEO of Apple",
-          mode: "fast",
-        },
-      }),
-    );
-    expect(typeof verify.id).toBe("string");
-
-    const out = expectToolOk(
-      await client.callTool({
-        name: "report_outcome",
-        arguments: {
-          id: verify.id!,
-          kind: "relied_and_correct",
-          note: "mcp live-tools test",
-        },
-      }),
-    );
-    expect((out as { ok?: boolean }).ok).toBe(true);
+    expect(VERDICTS.has(String(out.receipt?.decision))).toBe(true);
   }, 180_000);
 });

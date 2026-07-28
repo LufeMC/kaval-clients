@@ -1,0 +1,145 @@
+{
+  "contract_version": "1",
+  "canonicalization": "kaval-stable-json-v1",
+  "positive": [
+    {
+      "id": "object-order",
+      "input": {
+        "z": 3,
+        "a": 1,
+        "m": {
+          "y": false,
+          "x": null
+        }
+      },
+      "expected_canonical_json": "{\"a\":1,\"m\":{\"x\":null,\"y\":false},\"z\":3}",
+      "expected_utf8_hex": "7b2261223a312c226d223a7b2278223a6e756c6c2c2279223a66616c73657d2c227a223a337d"
+    },
+    {
+      "id": "array-order",
+      "input": {
+        "items": [
+          3,
+          2,
+          1,
+          {
+            "b": "two",
+            "a": "one"
+          }
+        ]
+      },
+      "expected_canonical_json": "{\"items\":[3,2,1,{\"a\":\"one\",\"b\":\"two\"}]}",
+      "expected_utf8_hex": "7b226974656d73223a5b332c322c312c7b2261223a226f6e65222c2262223a2274776f227d5d7d"
+    },
+    {
+      "id": "unicode-and-escapes",
+      "input": {
+        "emoji": "😀",
+        "composed": "é",
+        "controls": "line\nquote\"slash\\"
+      },
+      "expected_canonical_json": "{\"composed\":\"é\",\"controls\":\"line\\nquote\\\"slash\\\\\",\"emoji\":\"😀\"}",
+      "expected_utf8_hex": "7b22636f6d706f736564223a22c3a9222c22636f6e74726f6c73223a226c696e655c6e71756f74655c22736c6173685c5c222c22656d6f6a69223a22f09f9880227d"
+    },
+    {
+      "id": "number-spelling",
+      "input": {
+        "negative_zero": -0,
+        "exponent": 1e-30,
+        "decimal": 1.25,
+        "small": 0.000001
+      },
+      "expected_canonical_json": "{\"decimal\":1.25,\"exponent\":1e-30,\"negative_zero\":0,\"small\":0.000001}",
+      "expected_utf8_hex": "7b22646563696d616c223a312e32352c226578706f6e656e74223a31652d33302c226e656761746976655f7a65726f223a302c22736d616c6c223a302e3030303030317d"
+    },
+    {
+      "id": "interoperable-number-boundaries",
+      "input": {
+        "maximum_safe_integer": 9007199254740991,
+        "minimum_safe_integer": -9007199254740991,
+        "decimal": 0.1,
+        "exponent": 1e-30
+      },
+      "expected_canonical_json": "{\"decimal\":0.1,\"exponent\":1e-30,\"maximum_safe_integer\":9007199254740991,\"minimum_safe_integer\":-9007199254740991}",
+      "expected_utf8_hex": "7b22646563696d616c223a302e312c226578706f6e656e74223a31652d33302c226d6178696d756d5f736166655f696e7465676572223a393030373139393235343734303939312c226d696e696d756d5f736166655f696e7465676572223a2d393030373139393235343734303939317d"
+    },
+    {
+      "id": "signature-exclusion",
+      "input": {
+        "z": [
+          3,
+          {
+            "b": true,
+            "a": "é"
+          }
+        ],
+        "signature": {
+          "algorithm": "Ed25519",
+          "key_id": "test",
+          "signature": "removed-before-canonicalization"
+        },
+        "a": 0
+      },
+      "remove_top_level_signature": true,
+      "expected_canonical_json": "{\"a\":0,\"z\":[3,{\"a\":\"é\",\"b\":true}]}",
+      "expected_utf8_hex": "7b2261223a302c227a223a5b332c7b2261223a22c3a9222c2262223a747275657d5d7d"
+    }
+  ],
+  "rejection": [
+    {
+      "id": "duplicate-object-key",
+      "json_text": "{\"claim\":1,\"claim\":2}",
+      "error_contains": "duplicate JSON object key"
+    },
+    {
+      "id": "non-finite-number",
+      "json_text": "{\"value\":1e400}",
+      "error_contains": "outside the finite range"
+    },
+    {
+      "id": "unsafe-integer-boundary",
+      "json_text": "{\"value\":9007199254740992}",
+      "error_contains": "safe-integer range"
+    },
+    {
+      "id": "unsafe-integer-collision",
+      "json_text": "{\"value\":9007199254740993}",
+      "error_contains": "safe-integer range"
+    },
+    {
+      "id": "unsafe-negative-integer",
+      "json_text": "{\"value\":-9007199254740992}",
+      "error_contains": "safe-integer range"
+    },
+    {
+      "id": "unsafe-exponent-integer",
+      "json_text": "{\"value\":9.007199254740992e15}",
+      "error_contains": "safe-integer range"
+    },
+    {
+      "id": "rounded-decimal-collision",
+      "json_text": "{\"value\":0.10000000000000001}",
+      "error_contains": "loses information"
+    },
+    {
+      "id": "rounded-decimal-to-integer",
+      "json_text": "{\"value\":1.0000000000000001}",
+      "error_contains": "loses information"
+    },
+    {
+      "id": "underflow-to-zero",
+      "json_text": "{\"value\":1e-400}",
+      "error_contains": "loses information"
+    },
+    {
+      "id": "trailing-input",
+      "json_text": "{\"a\":1} false",
+      "error_contains": "unexpected trailing input"
+    },
+    {
+      "id": "invalid-string-escape",
+      "json_text": "{\"a\":\"\\x20\"}",
+      "error_contains": "invalid JSON string escape"
+    }
+  ]
+}

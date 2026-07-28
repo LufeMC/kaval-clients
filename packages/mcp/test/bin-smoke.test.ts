@@ -59,15 +59,13 @@ describe("kaval-mcp bin (smoke)", () => {
       const names = tools.map((t) => t.name);
       expect(names).toEqual(
         expect.arrayContaining([
-          "verify",
-          "proof_audit",
-          "proof_gate",
-          "currentness_verify",
-          "currentness_check",
-          "currentness_extract_and_check",
-          "currentness_scan_store",
-          "currentness_monitor",
+          "check",
+          "get_receipt",
+          "add_source",
+          "list_sources",
+          "remove_source",
           "report_outcome",
+          "verify",
         ]),
       );
       expect(names.join(" ")).not.toMatch(/offer|product/);

@@ -2,6 +2,130 @@
 
 All packages in this repo version in lockstep (`scripts/bump.mjs`).
 
+## 0.6.0 — unreleased
+
+The whole verification surface collapses to **one call**. Send Kaval the action an agent is about to
+take; it identifies the facts that action depends on, checks them against the sources it watches, and
+answers `ALLOW` / `REVIEW` / `BLOCK` with a signed receipt. Everything else in these clients exists to
+keep that call warm.
+
+### Breaking
+
+- **MCP: 9 tools → 7.** New surface: `check`, `get_receipt`, `add_source`, `list_sources`,
+  `remove_source`, `report_outcome`, and `verify` (deprecated pilot alias). Removed:
+  `currentness_check`, `currentness_verify`, `currentness_extract_and_check`,
+  `currentness_scan_store`, `currentness_monitor`, `proof_audit`, `proof_gate`.
+- **Node/Python: the belief and proof-lifecycle methods are gone.** Removed: `audit`, `gate` /
+  `gateAction` / `gate_action`, the belief-shaped `check` / `legacy_verify_belief` / `verifyBelief`,
+  `extractAndCheck` / `extract_and_check`, `scanStore` / `scan_store`, `monitor`, `kaval`,
+  `kavalBatch` / `kaval_batch`, and `ProofNotFoundError` / `KavalProofNotFoundError`. Also gone:
+  `scheduleMonitor`-shaped client-side sweeping — drift is delivered by webhook now, not swept.
+- **Server:** every retired route answers `410 {"error":"tool_retired","replacement":"/v1/check"}` on
+  every method. Both SDKs raise a typed `KavalRetiredError` naming the replacement; the MCP server
+  returns `{"error":"tool_retired"}` with a message telling the agent to call `check`.
+
+See the migration tables in the [root README](README.md#migrating-from-05) and each package README.
+
+### Added
+
+- **`check()` / the `check` tool** — `POST /v1/check`. Takes `{action, context?, claims?, mode?,
+  max_wait_ms?, origin_urls?, materiality?, as_of?}`; returns `{decision, reason_codes, facts[],
+  receipt, latency_ms}`. Per-fact `status` (`holds` | `changed` | `unknown`) plus the sources each
+  fact rests on, so callers see *which* belief moved. Structured claims (`{subject, predicate,
+  object, scope}`) skip extraction entirely. A check is a read of current state, so it carries **no**
+  idempotency key — retrying recomputes rather than replays.
+- **`getReceipt(id)` / the `get_receipt` tool** — the signed check receipt exactly as signed.
+  `check` returns only `{id, signature, signed_at}`; the per-fact basis, `decision_rule_version`,
+  `algorithm` and `key_id` live behind this call, and on `BLOCK` it is the artifact that proves the
+  verdict. Self-derivable: the published decision table plus the receipt's own fact list re-derive
+  the verdict offline.
+- **Evidence basis on every receipt fact** — `basis[]` carries `source_locator`, `version_sha256`
+  and, critically, `version_sha256_of` (`canonical_text` | `raw_bytes`) with `parser_name` /
+  `parser_version`, plus `fetched_at`, `publication_time` and `span_ref`. A PDF's canonical text and
+  its raw bytes are two unequal legitimate digests of the same document, so an unlabelled digest is
+  decorative — a holder cannot know which artifact to hash. The label travels with the digest or the
+  digest is absent. Each fact also carries `method` (`state` | `live` | `timeout`),
+  `freshness_failure` (`stale` | `dormant` | `basis_superseded` | `source_unreachable` |
+  `ttl_expired`), `stale_pending` and `novel`, so a `REVIEW` says *why* in the signed document.
+- **`@usekaval/kaval/verify`** — the Ed25519 receipt verifier now ships as a dependency-free subpath
+  export of the Node SDK, with a `kaval-receipt-verify` CLI. It answers cryptographic validity, key
+  lifecycle trust, and freshness as three separate results, verifies against an archived keyset
+  (fully offline) or the unauthenticated `GET /v1/proof-verification-keys/:kid`, and touches no Kaval
+  database and no API key. Previously it lived only in Kaval's closed core repo, which made the
+  offline-verification claim true but not turnkey. It is a subpath rather than a second package
+  because both halves are zero-dependency — there is nothing to contaminate — so this is one version
+  and one publish job instead of two, and it retires the package name 0.5.0 advertised (see below).
+- **Watched-source registry** — `addSource`, `listSources`, `getSource`, `pauseSource`,
+  `resumeSource`, `deleteSource`, `recompileSource` (`add_source` / `list_sources` / `remove_source`
+  in MCP). Registering the *name* of an authority (`{kind:"entity", name:"Aetna", intent:"payer
+  policy bulletins"}`) resolves it to the pages that publish it and watches them. `remove_source` is
+  exposed to agents for a specific reason: a workspace watches a bounded number of *active* sources,
+  sources auto-registered from a check's citations count against that bound, and only deletion frees
+  it — pausing does not. Without it, an agent that registers per task fills the registry, after which
+  new citations are dropped and checks that used to be warm quietly go back to researching.
+- **`recompileSource(id)` / `recompile_source(id)`** — `POST /v1/sources/:id/recompile`, answering
+  `202 {source_id, job_id, created}`. A `kind:"url"` source registered directly never enqueues plan
+  discovery on its own, and a source whose acquisition plan has broken has no other way back, so
+  without this the registry had a state a customer could reach and not leave.
+- **Document push** — `sendEvent()` (`POST /v1/events`) for documents Kaval cannot fetch: Kaval
+  diffs, marks the dependent facts stale, re-evaluates, and emits a delta.
+- **`fact_state.delta` webhook subscriptions** — `subscribeFactStateDeltas()`, `createWebhook()`,
+  `listWebhooks()`, `setWebhookEnabled()`, `deleteWebhook()`, `replayWebhookDelivery()`, plus a typed
+  `FactStateDeltaEvent` for receivers. This is the outbound half of the mechanism: without it, the
+  background loops keep fact state fresh but nothing tells you a fact flipped until your next check.
+  Deliberately **not** an MCP tool — minting a standing outbound callback and storing its signing
+  secret is deploy-time configuration for a human or service, not an in-loop choice for an agent that
+  owns neither the endpoint nor the secret.
+- `KavalRetiredError` in both SDKs.
+
+### Changed
+
+- Tool descriptions rewritten for agent tool-selection: `check` states all three verdicts, spells out
+  that **REVIEW is never permission to act**, and says the warm path is ~50ms so calling it on every
+  consequential action is cheap. `verify` is explicitly marked DEPRECATED and names `check`.
+- READMEs in both repos rewritten around `check` + watching + deltas, each with an old→new migration
+  table.
+- **Client request deadlines now fit the call they wrap.** The Node and Python clients defaulted to
+  30s while the server's research budget is 100s and its handler deadline 150s, so the copy-paste
+  quickstart aborted its own headline call on every cold check. Both now default to 150s. MCP cannot:
+  `@modelcontextprotocol/sdk` cancels a tool call at 60s, so the MCP server uses a shorter client
+  deadline and sends an explicit `max_wait_ms` that fits inside the transport envelope rather than
+  silently inheriting the server default.
+- **`max_wait_ms` documented as it actually behaves** — default 100000, max 100000, `0` disables
+  research (which is what `mode: "fast"` sets). Every client README, type comment and tool schema
+  had carried a three-second default and a fifteen-second ceiling from an engine generation that no
+  longer exists, which handed a first-time caller the exact timeout the change was made to remove.
+- CI gained a **Live API** job (nightly + `workflow_dispatch`) that runs the MCP and Python live
+  suites against a real server, and `release.yml` now gates every publish on it — `mcp` needs `npm`,
+  `mcp_registry` needs `mcp`, and `pypi` needs `npm` purely to inherit the gate. Both suites are
+  `skipIf`-gated on their credentials, so the jobs fail rather than skip when a secret is unset —
+  a hermetic-only pipeline is how the 30s deadline shipped. The Python job also runs on 3.10, the
+  floor `pyproject.toml` promises.
+- **The release gate resolves three ways, and refuses by default.** The staging secrets it needs are
+  not set on the repository, so a gate that merely hard-fails on their absence would block every
+  release forever, and one that skips is the failure it exists to prevent. With both secrets, the
+  live suites run and a broken client fails there. Without them, a tag push fails and publishes
+  nothing. Publishing anyway requires a human to run the workflow from the Actions tab and type
+  `publish-unverified` into the `publish_without_live_gate` input — a tag push carries no inputs, so
+  it can never take that path — and every package in such a run is labelled UNVERIFIED in the job
+  summary. `scripts/check-release-workflow.mjs` pins all of it.
+- All packages bumped 0.5.0 → 0.6.0 in lockstep.
+
+### Retained
+
+- **`verify()` / the `verify` tool** (`POST /v1/verify`) — unchanged wire contract, including its
+  idempotency key and bounded ambiguous retry. Kept only while the pilot integrations migrate to
+  `check`; it will be removed.
+- `reportOutcome` / `report_outcome` (now keyed by `receipt.id`) and `health`.
+
+### Fixed
+
+- **Offline receipt verification is now installable, not just true.** 0.5.0 pointed readers at
+  `@kaval/receipt-verifier`, a package that was never published to npm and returned 404 to anyone
+  who tried it. The verifier is now folded into the Node SDK as `@usekaval/kaval/verify` (see
+  **Added**), so the offline-verification claim these clients make is turnkey: `npm i
+  @usekaval/kaval` is the whole install.
+
 ## 0.5.0 — 2026-07-20
 
 ### Breaking
@@ -29,6 +153,9 @@ All packages in this repo version in lockstep (`scripts/bump.mjs`).
   unknown proof surfaces as a typed `proof_not_found` error, not a 200.
 - Ed25519-signed receipts documented end to end: `signature.algorithm: "Ed25519"`, public JWKs at
   `GET /v1/proof-verification-keys/:kid`, offline verification via the open `@kaval/receipt-verifier`.
+  (**Corrected in 0.6.0:** that package name was never published to npm — `npm i` on it 404'd for
+  the whole 0.5 line. The key endpoint and the published decision table were real; the verifier now
+  ships as the `@usekaval/kaval/verify` subpath, and the old name is retired rather than published.)
 
 ### Changed
 

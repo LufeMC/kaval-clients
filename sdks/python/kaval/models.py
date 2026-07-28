@@ -1,4 +1,10 @@
-"""Exact TypedDict models for Kaval's public proof protocol JSON."""
+"""Exact TypedDict models for Kaval's public JSON contracts.
+
+Two families live here: the wire types for the one pipeline (``POST /v1/check``, the watched-source
+registry, document push, signed check receipts, and the ``fact_state.delta`` webhook subscriptions
+the background loops deliver against), and the proof-protocol tree still returned by the deprecated
+``verify()`` pilot alias. Field names match the hosted REST JSON exactly.
+"""
 
 from __future__ import annotations
 
@@ -695,84 +701,399 @@ class ProofPacket(TypedDict):
     signature: NotRequired[PacketSignature]
 
 
-class AuditInput(TypedDict):
-    text: str
-    as_of: IsoTimestamp
+# ---------------------------------------------------------------------------
+# POST /v1/check — the one call. Everything below configures what it reads from.
+# ---------------------------------------------------------------------------
+
+
+#: The verdict an agent branches on. Only ALLOW means "safe to act".
+CheckVerdict: TypeAlias = Literal["ALLOW", "REVIEW", "BLOCK"]
+
+#: The complete reason-code taxonomy — eight codes, no synonyms, no free text.
+CheckReasonCode: TypeAlias = Literal[
+    "ALL_FACTS_HOLD",
+    "FACT_CHANGED",
+    "FACT_EXPIRED",
+    "FACT_UNKNOWN",
+    "SOURCE_UPDATED_PENDING_REVIEW",
+    "SOURCE_UNREACHABLE",
+    "NEW_FACT_UNVERIFIED",
+    "COMPILATION_UNCERTAIN",
+]
+
+#: The public three-valued projection of a fact's internal assessment.
+FactStatus: TypeAlias = Literal["holds", "changed", "unknown"]
+
+#: ``fast`` skips the live fallback entirely and answers from stored fact state only.
+CheckMode: TypeAlias = Literal["fast", "standard"]
+
+
+class StructuredClaim(TypedDict):
+    """A claim already decomposed by the caller.
+
+    Structured claims are the zero-LLM path: they canonicalize straight to a fact fingerprint, so
+    the warm lookup needs no model call.
+    """
+
+    subject: str | EntityRef
+    predicate: str
+    object: NotRequired[str | EntityRef | ScalarValue]
+    scope: NotRequired[dict[str, str]]
     materiality: NotRequired[Materiality]
-    intended_action: NotRequired[str]
-    reversibility: NotRequired[ActionReversibility]
-    false_allow_cost_usd: NotRequired[float]
-    false_block_cost_usd: NotRequired[float]
-    wait_cost_usd: NotRequired[float]
-    domain: NotRequired[str]
-    subject_hint: NotRequired[str]
-    jurisdiction: NotRequired[str]
-    geography: NotRequired[str]
-    units: NotRequired[str]
+    #: Optional human rendering; defaults to a deterministic render of the structure.
+    text: NotRequired[str]
+
+
+ClaimInput: TypeAlias = str | StructuredClaim
+
+
+class CheckInput(TypedDict):
+    """``POST /v1/check`` body. Provide at least one of ``action`` or ``claims``."""
+
+    #: What the agent is about to do, in plain language. Kaval compiles the facts it depends on.
+    action: NotRequired[str]
+    #: Anything the agent already knows that bears on the action.
     context: NotRequired[str]
-    aliases: NotRequired[list[str]]
+    #: Facts to check directly, as plain sentences or structured claims (max 20).
+    claims: NotRequired[list[ClaimInput]]
+    mode: NotRequired[CheckMode]
+    #: Live-path budget in ms (default 100000, max 100000; 0 disables research, which is what
+    #: ``mode: "fast"`` sets). Facts that miss it enter as ``unknown``. The budget exists so a
+    #: caller at an action boundary can ask for LESS waiting — never more.
+    max_wait_ms: NotRequired[int]
+    #: Caller-declared origins, merged with the workspace's registered watched sources.
     origin_urls: NotRequired[list[str]]
-    record: NotRequired[RecordRef]
-    record_field: NotRequired[str]
+    materiality: NotRequired[Materiality]
+    as_of: NotRequired[IsoTimestamp]
 
 
-class ProofGateInputBase(TypedDict):
-    expected_dependency_versions: NotRequired[dict[str, str]]
-    material_claim_ids: list[str]
-    threshold: DecisionThreshold
-    action: ActionContext
+class CheckSourceRef(TypedDict):
+    locator: str
+    version_sha256: NotRequired[str]
+    fetched_at: NotRequired[IsoTimestamp]
 
 
-class ProofGateByIdInput(ProofGateInputBase):
-    proof_id: str
+class CheckFact(TypedDict):
+    fingerprint: str
+    text: str
+    status: FactStatus
+    materiality: Materiality
+    #: True when the answer came from warm fact state instead of live research.
+    served_from_state: bool
+    last_verified_at: str | None
+    sources: list[CheckSourceRef]
 
 
-class ProofGateByKeyInput(ProofGateInputBase):
-    proof_key: str
+class CheckLatency(TypedDict):
+    compile: float
+    lookup: float
+    live: float
+    total: float
 
 
-ProofGateInput: TypeAlias = ProofGateByIdInput | ProofGateByKeyInput
-# state "not_found" is never a 200: the server returns HTTP 404 error code "proof_not_found",
-# which the client surfaces as KavalProofNotFoundError.
-ProofGateState: TypeAlias = Literal[
-    "current",
-    "not_yet_valid",
-    "expired",
-    "invalidated",
-    "dependency_changed",
-    "integrity_failed",
-    "policy_mismatch",
-    "operational_failure",
+class CheckReceiptRef(TypedDict):
+    id: str
+    signature: str
+    signed_at: IsoTimestamp
+
+
+class CheckResult(TypedDict):
+    """``POST /v1/check`` response. ``receipt["id"]`` fetches the signed document via
+    ``get_receipt()``."""
+
+    decision: CheckVerdict
+    reason_codes: list[CheckReasonCode]
+    facts: list[CheckFact]
+    receipt: CheckReceiptRef
+    latency_ms: CheckLatency
+
+
+# --------------------------------- receipts ---------------------------------
+
+#: Why a stored fact state could not be served; published so the verdict re-derives offline.
+CheckFreshnessFailure: TypeAlias = Literal[
+    "stale",
+    "dormant",
+    "basis_superseded",
+    "source_unreachable",
+    "ttl_expired",
 ]
-ProofBillingClass: TypeAlias = Literal[
-    "action_gate",
-    "operational_failure",
+
+
+class CheckReceiptBasis(TypedDict):
+    source_locator: str
+    #: Digest of the version this fact was proved against. ABSENT when nothing was pinned.
+    version_sha256: NotRequired[str]
+    #: What ``version_sha256`` covers. A PDF's canonical text is extracted markdown, so the same
+    #: document has two unequal legitimate digests; unlabelled, a holder cannot know which artifact
+    #: to hash and the field is decorative. Always present when ``version_sha256`` is.
+    version_sha256_of: NotRequired[Literal["canonical_text", "raw_bytes"]]
+    #: The extractor that produced the canonical text, when one did. Absent for a plain HTTP body.
+    parser_name: NotRequired[str]
+    parser_version: NotRequired[str]
+    fetched_at: NotRequired[IsoTimestamp]
+    publication_time: NotRequired[IsoTimestamp]
+    span_ref: NotRequired[Any]
+
+
+class CheckReceiptFact(TypedDict):
+    fingerprint: str
+    text: str
+    materiality: Materiality
+    state: FactStatus
+    checked_at: IsoTimestamp
+    method: Literal["state", "live", "timeout"]
+    temporal_state: str | None
+    stale_pending: bool
+    novel: bool
+    freshness_failure: CheckFreshnessFailure | None
+    basis: list[CheckReceiptBasis]
+
+
+class CheckReceiptSignature(TypedDict):
+    algorithm: str
+    key_id: str
+    signature: str
+    signed_at: IsoTimestamp
+
+
+class CheckReceipt(TypedDict):
+    """The receipt EXACTLY as signed.
+
+    The decision table is published, so this fact list re-derives the verdict offline — verify
+    ``signature`` with the issuer's Ed25519 public key.
+    """
+
+    receipt_version: str
+    id: str
+    tenant_id: str
+    workspace_id: str | None
+    decision: CheckVerdict
+    reason_codes: list[CheckReasonCode]
+    decision_rule_version: str
+    mode: CheckMode
+    checked_at: IsoTimestamp
+    compilation_uncertain: bool
+    facts: list[CheckReceiptFact]
+    proof_packet_ids: list[str]
+    signature: CheckReceiptSignature
+
+
+# ---------------------------------- sources ---------------------------------
+
+#: ``entity`` resolves a plain name ("Aetna") to the URLs that publish it and watches those;
+#: ``push`` is a document the customer POSTs to ``/v1/events``; ``discovered`` is auto-registered
+#: when a check cites a URL nobody registered.
+WatchedSourceKind: TypeAlias = Literal[
+    "url",
+    "push",
+    "connection",
+    "entity",
+    "discovered",
+]
+WatchedSourceOrigin: TypeAlias = Literal["registered", "discovered", "resolved"]
+
+
+class WatchedSource(TypedDict):
+    id: str
+    kind: WatchedSourceKind
+    locator: str
+    #: Always present and usually null — most sources are registered without one. Typed nullable
+    #: rather than optional so ``source["label"].upper()`` is the type error it really is instead
+    #: of an AttributeError on the common case.
+    label: str | None
+    intent: str | None
+    origin: WatchedSourceOrigin
+    parent_source_id: str | None
+    scope_keys: list[str]
+    active: bool
+    poll_interval_s: int | None
+    next_poll_at: str | None
+    last_success_at: str | None
+    content_sha256: str | None
+    created_at: IsoTimestamp
+
+
+class AddSourceInput(TypedDict):
+    kind: WatchedSourceKind
+    #: The URL, connection id, or push locator. For ``kind: "entity"`` use ``name`` instead.
+    locator: NotRequired[str]
+    #: ``kind: "entity"`` reads more naturally as a name — it is the same locator field.
+    name: NotRequired[str]
+    label: NotRequired[str]
+    #: What you want watched about it, e.g. "payer policy bulletins". Drives entity resolution.
+    intent: NotRequired[str]
+    #: Scope tags used to route document pushes to the facts they can affect.
+    scope_keys: NotRequired[list[str]]
+    poll_interval_s: NotRequired[int]
+
+
+class AddSourceResult(TypedDict):
+    source: WatchedSource
+    created: bool
+    #: Sources an ``entity`` registration resolved to and is now watching.
+    resolved: list[WatchedSource]
+    resolution_error: NotRequired[str]
+
+
+class RecompileSourceResult(TypedDict):
+    """``POST /v1/sources/:id/recompile`` — 202, the job is queued, not done."""
+
+    source_id: str
+    job_id: str
+    #: False when a job was already open for this source: the recompile was folded into that one
+    #: rather than duplicated.
+    created: bool
+
+
+# ----------------------------------- events ---------------------------------
+
+
+class SourceEventInput(TypedDict):
+    """``POST /v1/events`` — the customer-push half of the watch mechanism."""
+
+    #: Address an already-registered source…
+    source_id: NotRequired[str]
+    #: …or address the document as ``namespace`` + ``document_id`` (created on first sight).
+    namespace: NotRequired[str]
+    document_id: NotRequired[str]
+    #: Extracted text. Raw PDF bytes are not accepted.
+    content: NotRequired[str]
+    content_url: NotRequired[str]
+    content_sha256: NotRequired[str]
+    observed_at: NotRequired[IsoTimestamp]
+    scope_keys: NotRequired[list[str]]
+
+
+class SourceEventResult(TypedDict):
+    accepted: bool
+    #: False for a same-content push: no version row, no staleness, no delta webhook.
+    changed: bool
+    source_id: str
+    version_id: str | None
+    content_sha256: str
+    previous_content_sha256: str | None
+    #: Facts whose basis moved and whose re-evaluation is still running — checks REVIEW meanwhile.
+    facts_pending_review: int
+
+
+# ---------------------------------- webhooks --------------------------------
+
+WebhookSubscriptionKind: TypeAlias = Literal[
+    "belief_integrity",
+    "monitor",
+    "fact_state",
 ]
 
-
-class ProofEnforcementResult(TypedDict):
-    mode: Literal["shadow", "block_only", "bounded"]
-    controlApplied: bool
-    executionAllowed: bool | None
-    wouldAllow: bool
-    reason: str
+#: The only event a ``fact_state`` subscription accepts.
+FACT_STATE_DELTA_EVENT_TYPE = "fact_state.delta"
 
 
-class ProofGateResult(TypedDict):
-    proofId: str
-    state: ProofGateState
-    decision: ActionDecision
-    billingClass: ProofBillingClass
-    proofReused: bool
-    researchPerformed: Literal[False]
-    humanOverrideApplied: NotRequired[Literal[True]]
-    latencyMs: float
-    reason: NotRequired[str]
-    enforcement: NotRequired[ProofEnforcementResult]
+class CreateWebhookInput(TypedDict):
+    subscription_kind: WebhookSubscriptionKind
+    #: Must be https.
+    callback_url: str
+    event_types: list[str]
+    description: NotRequired[str]
+    #: Deliver only deltas whose scope intersects these ids. Empty means everything.
+    external_scope_ids: NotRequired[list[str]]
+    enabled: NotRequired[bool]
+
+
+class WebhookSubscription(TypedDict):
+    subscription_id: str
+    workspace_id: NotRequired[str]
+    subscription_kind: NotRequired[WebhookSubscriptionKind]
+    callback_url: NotRequired[str]
+    event_types: NotRequired[list[str]]
+    external_scope_ids: NotRequired[list[str]]
+    enabled: NotRequired[bool]
+    signing_key_id: NotRequired[str]
+
+
+class WebhookVerification(TypedDict):
+    """Everything needed to verify an inbound delta's HMAC signature.
+
+    Returned once, at creation — the secret is never shown again.
+    """
+
+    algorithm: str
+    key_id: str
+    secret: str
+    signed_content: str
+    headers: list[str]
+
+
+class CreateWebhookResult(TypedDict):
+    subscription: WebhookSubscription
+    webhook_verification: WebhookVerification
+
+
+# ------------------------------- delta payload ------------------------------
+
+
+class FactBasisRef(TypedDict):
+    source_locator: str
+    version_sha256: NotRequired[str]
+    fetched_at: NotRequired[IsoTimestamp]
+    publication_time: NotRequired[IsoTimestamp]
+    span_ref: NotRequired[Any]
+
+
+class FactStateTransition(TypedDict):
+    fingerprint: str
+    text: str
+    materiality: Materiality
+    old_state: FactStatus | None
+    new_state: FactStatus
+    basis: list[FactBasisRef]
+
+
+class FactStateDeltaSource(TypedDict):
+    watched_source_id: str
+    kind: WatchedSourceKind
+    locator: str
+    label: NotRequired[str]
+
+
+class FactStateDeltaReceiptRef(TypedDict):
+    proof_packet_id: NotRequired[str]
+    receipt_url: NotRequired[str]
+    signature: NotRequired[str]
+
+
+class FactStateDeltaData(TypedDict):
+    tenant_id: str
+    workspace_id: NotRequired[str | None]
+    source: FactStateDeltaSource
+    old_version_sha256: str | None
+    new_version_sha256: str
+    diff_summary: Any
+    facts: list[FactStateTransition]
+    receipt: NotRequired[FactStateDeltaReceiptRef]
+    changed_at: IsoTimestamp
+
+
+class FactStateDeltaEvent(TypedDict):
+    """The body of an inbound ``fact_state.delta`` webhook.
+
+    "Here is what changed and what it flipped" — typed here so a receiver can parse it without
+    reimplementing the contract.
+    """
+
+    specversion: Literal["1.0"]
+    id: str
+    type: str
+    source: str
+    subject: str
+    time: IsoTimestamp
+    correlation_id: str
+    sequence: int
+    data: FactStateDeltaData
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/verify — the compatibility surface for single conclusions.
+# POST /v1/verify — the deprecated pilot alias for single conclusions.
 # ---------------------------------------------------------------------------
 
 

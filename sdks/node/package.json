@@ -1,8 +1,8 @@
 {
   "name": "@usekaval/kaval",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "Apache-2.0",
-  "description": "Fact verification for AI agents: before an agent acts, Kaval verifies the facts the action relies on and returns a time-bounded, Ed25519-signed proof your policy can enforce.",
+  "description": "Before an AI agent acts, Kaval verifies the facts the action depends on and returns ALLOW, REVIEW, or BLOCK with an Ed25519-signed receipt.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,7 +10,19 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./verify": {
+      "types": "./dist/verify/index.d.ts",
+      "default": "./dist/verify/index.js"
+    },
+    "./verify/discovery": {
+      "types": "./dist/verify/discovery.d.ts",
+      "default": "./dist/verify/discovery.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "kaval-receipt-verify": "./dist/verify/cli.js"
   },
   "files": [
     "dist"
@@ -24,7 +36,9 @@
     "proof",
     "receipts",
     "freshness",
-    "rag"
+    "rag",
+    "ed25519",
+    "offline-verification"
   ],
   "engines": {
     "node": ">=18"

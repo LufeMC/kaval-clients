@@ -1,10 +1,17 @@
-"""HTTP client for the kaval REST surface. Mirrors the TS SDK contract."""
+"""HTTP client for the kaval REST surface. Mirrors the TS SDK contract.
+
+One call does the work: :meth:`KavalClient.check`. Register what Kaval should watch with
+:meth:`KavalClient.add_source`, push your own documents with :meth:`KavalClient.send_event`, and
+subscribe to ``fact_state.delta`` webhooks with :meth:`KavalClient.subscribe_fact_state_deltas` so
+you are told when a fact flips instead of polling for it.
+"""
 
 from __future__ import annotations
 
 from concurrent.futures import CancelledError
 import os
 from threading import Event, Lock, Thread
+from urllib.parse import quote
 import uuid
 from typing import (
     Any,
@@ -13,6 +20,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    TypeAlias,
     TypeVar,
     cast,
 )
@@ -20,32 +28,66 @@ from typing import (
 import httpx
 
 from .models import (
-    ActionContext,
+    FACT_STATE_DELTA_EVENT_TYPE,
     ActionReversibility,
-    DecisionThreshold,
+    AddSourceResult,
+    CheckMode,
+    CheckReceipt,
+    CheckResult,
+    ClaimInput,
+    CreateWebhookResult,
     EvidenceRef,
     Materiality,
-    ProofGateResult,
-    ProofPacket,
-    RecordRef,
+    RecompileSourceResult,
+    SourceEventResult,
     VerifyResult,
+    WatchedSource,
+    WatchedSourceKind,
+    WebhookSubscription,
+    WebhookSubscriptionKind,
 )
 
-# One of: current_later_contradicted | stale_caught_real | stale_was_false_alarm | relied_and_correct
-OutcomeKind = str
-
-# Speed/depth tier for the legacy belief-freshness surface:
-# instant (cache/prior only, no LLM) | fast | auto (default) | deep
-VerifyMode = Literal["instant", "fast", "auto", "deep"]
+OutcomeKind = Literal[
+    "current_later_contradicted",
+    "stale_caught_real",
+    "stale_was_false_alarm",
+    "relied_and_correct",
+]
 
 # The hosted kaval cloud. Override with `base_url=...` to point at a self-hosted `kaval-server`.
 DEFAULT_BASE_URL = "https://api.usekaval.com"
+
+# Above the server's own handler deadline (REQUEST_TIMEOUT_MS = 150_000), which already sits above
+# the 100s research budget a cold check is allowed to spend. At 30s this client aborted the
+# quickstart's very first call — a cold action check routinely needs ~50-100s of live research, so
+# the caller saw a TimeoutException where the server was about to answer.
+DEFAULT_TIMEOUT_SECONDS = 150.0
+
 MAX_BILLABLE_ATTEMPTS = 2
 AMBIGUOUS_IDEMPOTENCY_CODES = {
     "idempotency_in_progress",
     "idempotency_resolution_pending",
     "event_persistence_pending",
 }
+
+
+class NoTimeout:
+    """Type of the :data:`NO_TIMEOUT` sentinel."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic only
+        return "kaval.NO_TIMEOUT"
+
+
+#: Pass as ``timeout=`` to run one call with NO deadline. ``timeout=None`` already means "inherit
+#: the client's", so there was previously no value a caller could pass to disable it — the TS
+#: client's ``timeoutMs: null`` had no Python equivalent. Use it for a cold check you would rather
+#: wait out than lose.
+NO_TIMEOUT = NoTimeout()
+
+#: A per-call deadline: seconds, ``NO_TIMEOUT`` to disable it, or ``None`` to inherit the client's.
+RequestTimeout: TypeAlias = float | NoTimeout | None
 
 
 class KavalError(Exception):
@@ -60,14 +102,35 @@ class KavalError(Exception):
         self.idempotency_key = idempotency_key
 
 
-class KavalProofNotFoundError(KavalError):
-    """Raised when `/v1/gate` reports HTTP 404 `proof_not_found`.
+class KavalRetiredError(KavalError):
+    """Raised when the API answers ``410 tool_retired``.
 
-    No published proof matched the supplied `proof_id`/`proof_key` in this workspace. Build one
-    with :meth:`KavalClient.audit` (or re-check the locator) before gating again.
+    Every pre-0.6 verification endpoint (``/v1/audit``, ``/v1/gate``, ``/v1/kaval``,
+    ``/v1/scan-store``, ``/v1/extract-and-check``, ``/v1/monitor``, and the belief routes)
+    collapsed into ``POST /v1/check``. The message names :meth:`KavalClient.check` explicitly
+    rather than leaving an agent to guess at an unexplained HTTP error.
     """
 
-    code = "proof_not_found"
+    code = "tool_retired"
+
+    def __init__(
+        self,
+        payload: Any,
+        path: str,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> None:
+        replacement = payload.get("replacement") if isinstance(payload, dict) else None
+        if not isinstance(replacement, str) or not replacement:
+            replacement = "/v1/check"
+        super().__init__(410, payload, idempotency_key=idempotency_key)
+        self.replacement = replacement
+        # KavalError's generic "kaval 410: {payload}" would bury the one thing the caller needs.
+        self.args = (
+            f"kaval 410: {path} was retired in v0.6 — use {replacement} "
+            "(the check() method) instead. One call verifies the facts an action depends on "
+            "and returns ALLOW, REVIEW, or BLOCK with a signed receipt.",
+        )
 
 
 class KavalCancelledError(CancelledError):
@@ -319,10 +382,33 @@ def _api_error_code(payload: Any) -> Optional[str]:
     return code if isinstance(code, str) else None
 
 
+def _is_retired_payload(payload: Any) -> bool:
+    """The retired-route body is a FLAT ``{"error": "tool_retired"}``, not ``{"error": {code}}``."""
+    return isinstance(payload, dict) and payload.get("error") == "tool_retired"
+
+
 def _attach_idempotency_key(error: BaseException, operation_key: str) -> None:
     """Attach a recovery diagnostic without changing the exception's public type."""
     setattr(error, "idempotency_key", operation_key)
 
+
+def _path_segment(value: str, *, name: str) -> str:
+    """URL-encode one path segment, refusing an empty id before any network call."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is required")
+    return quote(value.strip(), safe="")
+
+
+_CHECK_REQUEST_FIELDS = {
+    "action",
+    "context",
+    "claims",
+    "mode",
+    "max_wait_ms",
+    "origin_urls",
+    "materiality",
+    "as_of",
+}
 
 _VERIFY_REQUEST_FIELDS = {
     "conclusion",
@@ -412,9 +498,9 @@ def _verify_result(payload: Any) -> VerifyResult:
 class KavalClient:
     """Synchronous client for Kaval's verification surface.
 
-    ``audit()`` builds a signed, time-bounded proof (the expensive path); ``gate()`` applies it
-    at act time with no search, parsing, or model call; ``verify()`` is the compatibility surface
-    for single conclusions.
+    ``check()`` is the whole product: send the action an agent is about to take (or the claims it
+    rests on) and get ALLOW / REVIEW / BLOCK plus a signed receipt. Everything else configures
+    what Kaval watches so that a check stays a warm database read instead of a research run.
     """
 
     def __init__(
@@ -422,7 +508,7 @@ class KavalClient:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         *,
-        timeout: float = 30.0,
+        timeout: float | NoTimeout = DEFAULT_TIMEOUT_SECONDS,
         transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
         resolved_base = base_url or os.environ.get("KAVAL_BASE_URL") or DEFAULT_BASE_URL
@@ -435,36 +521,46 @@ class KavalClient:
         self._http = httpx.Client(
             base_url=resolved_base.rstrip("/"),
             headers=headers,
-            timeout=timeout,
+            timeout=None if isinstance(timeout, NoTimeout) else timeout,
             transport=transport,
         )
 
-    def _post_response(
+    # ------------------------------------------------------------------ transport
+
+    def _send_response(
         self,
+        method: str,
         path: str,
-        body: dict[str, Any],
+        body: Optional[dict[str, Any]] = None,
         *,
+        params: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, str]] = None,
-        timeout: Optional[float] = None,
+        timeout: RequestTimeout = None,
         cancellation_token: Optional[KavalCancellationToken] = None,
         idempotency_key: Optional[str] = None,
     ) -> httpx.Response:
         request_options: dict[str, Any] = {}
         if timeout is not None:
-            request_options["timeout"] = timeout
+            # httpx spells "no deadline" as None, which is already taken here for "inherit".
+            request_options["timeout"] = (
+                None if isinstance(timeout, NoTimeout) else timeout
+            )
         if cancellation_token is None:
-            return self._http.post(
+            return self._http.request(
+                method,
                 path,
                 json=body,
+                params=params,
                 headers=headers,
                 **request_options,
             )
 
         def send() -> httpx.Response:
             request = self._http.build_request(
-                "POST",
+                method,
                 path,
                 json=body,
+                params=params,
                 headers=headers,
                 **request_options,
             )
@@ -498,7 +594,7 @@ class KavalClient:
         body: dict[str, Any],
         *,
         idempotency_key: Optional[str] = None,
-        timeout: Optional[float] = None,
+        timeout: RequestTimeout = None,
         cancellation_token: Optional[KavalCancellationToken] = None,
     ) -> Any:
         operation_key = idempotency_key or str(uuid.uuid4())
@@ -506,7 +602,8 @@ class KavalClient:
             cancellation_token._raise_if_cancelled(operation_key)
         for attempt in range(MAX_BILLABLE_ATTEMPTS):
             try:
-                res = self._post_response(
+                res = self._send_response(
+                    "POST",
                     path,
                     body,
                     headers={"idempotency-key": operation_key},
@@ -540,6 +637,10 @@ class KavalClient:
                     cancellation_token._raise_if_cancelled(operation_key)
                 if 200 <= res.status_code < 300:
                     return payload
+                if res.status_code == 410 and _is_retired_payload(payload):
+                    raise KavalRetiredError(
+                        payload, path, idempotency_key=operation_key
+                    )
                 if (
                     attempt + 1 < MAX_BILLABLE_ATTEMPTS
                     and _api_error_code(payload) in AMBIGUOUS_IDEMPOTENCY_CODES
@@ -557,18 +658,25 @@ class KavalClient:
                     _safe_call(res.close)
         raise RuntimeError("unreachable billable request state")
 
-    def _post(
+    def _request(
         self,
+        method: str,
         path: str,
-        body: dict[str, Any],
+        body: Optional[dict[str, Any]] = None,
         *,
-        timeout: Optional[float] = None,
+        params: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        timeout: RequestTimeout = None,
         cancellation_token: Optional[KavalCancellationToken] = None,
     ) -> Any:
+        """One request, no idempotency key. Reads, and routes the server treats as reads."""
         try:
-            res = self._post_response(
+            res = self._send_response(
+                method,
                 path,
                 body,
+                params=params,
+                headers=headers,
                 timeout=timeout,
                 cancellation_token=cancellation_token,
             )
@@ -586,6 +694,8 @@ class KavalClient:
             if cancellation_token is not None:
                 cancellation_token._raise_if_cancelled()
             if res.status_code >= 400:
+                if res.status_code == 410 and _is_retired_payload(payload):
+                    raise KavalRetiredError(payload, path)
                 raise KavalError(res.status_code, payload)
             return payload
         finally:
@@ -593,6 +703,498 @@ class KavalClient:
                 _run_cleanup(res.close)
             else:
                 _safe_call(res.close)
+
+    # ------------------------------------------------------------------ the one call
+
+    def check(
+        self,
+        input_mapping: Optional[Mapping[str, Any]] = None,
+        *,
+        action: Optional[str] = None,
+        context: Optional[str] = None,
+        claims: Optional[Sequence[ClaimInput]] = None,
+        mode: Optional[CheckMode] = None,
+        max_wait_ms: Optional[int] = None,
+        origin_urls: Optional[list[str]] = None,
+        materiality: Optional[Materiality] = None,
+        as_of: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> CheckResult:
+        """Verify the facts an action depends on, before acting on it.
+
+        Pass either a single request mapping (``check({"action": ...})``) or the same fields as
+        keywords — never both. Send ``action`` (what the agent is about to do) and optionally
+        ``context``, or send ``claims`` directly when you already know which facts matter. Kaval
+        compiles the action into atomic facts, answers each from watched-source state (warm: no
+        model call, no fetch), falls back to bounded live research for anything stale or novel,
+        and returns:
+
+        - ``decision`` — **ALLOW** (every material fact still holds on a fresh basis), **REVIEW**
+          (something is unknown, changed at low/medium materiality, or mid-re-evaluation), or
+          **BLOCK** (a high/critical fact changed, or a critical fact is unknown).
+        - ``reason_codes`` — why, from a closed eight-code taxonomy.
+        - ``facts`` — one row per fact with its status and the sources it rests on.
+        - ``receipt`` — the id + Ed25519 signature of a document that re-derives this verdict
+          offline; fetch the full document with :meth:`get_receipt`.
+        - ``latency_ms`` — ``compile`` / ``lookup`` / ``live`` / ``total``.
+
+        Only ALLOW means "safe to act". REVIEW is never permission to act.
+
+        A check is a read of current state, so the server deliberately does NOT replay it under an
+        idempotency key — this call sends none, and a retry is free to recompute.
+        """
+        field_kwargs: dict[str, Any] = {
+            "action": action,
+            "context": context,
+            "claims": claims,
+            "mode": mode,
+            "max_wait_ms": max_wait_ms,
+            "origin_urls": origin_urls,
+            "materiality": materiality,
+            "as_of": as_of,
+        }
+        if input_mapping is not None:
+            if not isinstance(input_mapping, Mapping):
+                # The pre-0.6 signature was check("<belief>"); say where that text goes now.
+                raise ValueError(
+                    "check takes a request mapping or keyword fields; pass a plain sentence "
+                    "as check(action=...) or check(claims=[...])"
+                )
+            if any(value is not None for value in field_kwargs.values()):
+                raise ValueError(
+                    "pass the check request as one mapping or as keyword fields, not both"
+                )
+            unknown = set(input_mapping.keys()) - _CHECK_REQUEST_FIELDS
+            if unknown:
+                raise ValueError(
+                    "unknown check request fields: " + ", ".join(sorted(unknown))
+                )
+            field_kwargs = {
+                name: input_mapping.get(name) for name in field_kwargs
+            }
+        if field_kwargs["action"] is None and field_kwargs["claims"] is None:
+            raise ValueError("check requires at least one of action or claims")
+        body = _clean(
+            {
+                "action": field_kwargs["action"],
+                "context": field_kwargs["context"],
+                "claims": (
+                    list(field_kwargs["claims"])
+                    if field_kwargs["claims"] is not None
+                    else None
+                ),
+                "mode": field_kwargs["mode"],
+                "max_wait_ms": field_kwargs["max_wait_ms"],
+                "origin_urls": field_kwargs["origin_urls"],
+                "materiality": field_kwargs["materiality"],
+                "as_of": field_kwargs["as_of"],
+            }
+        )
+        return cast(
+            CheckResult,
+            self._request(
+                "POST",
+                "/v1/check",
+                body,
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    def get_receipt(
+        self,
+        receipt_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> CheckReceipt:
+        """Fetch a signed check receipt exactly as it was signed, by ``result["receipt"]["id"]``."""
+        payload = self._request(
+            "GET",
+            f"/v1/receipts/{_path_segment(receipt_id, name='receipt_id')}",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(CheckReceipt, payload["receipt"])
+
+    # ------------------------------------------------------------------ sources
+
+    def add_source(
+        self,
+        kind: WatchedSourceKind,
+        *,
+        locator: Optional[str] = None,
+        name: Optional[str] = None,
+        label: Optional[str] = None,
+        intent: Optional[str] = None,
+        scope_keys: Optional[list[str]] = None,
+        poll_interval_s: Optional[int] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> AddSourceResult:
+        """Register something for Kaval to watch.
+
+        A URL is polled conditionally; an ``entity`` (a plain ``name`` plus the ``intent`` you care
+        about, e.g. ``add_source("entity", name="Aetna", intent="payer policy bulletins")``) is
+        resolved to the URLs that publish it; a ``push`` source is a document you send to
+        :meth:`send_event`. Facts learned from a watched source stay warm, so checks on them are a
+        database read.
+        """
+        if locator is None and name is None:
+            raise ValueError("add_source requires locator (or name for kind 'entity')")
+        body = _clean(
+            {
+                "kind": kind,
+                "locator": locator,
+                "name": name,
+                "label": label,
+                "intent": intent,
+                "scope_keys": scope_keys,
+                "poll_interval_s": poll_interval_s,
+            }
+        )
+        return cast(
+            AddSourceResult,
+            self._request(
+                "POST",
+                "/v1/sources",
+                body,
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    def list_sources(
+        self,
+        *,
+        include_inactive: bool = False,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> list[WatchedSource]:
+        """List this workspace's watched sources, including any auto-discovered by a check."""
+        payload = self._request(
+            "GET",
+            "/v1/sources",
+            params={"include_inactive": "true"} if include_inactive else None,
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast("list[WatchedSource]", payload["sources"])
+
+    def get_source(
+        self,
+        source_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> WatchedSource:
+        """Fetch one watched source by id."""
+        payload = self._request(
+            "GET",
+            f"/v1/sources/{_path_segment(source_id, name='source_id')}",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(WatchedSource, payload["source"])
+
+    def delete_source(
+        self,
+        source_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> dict[str, Any]:
+        """Forget a watched source. Returns ``{deleted, id}``."""
+        return cast(
+            "dict[str, Any]",
+            self._request(
+                "DELETE",
+                f"/v1/sources/{_path_segment(source_id, name='source_id')}",
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    def pause_source(
+        self,
+        source_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> WatchedSource:
+        """Stop polling a source without forgetting it or the facts that depend on it."""
+        payload = self._request(
+            "POST",
+            f"/v1/sources/{_path_segment(source_id, name='source_id')}/pause",
+            {},
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(WatchedSource, payload["source"])
+
+    def resume_source(
+        self,
+        source_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> WatchedSource:
+        """Resume polling a paused source."""
+        payload = self._request(
+            "POST",
+            f"/v1/sources/{_path_segment(source_id, name='source_id')}/resume",
+            {},
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(WatchedSource, payload["source"])
+
+    def recompile_source(
+        self,
+        source_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> RecompileSourceResult:
+        """Re-derive how a source is acquired, when the way it publishes has changed.
+
+        A registered URL is polled with a conditional GET until discovery works out what actually
+        publishes it. This queues that discovery again — it is how a directly-registered
+        ``kind: "url"`` source gets a plan at all, and the only recovery from a plan that broke
+        when the site changed. The 202 body is ``{source_id, job_id, created}``: the job is queued,
+        not finished, and ``created`` is False when an open job absorbed this request.
+        """
+        return cast(
+            RecompileSourceResult,
+            self._request(
+                "POST",
+                f"/v1/sources/{_path_segment(source_id, name='source_id')}/recompile",
+                {},
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    # ------------------------------------------------------------------ events
+
+    def send_event(
+        self,
+        *,
+        source_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        document_id: Optional[str] = None,
+        content: Optional[str] = None,
+        content_url: Optional[str] = None,
+        content_sha256: Optional[str] = None,
+        observed_at: Optional[str] = None,
+        scope_keys: Optional[list[str]] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> SourceEventResult:
+        """Push a document you own.
+
+        Kaval stores the version, diffs it against the previous one, marks the dependent facts
+        stale, re-evaluates them in the background, and delivers a ``fact_state.delta`` webhook
+        naming what flipped. Address the document by ``source_id``, or by ``namespace`` +
+        ``document_id`` (created on first sight). ``content`` is extracted text — raw PDF bytes
+        are not accepted.
+        """
+        body = _clean(
+            {
+                "source_id": source_id,
+                "namespace": namespace,
+                "document_id": document_id,
+                "content": content,
+                "content_url": content_url,
+                "content_sha256": content_sha256,
+                "observed_at": observed_at,
+                "scope_keys": scope_keys,
+            }
+        )
+        return cast(
+            SourceEventResult,
+            self._request(
+                "POST",
+                "/v1/events",
+                body,
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    # ------------------------------------------------------------------ webhooks
+
+    def subscribe_fact_state_deltas(
+        self,
+        callback_url: str,
+        *,
+        description: Optional[str] = None,
+        external_scope_ids: Optional[list[str]] = None,
+        enabled: Optional[bool] = None,
+        idempotency_key: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> CreateWebhookResult:
+        """Subscribe to ``fact_state.delta`` — the outbound half of the whole mechanism.
+
+        Without a subscription the background loops still keep fact state fresh, but nothing tells
+        you a fact flipped until your next :meth:`check`. ``external_scope_ids`` filters
+        deliveries to the scope keys you care about. The returned ``webhook_verification`` is the
+        only time the signing secret is shown; store it and verify every inbound delivery with it.
+        """
+        return self.create_webhook(
+            subscription_kind="fact_state",
+            callback_url=callback_url,
+            event_types=[FACT_STATE_DELTA_EVENT_TYPE],
+            description=description,
+            external_scope_ids=external_scope_ids,
+            enabled=enabled,
+            idempotency_key=idempotency_key,
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+
+    def create_webhook(
+        self,
+        *,
+        subscription_kind: WebhookSubscriptionKind,
+        callback_url: str,
+        event_types: list[str],
+        description: Optional[str] = None,
+        external_scope_ids: Optional[list[str]] = None,
+        enabled: Optional[bool] = None,
+        idempotency_key: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> CreateWebhookResult:
+        """Register any webhook subscription.
+
+        ``POST /v1/webhooks`` REQUIRES an ``Idempotency-Key`` header (it answers HTTP 400
+        ``idempotency_key_required`` without one), so this client always sends one — a fresh UUID
+        when the caller supplies none. The call is not billable and is never auto-retried.
+        """
+        if not isinstance(callback_url, str) or not callback_url.startswith("https://"):
+            raise ValueError("callback_url must be an https URL")
+        body = _clean(
+            {
+                "subscription_kind": subscription_kind,
+                "callback_url": callback_url,
+                "event_types": event_types,
+                "description": description,
+                "external_scope_ids": external_scope_ids,
+                "enabled": enabled,
+            }
+        )
+        return cast(
+            CreateWebhookResult,
+            self._request(
+                "POST",
+                "/v1/webhooks",
+                body,
+                headers={"idempotency-key": idempotency_key or str(uuid.uuid4())},
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    def list_webhooks(
+        self,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> list[WebhookSubscription]:
+        """List this workspace's webhook subscriptions."""
+        payload = self._request(
+            "GET",
+            "/v1/webhooks",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast("list[WebhookSubscription]", payload["subscriptions"])
+
+    def set_webhook_enabled(
+        self,
+        subscription_id: str,
+        enabled: bool,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> WebhookSubscription:
+        """Pause or resume deliveries without losing the subscription's signing key or history."""
+        return cast(
+            WebhookSubscription,
+            self._request(
+                "PATCH",
+                f"/v1/webhooks/{_path_segment(subscription_id, name='subscription_id')}",
+                {"enabled": enabled},
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    def delete_webhook(
+        self,
+        subscription_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> WebhookSubscription:
+        """Delete a webhook subscription."""
+        return cast(
+            WebhookSubscription,
+            self._request(
+                "DELETE",
+                f"/v1/webhooks/{_path_segment(subscription_id, name='subscription_id')}",
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    def replay_webhook_delivery(
+        self,
+        delivery_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> dict[str, Any]:
+        """Re-deliver one dead-lettered delivery after fixing the receiving endpoint."""
+        return cast(
+            "dict[str, Any]",
+            self._request(
+                "POST",
+                f"/v1/webhook-deliveries/"
+                f"{_path_segment(delivery_id, name='delivery_id')}/replay",
+                {},
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    # ------------------------------------------------------------------ outcomes
+
+    def report_outcome(
+        self,
+        id: str,
+        kind: OutcomeKind,
+        *,
+        note: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> dict[str, Any]:
+        """Report what actually happened for a prior check (by ``receipt["id"]``), to calibrate."""
+        return cast(
+            "dict[str, Any]",
+            self._request(
+                "POST",
+                "/v1/report-outcome",
+                _clean({"id": id, "kind": kind, "note": note}),
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    # ------------------------------------------------------------------ pilot alias
 
     def verify(
         self,
@@ -607,10 +1209,16 @@ class KavalClient:
         jurisdiction: Optional[str] = None,
         context: Optional[str] = None,
         idempotency_key: Optional[str] = None,
-        timeout: Optional[float] = None,
+        timeout: RequestTimeout = None,
         cancellation_token: Optional[KavalCancellationToken] = None,
     ) -> VerifyResult:
         """Verify one load-bearing conclusion against its evidence references.
+
+        .. deprecated:: 0.6
+            Pilot compatibility only — use :meth:`check`. One ``check()`` verifies every fact an
+            action depends on and returns ALLOW / REVIEW / BLOCK with a signed receipt. This route
+            is kept while the Matey pilot migrates and will be removed once both pilots are on
+            ``check()``.
 
         Pass either a single request mapping (``verify({"conclusion": ..., "evidence_refs":
         [...]})``) or the same fields as keywords — never both. ``evidence_refs`` holds 1-20
@@ -622,8 +1230,9 @@ class KavalClient:
         ``decision`` ALLOW/BLOCK/REVIEW, ``reason``, ``share_endpoint``, and the full signed
         ``packet``). Expiry lives at ``receipt["packet"]["action_decision"]["expires_at"]``.
 
-        This is the compatibility surface for single conclusions; production actions should build
-        proof with :meth:`audit` and enforce it with :meth:`gate`.
+        This is the only call that spends an operation key: it sends an ``Idempotency-Key`` and
+        retries once after an ambiguous failure. (Every successful ``check()`` is metered too — it
+        simply is not replayed.)
         """
         field_kwargs = {
             "conclusion": conclusion,
@@ -636,6 +1245,12 @@ class KavalClient:
             "context": context,
         }
         if request is not None:
+            if not isinstance(request, Mapping):
+                # verify("a sentence") used to die on request.keys(); say where the text goes.
+                raise ValueError(
+                    "verify takes a request mapping or keyword fields; pass a plain sentence "
+                    "as verify(conclusion=..., evidence_refs=[...])"
+                )
             if any(value is not None for value in field_kwargs.values()):
                 raise ValueError(
                     "pass the verify request as one mapping or as keyword fields, not both"
@@ -675,294 +1290,26 @@ class KavalClient:
         )
         return _verify_result(payload)
 
-    def audit(
+    def health(
         self,
-        text: str,
         *,
-        as_of: str,
-        materiality: Optional[Materiality] = None,
-        intended_action: Optional[str] = None,
-        reversibility: Optional[ActionReversibility] = None,
-        false_allow_cost_usd: Optional[float] = None,
-        false_block_cost_usd: Optional[float] = None,
-        wait_cost_usd: Optional[float] = None,
-        domain: Optional[str] = None,
-        subject_hint: Optional[str] = None,
-        jurisdiction: Optional[str] = None,
-        geography: Optional[str] = None,
-        units: Optional[str] = None,
-        context: Optional[str] = None,
-        aliases: Optional[list[str]] = None,
-        origin_urls: Optional[list[str]] = None,
-        record: Optional[RecordRef] = None,
-        record_field: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-        timeout: Optional[float] = None,
+        timeout: RequestTimeout = None,
         cancellation_token: Optional[KavalCancellationToken] = None,
-    ) -> ProofPacket:
-        """Build, sign, and persist a complete action-bound proof packet.
+    ) -> dict[str, Any]:
+        """Liveness probe. Goes through the same request path as every other call.
 
-        ``domain`` is descriptive metadata only; it never expands empirical calibration support.
-        ``timeout`` overrides the client's default httpx timeout for this call.
+        It used to hit the transport directly, which meant the one method most likely to be aimed
+        at an unreachable host was also the one that could not be given a deadline or cancelled.
         """
-        payload = self._billable_post(
-            "/v1/audit",
-            _clean(
-                {
-                    "text": text,
-                    "as_of": as_of,
-                    "materiality": materiality,
-                    "intended_action": intended_action,
-                    "reversibility": reversibility,
-                    "false_allow_cost_usd": false_allow_cost_usd,
-                    "false_block_cost_usd": false_block_cost_usd,
-                    "wait_cost_usd": wait_cost_usd,
-                    "domain": domain,
-                    "subject_hint": subject_hint,
-                    "jurisdiction": jurisdiction,
-                    "geography": geography,
-                    "units": units,
-                    "context": context,
-                    "aliases": aliases,
-                    "origin_urls": origin_urls,
-                    "record": record,
-                    "record_field": record_field,
-                }
-            ),
-            idempotency_key=idempotency_key,
-            timeout=timeout,
-            cancellation_token=cancellation_token,
-        )
-        return cast(ProofPacket, payload)
-
-    def gate_action(
-        self,
-        *,
-        material_claim_ids: list[str],
-        threshold: DecisionThreshold,
-        action: ActionContext,
-        proof_id: Optional[str] = None,
-        proof_key: Optional[str] = None,
-        expected_dependency_versions: Optional[dict[str, str]] = None,
-        idempotency_key: Optional[str] = None,
-        timeout: Optional[float] = None,
-    ) -> ProofGateResult:
-        """Apply one current durable proof to the exact supplied action without researching again.
-
-        A missing proof surfaces as :class:`KavalProofNotFoundError` (HTTP 404
-        ``proof_not_found``), never as a 200 state.
-        """
-        if (proof_id is None) == (proof_key is None):
-            raise ValueError("provide exactly one of proof_id or proof_key")
-        try:
-            payload = self._billable_post(
-                "/v1/gate",
-                _clean(
-                    {
-                        "proof_id": proof_id,
-                        "proof_key": proof_key,
-                        "expected_dependency_versions": expected_dependency_versions,
-                        "material_claim_ids": material_claim_ids,
-                        "threshold": threshold,
-                        "action": action,
-                    }
-                ),
-                idempotency_key=idempotency_key,
+        return cast(
+            "dict[str, Any]",
+            self._request(
+                "GET",
+                "/health",
                 timeout=timeout,
-            )
-        except KavalError as error:
-            if (
-                error.status_code == 404
-                and _api_error_code(error.payload) == "proof_not_found"
-            ):
-                raise KavalProofNotFoundError(
-                    error.status_code,
-                    error.payload,
-                    idempotency_key=error.idempotency_key,
-                ) from None
-            raise
-        return cast(ProofGateResult, payload)
-
-    def gate(self, **kwargs: Any) -> ProofGateResult:
-        """Short alias for :meth:`gate_action`."""
-        return self.gate_action(**kwargs)
-
-    def check(
-        self,
-        belief: str,
-        *,
-        context: Optional[str] = None,
-        held_evidence: Optional[list[str]] = None,
-        freshness_sla: Optional[str] = None,
-        proof_standard: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> dict[str, Any]:
-        return self._billable_post(
-            "/v1/check",
-            _clean(
-                {
-                    "belief": belief,
-                    "context": context,
-                    "held_evidence": held_evidence,
-                    "freshness_sla": freshness_sla,
-                    "proof_standard": proof_standard,
-                }
+                cancellation_token=cancellation_token,
             ),
-            idempotency_key=idempotency_key,
         )
-
-    def legacy_verify_belief(
-        self,
-        belief: str,
-        *,
-        context: Optional[str] = None,
-        url: Optional[str] = None,
-        held_at: Optional[str] = None,
-        held_content_hash: Optional[str] = None,
-        held_evidence: Optional[list[str]] = None,
-        freshness_sla: Optional[str] = None,
-        proof_standard: Optional[str] = None,
-        min_confidence: Optional[float] = None,
-        mode: Optional[VerifyMode] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """LEGACY belief-freshness gate (the server still accepts this fallback body).
-
-        Returns the verdict plus ``act`` (True only when current and confident). Treat ``act``
-        False as 'do not rely on this belief — re-fetch first'.
-
-        ``mode`` selects a speed/depth tier — instant (cache/prior only, no LLM) | fast | auto
-        (default) | deep (full multi-source + a cited explanation). The returned dict echoes
-        ``tier``, and on the deep tier adds ``explanation`` {content, citations, confidence}.
-
-        New integrations should use :meth:`verify` (conclusion + evidence_refs) or the full
-        :meth:`audit`/:meth:`gate` lifecycle instead.
-        """
-        return self._billable_post(
-            "/v1/verify",
-            _clean(
-                {
-                    "belief": belief,
-                    "context": context,
-                    "url": url,
-                    "held_at": held_at,
-                    "held_content_hash": held_content_hash,
-                    "held_evidence": held_evidence,
-                    "freshness_sla": freshness_sla,
-                    "proof_standard": proof_standard,
-                    "minConfidence": min_confidence,
-                    "mode": mode,
-                }
-            ),
-            idempotency_key=idempotency_key,
-        )
-
-    def extract_and_check(
-        self,
-        text: str,
-        *,
-        context: Optional[str] = None,
-        freshness_sla: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> dict[str, Any]:
-        return self._billable_post(
-            "/v1/extract-and-check",
-            _clean({"text": text, "context": context, "freshness_sla": freshness_sla}),
-            idempotency_key=idempotency_key,
-        )
-
-    def scan_store(
-        self,
-        beliefs: list[str],
-        *,
-        freshness_sla: Optional[str] = None,
-        concurrency: Optional[int] = None,
-        mode: Optional[VerifyMode] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """Sweep a belief store for drift. ``mode`` is the speed/depth tier for the whole sweep
-        (default ``fast`` — cheap breadth; re-check a flagged belief at ``deep`` for the cited
-        explanation). The returned dict echoes the ``tier`` the sweep ran at."""
-        return self._billable_post(
-            "/v1/scan-store",
-            _clean(
-                {
-                    "beliefs": beliefs,
-                    "freshness_sla": freshness_sla,
-                    "concurrency": concurrency,
-                    "mode": mode,
-                }
-            ),
-            idempotency_key=idempotency_key,
-        )
-
-    def monitor(
-        self,
-        beliefs: list[str],
-        *,
-        freshness_sla: Optional[str] = None,
-        concurrency: Optional[int] = None,
-        mode: Optional[VerifyMode] = None,
-        webhook: Optional[str] = None,
-        state: Optional[dict[str, Any]] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """Sweep a belief store and POST the NEWLY-risky beliefs to ``webhook`` (server-side delivery).
-        Pass the ``state`` from the previous response to deliver only beliefs that became risky since
-        then (a still-stale belief isn't re-sent every run). ``mode`` is the sweep tier (default
-        ``fast``); the result echoes the ``tier`` it ran at and the ``state`` to carry into the next run."""
-        return self._billable_post(
-            "/v1/monitor",
-            _clean(
-                {
-                    "beliefs": beliefs,
-                    "freshness_sla": freshness_sla,
-                    "concurrency": concurrency,
-                    "mode": mode,
-                    "webhook": webhook,
-                    "state": state,
-                }
-            ),
-            idempotency_key=idempotency_key,
-        )
-
-    def report_outcome(
-        self, id: str, kind: OutcomeKind, *, note: Optional[str] = None
-    ) -> dict[str, Any]:
-        return self._post(
-            "/v1/report-outcome", _clean({"id": id, "kind": kind, "note": note})
-        )
-
-    def kaval(
-        self, request: dict[str, Any], *, idempotency_key: Optional[str] = None
-    ) -> dict[str, Any]:
-        """Lower-level structured passthrough (a KavalRequest)."""
-        return self._billable_post(
-            "/v1/kaval", request, idempotency_key=idempotency_key
-        )
-
-    def kaval_batch(
-        self,
-        requests: list[dict[str, Any]],
-        *,
-        concurrency: Optional[int] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        return self._billable_post(
-            "/v1/kaval-batch",
-            _clean({"requests": requests, "concurrency": concurrency}),
-            idempotency_key=idempotency_key,
-        )
-
-    def health(self) -> dict[str, Any]:
-        res = self._http.get("/health")
-        try:
-            payload: Any = res.json()
-        except ValueError:
-            payload = res.text
-        if res.status_code >= 400:
-            raise KavalError(res.status_code, payload)
-        return payload
 
     def close(self) -> None:
         self._http.close()

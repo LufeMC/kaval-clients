@@ -27,24 +27,43 @@ except ImportError:  # no extra installed — stub the one symbol the adapter im
 from kaval import KavalClient  # noqa: E402
 from kaval.pydantic_ai import verify_output  # noqa: E402
 
-CURRENT = {
-    "id": "id_1",
-    "status": "current",
-    "confidence": 0.95,
-    "reason": "confirmed",
-    "evidence": [],
-    "checked_at": "2026-07-01T00:00:00.000Z",
-    "act": True,
+RECEIPT = {"id": "rcpt_1", "signature": "c2ln", "signed_at": "2026-07-26T00:00:00.000Z"}
+LATENCY = {"compile": 1, "lookup": 8, "live": 0, "total": 11}
+
+ALLOW = {
+    "decision": "ALLOW",
+    "reason_codes": ["ALL_FACTS_HOLD"],
+    "facts": [
+        {
+            "fingerprint": "fact:sha256:1",
+            "text": "Jane Doe is the CEO of Acme",
+            "status": "holds",
+            "materiality": "high",
+            "served_from_state": True,
+            "last_verified_at": "2026-07-25T09:00:00.000Z",
+            "sources": [{"locator": "http://acme.test/team"}],
+        }
+    ],
+    "receipt": RECEIPT,
+    "latency_ms": LATENCY,
 }
 
-STALE = {
-    "id": "id_2",
-    "status": "stale",
-    "confidence": 0.9,
-    "reason": "the team page changed",
-    "evidence": [{"url": "http://acme.test/team"}],
-    "checked_at": "2026-07-01T00:00:00.000Z",
-    "act": False,
+BLOCK = {
+    "decision": "BLOCK",
+    "reason_codes": ["FACT_CHANGED"],
+    "facts": [
+        {
+            "fingerprint": "fact:sha256:2",
+            "text": "Jane Doe is the CEO of Acme",
+            "status": "changed",
+            "materiality": "critical",
+            "served_from_state": True,
+            "last_verified_at": "2026-07-25T09:00:00.000Z",
+            "sources": [{"locator": "http://acme.test/team"}],
+        }
+    ],
+    "receipt": RECEIPT,
+    "latency_ms": LATENCY,
 }
 
 
@@ -63,96 +82,184 @@ class Ctx:
         self.partial_output = partial_output
 
 
-def test_current_beliefs_pass_through_unchanged():
+def test_allow_passes_the_output_through_unchanged():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/verify"
-        return httpx.Response(200, json=CURRENT)
+        assert request.url.path == "/v1/check"
+        return httpx.Response(200, json=ALLOW)
 
     with make_client(handler) as c:
-        validator = verify_output(c, beliefs=lambda out: [out])
-        assert run(validator(Ctx(), "Jane Doe is the CEO of Acme")) == "Jane Doe is the CEO of Acme"
+        validator = verify_output(c, claims=lambda out: [out])
+        assert run(validator(Ctx(), "Jane Doe is the CEO of Acme")) == (
+            "Jane Doe is the CEO of Acme"
+        )
 
 
-def test_stale_belief_raises_model_retry_with_reason_and_source():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=STALE)
+def test_block_raises_model_retry_with_the_decision_reason_and_source():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=BLOCK)
 
     with make_client(handler) as c:
-        validator = verify_output(c, beliefs=lambda out: [out])
+        validator = verify_output(c, claims=lambda out: [out])
         with pytest.raises(ModelRetry) as exc:
             run(validator(Ctx(), "Jane Doe is the CEO of Acme"))
 
     msg = str(exc.value)
-    assert "stale" in msg
-    assert "the team page changed" in msg
+    assert "BLOCK" in msg
+    assert "FACT_CHANGED" in msg
+    assert "changed" in msg
     assert "http://acme.test/team" in msg
 
 
-def test_default_extractor_uses_extract_and_check():
-    calls = []
+def test_review_is_never_permission_to_act():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                **BLOCK,
+                "decision": "REVIEW",
+                "reason_codes": ["FACT_UNKNOWN"],
+                "facts": [{**BLOCK["facts"][0], "status": "unknown"}],
+            },
+        )
+
+    with make_client(handler) as c:
+        validator = verify_output(c, claims=lambda out: [out])
+        with pytest.raises(ModelRetry, match="REVIEW"):
+            run(validator(Ctx(), "Jane Doe is the CEO of Acme"))
+
+
+def test_a_verdict_with_no_failing_fact_row_still_names_a_gap():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                **ALLOW,
+                "decision": "REVIEW",
+                "reason_codes": ["COMPILATION_UNCERTAIN"],
+                "facts": [],
+            },
+        )
+
+    with make_client(handler) as c:
+        validator = verify_output(c, claims=lambda out: [out])
+        with pytest.raises(ModelRetry) as exc:
+            run(validator(Ctx(), "something ambiguous"))
+
+    assert "could not be confirmed" in str(exc.value)
+
+
+def test_default_path_sends_the_whole_output_as_the_action():
+    captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.path)
-        if request.url.path == "/v1/extract-and-check":
-            return httpx.Response(
-                200, json={"beliefs": [{**STALE, "belief": "Acme HQ is in Austin"}]}
-            )
-        return httpx.Response(200, json=STALE)
+        assert request.url.path == "/v1/check"
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=ALLOW)
 
     with make_client(handler) as c:
         validator = verify_output(c)
-        with pytest.raises(ModelRetry) as exc:
-            run(validator(Ctx(), "Acme HQ is in Austin and the sky is blue."))
+        run(validator(Ctx(), "Acme HQ is in Austin and the sky is blue."))
 
-    assert calls[0] == "/v1/extract-and-check"
-    assert "/v1/verify" in calls[1:]
-    assert "Acme HQ is in Austin" in str(exc.value)
+    # No claims extractor: Kaval compiles the facts out of the output itself.
+    assert captured["body"] == {"action": "Acme HQ is in Austin and the sky is blue."}
 
 
-def test_structured_output_without_beliefs_extractor_is_a_type_error():
-    with make_client(lambda r: httpx.Response(200, json=CURRENT)) as c:
+def test_structured_output_without_a_claims_extractor_is_a_type_error():
+    with make_client(lambda r: httpx.Response(200, json=ALLOW)) as c:
         validator = verify_output(c)
-        with pytest.raises(TypeError, match="beliefs="):
+        with pytest.raises(TypeError, match="claims="):
             run(validator(Ctx(), {"claim": "structured"}))
 
 
-def test_partial_streamed_output_is_not_verified():
-    def handler(request: httpx.Request) -> httpx.Response:
+def test_partial_streamed_output_is_not_checked():
+    def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("no HTTP call expected for partial output")
 
     with make_client(handler) as c:
-        validator = verify_output(c, beliefs=lambda out: [out])
+        validator = verify_output(c, claims=lambda out: [out])
         out = run(validator(Ctx(partial_output=True), "half a sent"))
     assert out == "half a sent"
 
 
-def test_verify_carries_mode_and_options():
+def test_check_carries_mode_and_options():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json=CURRENT)
+        return httpx.Response(200, json=ALLOW)
 
     with make_client(handler) as c:
         validator = verify_output(
-            c, beliefs=lambda out: [out], mode="deep", min_confidence=0.8, freshness_sla="14d"
+            c,
+            claims=lambda out: [out],
+            mode="fast",
+            materiality="critical",
+            max_wait_ms=1500,
+            context="procurement gate",
         )
-        run(validator(Ctx(), "a belief"))
+        run(validator(Ctx(), "a claim"))
 
-    assert captured["body"]["mode"] == "deep"
-    assert captured["body"]["minConfidence"] == 0.8
-    assert captured["body"]["freshness_sla"] == "14d"
+    assert captured["body"] == {
+        "claims": ["a claim"],
+        "context": "procurement gate",
+        "mode": "fast",
+        "materiality": "critical",
+        "max_wait_ms": 1500,
+    }
 
 
-def test_belief_cap_limits_verify_calls():
-    verify_calls = []
+def test_claims_up_to_the_server_maximum_go_out_in_one_call():
+    captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        verify_calls.append(json.loads(request.content)["belief"])
-        return httpx.Response(200, json=CURRENT)
+        captured.setdefault("calls", 0)
+        captured["calls"] += 1
+        captured["claims"] = json.loads(request.content)["claims"]
+        return httpx.Response(200, json=ALLOW)
 
     with make_client(handler) as c:
-        validator = verify_output(c, beliefs=lambda out: [f"claim {i}" for i in range(25)])
+        validator = verify_output(c, claims=lambda out: [f"claim {i}" for i in range(20)])
         run(validator(Ctx(), "anything"))
 
-    assert len(verify_calls) == 10  # _MAX_BELIEFS
+    assert captured["calls"] == 1
+    assert len(captured["claims"]) == 20  # _MAX_CLAIMS
+
+
+def test_more_claims_than_one_check_carries_is_a_retry_not_a_silent_drop():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a body the server would reject must not be sent")
+
+    with make_client(handler) as c:
+        validator = verify_output(c, claims=lambda out: [f"claim {i}" for i in range(25)])
+        with pytest.raises(ModelRetry) as exc:
+            run(validator(Ctx(), "anything"))
+
+    # Claim 21 used to be sliced off and never checked — and an unchecked claim reads as ALLOW.
+    assert "25" in str(exc.value)
+    assert "20" in str(exc.value)
+
+
+def test_an_output_past_the_action_limit_is_a_retry_not_a_dead_run():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a body the server would reject must not be sent")
+
+    long_answer = "The tariff rate is 7.5 percent. " * 400  # >10_000 characters
+    assert len(long_answer) > 10_000
+
+    with make_client(handler) as c:
+        validator = verify_output(c)
+        with pytest.raises(ModelRetry) as exc:
+            run(validator(Ctx(), long_answer))
+
+    # Previously a 400 that escaped the validator as a raw KavalError and ended the run.
+    assert str(len(long_answer)) in str(exc.value)
+
+
+def test_a_claim_past_the_claim_limit_is_a_retry_too():
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a body the server would reject must not be sent")
+
+    with make_client(handler) as c:
+        validator = verify_output(c, claims=lambda out: ["x" * 2_001])
+        with pytest.raises(ModelRetry, match="2001"):
+            run(validator(Ctx(), "anything"))

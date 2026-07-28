@@ -1,10 +1,13 @@
 # kaval (Python SDK)
 
-Before an AI agent acts, Kaval verifies the facts the action relies on and returns a time-bounded
-signed proof your policy can enforce — `ALLOW`, `REVIEW`, or `BLOCK`.
+Before an AI agent acts, Kaval verifies the facts the action depends on and returns `ALLOW`,
+`REVIEW`, or `BLOCK` with a signed receipt.
 
-`audit()` builds the proof (the expensive path); `gate()` applies it at act time with no search,
-parsing, or model call; `verify()` is the compatibility surface for single conclusions.
+One call does the work: **`check()`**. Everything else configures what Kaval watches, so that a
+check stays a warm database read (~50 ms) instead of a research run: register sources with
+`add_source()`, push your own documents with `send_event()`, and subscribe to `fact_state.delta`
+webhooks with `subscribe_fact_state_deltas()` so you are *told* when a fact flips instead of
+polling for it.
 
 Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
 facts those rules depend on are still true.
@@ -15,89 +18,214 @@ facts those rules depend on are still true.
 pip install kaval
 ```
 
-## Verify one conclusion against its evidence
+## Quickstart
 
 ```python
 from kaval import KavalClient
 
 with KavalClient(api_key="kv_live_...") as kaval:
-    result = kaval.verify({
-        "conclusion": "The 2024 International Building Code is the current IBC edition.",
-        "evidence_refs": ["https://codes.iccsafe.org/content/IBC2024V2.0"],
-    })
-    if result["status"] != "valid":
-        hold_workflow(result)
-    save_receipt(result["receipt"])
+    result = kaval.check(
+        action="Approve the prior-auth claim for CPT 12345 at the current rate",
+        context="payer: Aetna",
+    )
+
+    if result["decision"] != "ALLOW":       # REVIEW is never permission to act
+        hold_for_human(result)
+    else:
+        approve_claim()
+
+    save_receipt(result["receipt"]["id"])   # the proof that this was checked
 ```
 
-The same fields also work as keywords: `kaval.verify(conclusion=..., evidence_refs=[...])`.
-`evidence_refs` holds 1–20 references. Each is a plain **https URL string**, or a strict
-`{"url": ..., "document_id": ...}` object when the document has a stable identity you will refer
-to again (a bare object without `document_id` is invalid — use the plain string form instead;
-`document_id` values must be unique). Optional fields: `as_of` (RFC 3339 with offset),
-`materiality` (`low|medium|high|critical`), `intended_action`, `reversibility`
-(`reversible|partially_reversible|irreversible|unknown`), `jurisdiction`, `context`.
+`check()` takes either one mapping (`kaval.check({"action": ...})`) or the same fields as keywords
+— never both:
 
-The response is `{status, receipt}`:
+| field          | meaning                                                                       |
+| -------------- | ----------------------------------------------------------------------------- |
+| `action`       | what the agent is about to do, in plain language. Kaval compiles the facts.    |
+| `context`      | anything the agent already knows that bears on the action.                     |
+| `claims`       | facts to check directly — plain sentences or structured claims (max 20).       |
+| `mode`         | `fast` (stored fact state only) or `standard` (allows the live fallback).      |
+| `max_wait_ms`  | live-path budget (default 100000, max 100000; `0` disables research). See below. |
+| `origin_urls`  | caller-declared origins, merged with the workspace's watched sources.          |
+| `materiality`  | `low` \| `medium` \| `high` \| `critical`.                                     |
+| `as_of`        | RFC 3339 timestamp to check against.                                           |
 
-- `status` — `valid` | `invalidated` | `could_not_verify`.
-- `receipt` — the signed proof receipt: `proof_id`, `decision` (`ALLOW`/`BLOCK`/`REVIEW`),
-  `reason`, `share_endpoint` (`/v1/proofs/<id>/share`), and the full signed `packet`. There is no
-  receipt-level `expires_at` — expiry lives at `receipt["packet"]["action_decision"]["expires_at"]`.
+At least one of `action` or `claims` is required — the client raises `ValueError` before any HTTP
+call otherwise. A check is a **read**: it sends no `Idempotency-Key`, and retrying it is free.
 
-Receipts are Ed25519-signed (`packet["signature"]` with a key id like `proof-ed25519-2026-07`).
-Anyone can verify one offline with the open verifier (`@kaval/receipt-verifier` in the main repo)
-against `GET /v1/proof-verification-keys/:kid`.
+`max_wait_ms` bounds only the **live research** path. Its ceiling equals its default on purpose:
+the budget is there for a caller who would rather have a bounded `REVIEW` than wait, never to ask
+for more time. A cold action check with several novel facts routinely needs 50–100 s of search,
+fetch and adjudication, so cutting the budget short returns `unknown` facts rather than a faster
+verdict. `0` disables research entirely — which is exactly what `mode="fast"` sets.
 
-## Build a proof, then gate the action
+The response:
+
+- `decision` — **ALLOW** (every material fact still holds on a fresh basis), **REVIEW** (something
+  is unknown, changed at low/medium materiality, or mid-re-evaluation), or **BLOCK** (a
+  high/critical fact changed, or a critical fact is unknown). **Only ALLOW means "safe to act".**
+- `reason_codes` — why, from a closed eight-code taxonomy (`ALL_FACTS_HOLD`, `FACT_CHANGED`,
+  `FACT_EXPIRED`, `FACT_UNKNOWN`, `SOURCE_UPDATED_PENDING_REVIEW`, `SOURCE_UNREACHABLE`,
+  `NEW_FACT_UNVERIFIED`, `COMPILATION_UNCERTAIN`).
+- `facts` — one row per fact: `fingerprint`, `text`, `status` (`holds` | `changed` | `unknown`),
+  `materiality`, `served_from_state`, `last_verified_at`, `sources`.
+- `receipt` — `{id, signature, signed_at}`. `get_receipt(id)` returns the full signed document,
+  which re-derives the verdict offline (the decision table is published).
+- `latency_ms` — `compile`, `lookup`, `live`, `total`.
+
+Structured claims are the zero-LLM path — they canonicalize straight to a fact fingerprint, so the
+warm lookup needs no model call:
 
 ```python
-from datetime import datetime, timezone
-from kaval import KavalClient, KavalProofNotFoundError
-
-with KavalClient(api_key="kv_live_...") as client:
-    proof = client.audit(
-        "Acme is eligible for a $12,000 refund",
-        as_of=datetime.now(timezone.utc).isoformat(),
-        intended_action="Issue Acme a $12,000 refund",
-        materiality="critical",
-        reversibility="irreversible",
-        false_allow_cost_usd=12_000,
-        record={"system": "billing", "table": "refunds", "id": "acme-2026"},
-        timeout=45.0,
-    )
-    try:
-        gate = client.gate(
-            proof_id=proof["proof_id"],
-            material_claim_ids=proof["action_decision"]["material_claim_ids"],
-            threshold=proof["action_decision"]["threshold"],
-            action=proof["research_contract"]["action"],
-        )
-    except KavalProofNotFoundError:
-        # HTTP 404 proof_not_found: no published proof matched this locator — rebuild with audit().
-        raise
-    if not (gate["state"] == "current" and gate["decision"]["decision"] == "ALLOW"):
-        raise RuntimeError("Kaval did not allow the action")
+result = kaval.check(
+    claims=[
+        {"subject": "Aetna", "predicate": "requires_prior_auth_for", "object": "CPT 12345"},
+        "The 2024 International Building Code is the current IBC edition",
+    ],
+    mode="fast",
+)
 ```
 
-`audit()` returns the raw signed `ProofPacket` — claims (`claim_dag`), sources
-(`source_versions`), evidence spans and assessments, the `action_decision`
-(`decision`, `summary`, `expires_at`), `expiry` (`recheck_at`, `expires_at`,
-`invalidation_triggers`), and the Ed25519 `signature`.
+## Tell Kaval what to watch
 
-`gate()` (alias `gate_action()`) takes exactly one of `proof_id` | `proof_key`, plus
-`material_claim_ids`, `threshold` (`policy_id`, `policy_version`, `materiality`,
-`maximum_false_allow_risk`, `minimum_evidence_coverage`), `action` (`description`, `materiality`,
-`reversibility?`, cost fields), and optional `expected_dependency_versions`. It returns
-`{proofId, state, decision, billingClass, proofReused, researchPerformed: False,
-humanOverrideApplied?, latencyMs}` where `state` is
-`current | not_yet_valid | expired | invalidated | dependency_changed | integrity_failed |
-policy_mismatch | operational_failure`. A missing proof is never a 200 — it surfaces as
-`KavalProofNotFoundError` (HTTP 404, error code `proof_not_found`).
+```python
+# A URL, polled conditionally.
+kaval.add_source("url", locator="https://hts.usitc.gov/", scope_keys=["hts:8471.30"])
+
+# An entity by name — Kaval resolves it to the URLs that publish it and watches those.
+kaval.add_source("entity", name="Aetna", intent="payer policy bulletins")
+
+# A document you own: push it and Kaval versions, diffs, and re-evaluates the dependent facts.
+kaval.send_event(
+    namespace="matey",
+    document_id="msa-2026-07",
+    content=amended_agreement_text,
+    scope_keys=["contract:msa-2026-07"],
+)
+```
+
+`list_sources(include_inactive=False)`, `get_source(id)`, `pause_source(id)`, `resume_source(id)`,
+and `delete_source(id)` manage the registry. Facts learned from a watched source stay warm, so
+checks on them are a database read.
+
+`recompile_source(id)` re-derives how a source is acquired. A directly-registered URL starts out
+polled with a plain conditional GET; this is what asks discovery to work out what actually
+publishes it, and the only recovery once a working plan breaks against a redesigned site. It
+answers `202 {source_id, job_id, created}` — the job is queued, not finished, and `created` is
+`False` when an open job for that source absorbed the request.
+
+## Get told when a fact flips
+
+```python
+subscription = kaval.subscribe_fact_state_deltas(
+    "https://your-app.com/hooks/kaval",
+    external_scope_ids=["contract:msa-2026-07"],   # omit to receive everything
+)
+secret = subscription["webhook_verification"]["secret"]   # shown once — store it now
+```
+
+Without a subscription the background loops still keep fact state fresh, but nothing tells you a
+fact flipped until your next `check()`. Each delivery is a `fact_state.delta` event (typed as
+`FactStateDeltaEvent`) naming the source, the old/new content hashes, and every fact whose state
+changed with its basis. Verify each inbound delivery's HMAC signature with the returned
+`webhook_verification` — it is the only time the signing secret is shown.
+
+`POST /v1/webhooks` requires an `Idempotency-Key`; the client always sends one (a fresh UUID when
+you supply no `idempotency_key=`). Manage subscriptions with `list_webhooks()`,
+`set_webhook_enabled(id, enabled)`, `delete_webhook(id)`, and `replay_webhook_delivery(id)` for a
+dead-lettered delivery after you fix the receiving endpoint.
+
+## Report what actually happened
+
+```python
+kaval.report_outcome(result["receipt"]["id"], "relied_and_correct")
+```
+
+`kind` is one of `current_later_contradicted`, `stale_caught_real`, `stale_was_false_alarm`, or
+`relied_and_correct`. Outcomes calibrate the decision.
+
+## Migrating from 0.5
+
+Every pre-0.6 verification endpoint collapsed into `POST /v1/check`. The old routes answer
+`410 {"error": "tool_retired"}` on every method, which this client raises as `KavalRetiredError`
+(a `KavalError` with `.replacement`, and a message that names `check()`).
+
+| old                                     | new                                                                                       |
+| --------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `audit()` / `gate()` / `gate_action()`   | `check()` — the receipt IS the proof; the warm path re-checks in ~50 ms                    |
+| `check(belief=...)` (old belief shape)   | `check(action=...)` or `check(claims=[...])`                                               |
+| `legacy_verify_belief()`                 | `check(action=..., context=...)`                                                           |
+| `extract_and_check(text=...)`            | `check(action=<the text>)` — Kaval compiles the facts itself                               |
+| `scan_store(beliefs=[...])`              | `check(claims=[...])` (up to 20 per call)                                                  |
+| `monitor(...)`                           | `add_source()` + `subscribe_fact_state_deltas()` — deltas are pushed to you                |
+| `kaval()` / `kaval_batch()`              | `check(claims=[...])` with structured claims                                               |
+| `verify()`                               | still `verify()`, deprecated → move to `check()`                                           |
+
+`KavalProofNotFoundError` is gone with `/v1/gate`.
+
+## `verify()` — deprecated pilot alias
+
+`verify()` checks one load-bearing conclusion against explicit evidence references and returns a
+`ProofPacket` receipt. It is kept only while the existing pilots migrate; new integrations should
+use `check()`.
+
+```python
+result = kaval.verify(
+    conclusion="The 2024 International Building Code is the current IBC edition.",
+    evidence_refs=["https://codes.iccsafe.org/content/IBC2024V2.0"],
+)
+result["status"]              # "valid" | "invalidated" | "could_not_verify"
+result["receipt"]["decision"] # "ALLOW" | "BLOCK" | "REVIEW"
+```
+
+`evidence_refs` holds 1–20 references; each is a plain https URL string, or a strict
+`{"url": ..., "document_id": ...}` object when the document has a stable identity (a bare object
+without `document_id` is invalid; `document_id` values must be unique). Expiry lives at
+`result["receipt"]["packet"]["action_decision"]["expires_at"]`. Receipts are Ed25519-signed and
+verifiable offline against `GET /v1/proof-verification-keys/:kid`.
+
+`verify()` is the only call that **spends an operation key**: it sends an `Idempotency-Key`
+automatically and retries once after an ambiguous failure. That is not the same as being the only
+metered call — every successful `check()` is metered too; it simply is not replayed, because a
+check is a read of current state.
 
 **Honest boundaries.** Demo results carry no organizational authority. A production `ALLOW`
 requires a customer-bound action policy and applicable empirical calibration; `REVIEW` is never
 permission.
+
+## Pydantic AI guardrail (one line)
+
+Gate a [Pydantic AI](https://ai.pydantic.dev) agent's outputs on the check verdict. Before the
+answer leaves the run, Kaval verifies the facts it depends on; anything other than ALLOW raises
+`ModelRetry` with the changed/unknown facts and their sources, and the agent re-answers with the
+correction in context:
+
+```python
+# pip install "kaval[pydantic-ai]"
+from pydantic_ai import Agent
+from kaval.pydantic_ai import verify_output
+
+agent = Agent("openai:gpt-5")
+agent.output_validator(verify_output())  # <- the guardrail
+```
+
+By default the whole plain-text output is sent as the `action` and Kaval compiles the facts itself.
+For structured outputs, say which claims are checkable:
+
+```python
+agent.output_validator(
+    verify_output(claims=lambda out: [f"{out.company}'s CEO is {out.ceo}"], mode="fast")
+)
+```
+
+`verify_output(...)` also takes `client=` (a configured `KavalClient`), `materiality=`,
+`max_wait_ms=`, and `context=`. An answer that does not fit in one check — over 10 000 characters,
+more than 20 claims, or a single claim over 2 000 characters — raises `ModelRetry` asking for a
+shorter one instead of sending a body the API rejects; the surplus is never dropped, because a
+dropped claim is an unchecked claim and an unchecked claim reads as ALLOW. Streaming runs are
+supported — partial chunks pass through and only the complete output is checked. Each retry consumes the run's output-retry budget
+(`Agent(retries={"output": N})`). Full runnable example: `examples/pydantic_ai_guardrail.py`.
 
 ## Async / concurrency
 
@@ -108,7 +236,8 @@ in a later release.
 
 ## Caller cancellation
 
-`verify()` and `audit()` accept a thread-safe, one-shot cancellation token:
+Every method that makes a request — `health()` included — accepts a thread-safe, one-shot
+cancellation token, and a `timeout=`:
 
 ```python
 from threading import Timer
@@ -119,14 +248,9 @@ timer = Timer(2.0, lambda: token.cancel("request no longer needed"))
 timer.start()
 try:
     with KavalClient(api_key="kv_live_...") as client:
-        result = client.verify(
-            conclusion="The 2024 International Building Code is the current IBC edition.",
-            evidence_refs=["https://codes.iccsafe.org/content/IBC2024V2.0"],
-            idempotency_key="your-stable-operation-id",
-            cancellation_token=token,
-        )
+        result = client.check(action="Approve the claim", cancellation_token=token)
 except KavalCancelledError as error:
-    # Billable calls retain their recovery key.
+    # Billable calls (verify) retain their recovery key.
     recoverable_operation_key = error.idempotency_key
 finally:
     timer.cancel()
@@ -142,74 +266,7 @@ for blocking I/O. Kaval uses only the public `Response.close()` cleanup API; dep
 platform and transport phase, a daemon worker may remain until the underlying I/O returns or its
 configured `timeout=` expires. Keep a finite timeout as the transport-level cleanup backstop.
 
-## Legacy held-belief compatibility
-
-The original belief-freshness surface remains available under an explicitly legacy name (the server
-still accepts this fallback body on the same route):
-
-```python
-from kaval import KavalClient
-
-with KavalClient(api_key="kv_live_...") as client:
-    decision = client.legacy_verify_belief("Acme's CEO is Jane Doe")
-    if not decision["act"]:
-        ...  # stale / contradicted — re-fetch before relying on it
-```
-
-`legacy_verify_belief()` returns the verdict plus `act` — `True` only when the belief is `current`
-and confident (≥ 0.7 by default; override with `min_confidence`). `mode` selects a tier (default
-`auto`): `instant` (cache / graph-prior only, no fetch or LLM), `fast` (cheap model, origin-only),
-`auto` (balanced), or `deep` (strongest model + a cited explanation). The returned dict echoes
-`tier`, and on the `deep` tier adds `explanation` (`content`, `citations`, `confidence`).
-
-The related legacy belief methods — `check`, `extract_and_check`, `scan_store`, `monitor`,
-`kaval`, `kaval_batch`, `report_outcome` — keep working unchanged:
-
-```python
-beliefs = ["Acme is on the Enterprise plan", "Jane Doe is VP Eng at Acme"]
-
-report = client.scan_store(beliefs)
-for r in report["riskiest"]:
-    print(r["belief"], "→", r["status"])
-
-# …or get pushed the newly-stale ones (carry `state` across runs so a still-stale belief
-# isn't re-delivered every sweep):
-client.monitor(beliefs, webhook="https://your-app.com/hooks/stale")
-```
-
-## Pydantic AI guardrail (one line)
-
-Gate a [Pydantic AI](https://ai.pydantic.dev) agent's outputs on belief freshness (this adapter
-rides the legacy compatibility surface). Facts the agent is about to return are verified against
-the live world; a stale / contradicted / unsupported claim raises `ModelRetry` with the
-evidence-backed correction, and the agent re-answers with the current fact:
-
-```python
-# pip install "kaval[pydantic-ai]"
-from pydantic_ai import Agent
-from kaval.pydantic_ai import verify_output
-
-agent = Agent("openai:gpt-5")
-agent.output_validator(verify_output())  # <- the guardrail
-```
-
-By default plain-text outputs go through Kaval's claim extractor (`extract_and_check`). For
-structured outputs, say which fields are checkable beliefs:
-
-```python
-agent.output_validator(
-    verify_output(beliefs=lambda out: [f"{out.company}'s CEO is {out.ceo}"], mode="fast")
-)
-```
-
-`verify_output(...)` also takes `client=` (a configured `KavalClient`), `min_confidence=`, and
-`freshness_sla=` (e.g. `"14d"`). Streaming runs are supported — partial chunks pass through and
-only the complete output is verified. Each retry consumes the run's output-retry budget
-(`Agent(retries={"output": N})`). Full runnable example: `examples/pydantic_ai_guardrail.py`.
-
 ## Custom base URL
-
-Override the API base URL (e.g. a staging environment or a local proxy):
 
 ```python
 client = KavalClient(base_url="https://staging.api.usekaval.com", api_key="...")
@@ -226,49 +283,48 @@ When omitted, constructor args fall back to:
 
 Explicit `api_key=` / `base_url=` always wins over the environment.
 
-## Resilience
+## Errors and resilience
 
-Each billable call automatically sends a fresh UUID `Idempotency-Key`. The client performs one
-safety retry only after an ambiguous `httpx.TransportError`, or when the API says the same operation
-is still in progress/finalizing; that retry reuses the exact key. Ordinary API errors, rate limits,
-and terminal 5xx responses are not retried.
+- `KavalError` — any non-2xx response (`.status_code`, `.payload`, `.idempotency_key`).
+- `KavalRetiredError` — HTTP 410 `tool_retired` from a pre-0.6 route; `.replacement` is
+  `/v1/check`.
+- `KavalCancelledError` — a `cancellation_token` fired.
+- Timeouts surface as `httpx.TimeoutException`, not `KavalError`.
 
-Pass `idempotency_key=` when an outer job/retry system needs to keep one logical operation stable:
+`verify()` (the only billable call) sends a fresh UUID `Idempotency-Key` and performs one safety
+retry after an ambiguous `httpx.TransportError`, or when the API says the same operation is still
+in progress/finalizing; that retry reuses the exact key. Ordinary API errors, rate limits, and
+terminal 5xx responses are never retried. Pass `idempotency_key=` when an outer job system needs
+one logical operation to stay stable, and reuse a key only after an ambiguous/no-response failure.
+`create_webhook()` also sends an `Idempotency-Key` because the server requires one, but it is not
+billable and is never auto-retried.
 
-```python
-import uuid
-
-operation_id = str(uuid.uuid4())
-result = client.verify(
-    conclusion="The 2024 International Building Code is the current IBC edition.",
-    evidence_refs=["https://codes.iccsafe.org/content/IBC2024V2.0"],
-    idempotency_key=operation_id,
-)
-```
-
-Reuse a key only after an ambiguous/no-response failure. After receiving a terminal response, start
-a new key for any new attempt. `report_outcome()` and `health()` are not billable and do not send this
-header. Add your own retry/backoff for terminal responses when appropriate.
-If both bounded attempts remain ambiguous, `KavalError` and `httpx.TransportError` expose the
-generated key as `error.idempotency_key`; pass it back after your own delay to resume the same
-operation rather than generating and billing a new one.
-
-**Default timeout: 30 seconds** (connect + read), overridable at construction:
+**Default timeout: 150 seconds** (connect + read), overridable at construction or per call:
 
 ```python
-# audit proof-building may run close to the limit — raise for long-running calls:
+from kaval import NO_TIMEOUT
+
 client = KavalClient(api_key="...", timeout=60.0)
+client.check(action="...", timeout=10.0)         # a bounded deadline for this call
+client.check(action="...", timeout=NO_TIMEOUT)   # no deadline at all for this call
 ```
 
-Timeouts surface as `httpx.TimeoutException` (not `KavalError`).
+The default sits just above the server's own 150 s handler deadline, which in turn sits above the
+100 s a cold check may spend on live research. A shorter client deadline does not make the answer
+arrive sooner — it throws away the research that was about to produce it. Pass `max_wait_ms` when
+you genuinely want a faster, bounded verdict. `timeout=None` per call means "inherit the client's";
+`NO_TIMEOUT` is the value that removes it.
 
 ## API
 
-`verify` · `audit` · `gate` (`gate_action` alias) · `legacy_verify_belief` · `check` ·
-`extract_and_check` · `scan_store` · `monitor` · `report_outcome` · `kaval` · `kaval_batch` ·
-`health`. Billable methods accept the optional keyword `idempotency_key=`. Construct with
-`KavalClient(base_url=?, api_key=?)` — `base_url` defaults to `https://api.usekaval.com`. The
-Node/TypeScript client mirrors this surface: `npm install @usekaval/kaval`.
+`check` · `get_receipt` · `add_source` · `list_sources` · `get_source` · `pause_source` ·
+`resume_source` · `recompile_source` · `delete_source` · `send_event` ·
+`subscribe_fact_state_deltas` · `create_webhook` · `list_webhooks` · `set_webhook_enabled` ·
+`delete_webhook` · `replay_webhook_delivery` · `report_outcome` · `verify` (deprecated) ·
+`health`. Construct with
+`KavalClient(base_url=?, api_key=?, timeout=?)` — `base_url` defaults to
+`https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
+`npm install @usekaval/kaval`.
 
 ## Test
 

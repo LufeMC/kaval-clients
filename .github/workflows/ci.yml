@@ -4,6 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 06:17 UTC. Every job below runs on this trigger too — none of them is gated on the
+    # event — so the nightly is a full re-run of the hermetic suites against whatever the ecosystem
+    # resolves to today. That is the part that rots between releases: pnpm is frozen-lockfile, but
+    # the Python install pulls unpinned transitive dependencies, and a break there should surface on
+    # a schedule rather than at the next tag.
+    #
+    # There is deliberately no job here that talks to a real server. This repository has one secret
+    # (NPM_TOKEN); there is no staging deployment, and pointing a nightly at production would write
+    # test sources, receipts and outcome reports into the live product every night. The real
+    # client↔server contract test belongs in the private repo's CI, where both halves exist.
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
 
 jobs:
   js:
@@ -22,6 +38,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Release workflow (v* tag → npm + mcp + pypi)
         run: node scripts/check-release-workflow.mjs
+      # NOTE: .github/scripts/check-docs.mjs still asserts the removed staging/live gate exists in
+      # this file and in release.yml. It is owned elsewhere and has to be updated to match; this
+      # step fails until it is.
+      - name: Front-door docs match the shipped clients
+        run: pnpm run check:docs
       # `check` builds first (@usekaval/kaval before @usekaval/mcp, topological) so the MCP typecheck/test resolve
       # the `@usekaval/kaval` types/runtime, then lints, typechecks, and tests.
       - name: Build, lint, typecheck, test
@@ -48,8 +69,15 @@ jobs:
           node sdks/node/test/node18-smoke.mjs
 
   python:
-    name: Python SDK
+    name: Python SDK (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      # `pyproject.toml` declares `requires-python = ">=3.10"`, so the floor is a published promise.
+      # Testing only the newest interpreter makes that promise unverified — pip will happily install
+      # the wheel on 3.10 and the first syntax or stdlib gap surfaces at the customer.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
     defaults:
       run:
         working-directory: sdks/python
@@ -58,7 +86,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - name: Install
         run: |
           python -m pip install --upgrade pip
@@ -72,7 +100,10 @@ jobs:
         run: |
           pytest
           pyright --warnings
+      # One interpreter is enough to inspect the artifact: the wheel is pure-Python and version-
+      # independent, so building it on both legs would only assert the same bytes twice.
       - name: Build and inspect publish artifacts
+        if: matrix.python-version == '3.13'
         run: |
           python -c 'from pathlib import Path; p = Path("uv.lock"); assert not p.exists(), "uv.lock must remain untracked"; p.write_text("CI exclusion sentinel\n", encoding="utf-8")'
           python -m build

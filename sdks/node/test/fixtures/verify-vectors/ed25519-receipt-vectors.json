@@ -1,0 +1,179 @@
+{
+  "contract_version": "1",
+  "description": "Kaval stable JSON v1 Ed25519 receipt vectors. Private material is public test-only data.",
+  "canonicalization": "kaval-stable-json-v1",
+  "test_private_key": {
+    "format": "jwk",
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+    "d": "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"
+  },
+  "keyset": {
+    "contract_version": "1",
+    "canonicalization": "kaval-stable-json-v1",
+    "keys": [
+      {
+        "contract_version": "1",
+        "key_id": "vector-ed25519-001",
+        "algorithm": "Ed25519",
+        "use": "proof_verification",
+        "canonicalization": "kaval-stable-json-v1",
+        "public_key": {
+          "format": "jwk",
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+        },
+        "lifecycle": {
+          "status": "active"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "canonical_unsigned_json": "{\"action_decision\":{\"decision\":\"ALLOW\",\"summary\":\"Fixture only.\"},\"created_at\":\"2026-07-20T00:00:00.000Z\",\"expiry\":{\"expires_at\":\"2026-07-22T00:00:00.000Z\",\"issued_at\":\"2026-07-20T00:00:00.000Z\",\"recheck_at\":\"2026-07-21T00:00:00.000Z\"},\"proof_id\":\"proof_ed25519_vector_001\",\"protocol\":{\"protocol\":\"kaval-proof\",\"protocol_version\":\"1.0.0\",\"schema_version\":\"vector-1\"},\"research_contract\":{\"as_of\":\"2026-07-20T00:00:00.000Z\",\"held_belief\":\"The vector covers these exact bytes.\"}}",
+    "canonical_unsigned_utf8_hex": "7b22616374696f6e5f6465636973696f6e223a7b226465636973696f6e223a22414c4c4f57222c2273756d6d617279223a2246697874757265206f6e6c792e227d2c22637265617465645f6174223a22323032362d30372d32305430303a30303a30302e3030305a222c22657870697279223a7b22657870697265735f6174223a22323032362d30372d32325430303a30303a30302e3030305a222c226973737565645f6174223a22323032362d30372d32305430303a30303a30302e3030305a222c227265636865636b5f6174223a22323032362d30372d32315430303a30303a30302e3030305a227d2c2270726f6f665f6964223a2270726f6f665f656432353531395f766563746f725f303031222c2270726f746f636f6c223a7b2270726f746f636f6c223a226b6176616c2d70726f6f66222c2270726f746f636f6c5f76657273696f6e223a22312e302e30222c22736368656d615f76657273696f6e223a22766563746f722d31227d2c2272657365617263685f636f6e7472616374223a7b2261735f6f66223a22323032362d30372d32305430303a30303a30302e3030305a222c2268656c645f62656c696566223a2254686520766563746f7220636f766572732074686573652065786163742062797465732e227d7d",
+    "canonical_unsigned_sha256": "sha256:85d9cf1743258a630d28cfb9de958333fa685dcdd9eb14a6d1f5ac2418a54b9b",
+    "signature_base64url": "nEhBjbwHB3wZGr4GE-rVb-mDBGBfK9BPOG-zxDNzORtVvHQGAIKFvoL4DONpnJa_cWiJwkXssDCt3kwUMy6QDg"
+  },
+  "signed_receipt": {
+    "protocol": {
+      "schema_version": "vector-1",
+      "protocol_version": "1.0.0",
+      "protocol": "kaval-proof"
+    },
+    "proof_id": "proof_ed25519_vector_001",
+    "expiry": {
+      "recheck_at": "2026-07-21T00:00:00.000Z",
+      "issued_at": "2026-07-20T00:00:00.000Z",
+      "expires_at": "2026-07-22T00:00:00.000Z"
+    },
+    "created_at": "2026-07-20T00:00:00.000Z",
+    "research_contract": {
+      "held_belief": "The vector covers these exact bytes.",
+      "as_of": "2026-07-20T00:00:00.000Z"
+    },
+    "action_decision": {
+      "summary": "Fixture only.",
+      "decision": "ALLOW"
+    },
+    "signature": {
+      "algorithm": "Ed25519",
+      "key_id": "vector-ed25519-001",
+      "signature": "nEhBjbwHB3wZGr4GE-rVb-mDBGBfK9BPOG-zxDNzORtVvHQGAIKFvoL4DONpnJa_cWiJwkXssDCt3kwUMy6QDg"
+    }
+  },
+  "negative_cases": [
+    {
+      "id": "tampered-decision",
+      "expected_cryptographic_valid": false,
+      "receipt": {
+        "protocol": {
+          "schema_version": "vector-1",
+          "protocol_version": "1.0.0",
+          "protocol": "kaval-proof"
+        },
+        "proof_id": "proof_ed25519_vector_001",
+        "expiry": {
+          "recheck_at": "2026-07-21T00:00:00.000Z",
+          "issued_at": "2026-07-20T00:00:00.000Z",
+          "expires_at": "2026-07-22T00:00:00.000Z"
+        },
+        "created_at": "2026-07-20T00:00:00.000Z",
+        "research_contract": {
+          "held_belief": "The vector covers these exact bytes.",
+          "as_of": "2026-07-20T00:00:00.000Z"
+        },
+        "action_decision": {
+          "summary": "Fixture only.",
+          "decision": "BLOCK"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "key_id": "vector-ed25519-001",
+          "signature": "nEhBjbwHB3wZGr4GE-rVb-mDBGBfK9BPOG-zxDNzORtVvHQGAIKFvoL4DONpnJa_cWiJwkXssDCt3kwUMy6QDg"
+        }
+      }
+    },
+    {
+      "id": "signed-noncanonical-insertion-order",
+      "expected_cryptographic_valid": false,
+      "receipt": {
+        "protocol": {
+          "schema_version": "vector-1",
+          "protocol_version": "1.0.0",
+          "protocol": "kaval-proof"
+        },
+        "proof_id": "proof_ed25519_vector_001",
+        "expiry": {
+          "recheck_at": "2026-07-21T00:00:00.000Z",
+          "issued_at": "2026-07-20T00:00:00.000Z",
+          "expires_at": "2026-07-22T00:00:00.000Z"
+        },
+        "created_at": "2026-07-20T00:00:00.000Z",
+        "research_contract": {
+          "held_belief": "The vector covers these exact bytes.",
+          "as_of": "2026-07-20T00:00:00.000Z"
+        },
+        "action_decision": {
+          "summary": "Fixture only.",
+          "decision": "ALLOW"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "key_id": "vector-ed25519-001",
+          "signature": "oj9jtVhtb9Zadt2Wj28cnzcHc9ZYZsnbcPq1Ngtr12T6va-4-cRiODfddwZ0R3mkv8gRCtXURVhzDxFMs0RiBA"
+        }
+      }
+    },
+    {
+      "id": "malformed-signature",
+      "expected_format_valid": false,
+      "receipt": {
+        "proof_id": "proof_ed25519_vector_001",
+        "expiry": {
+          "recheck_at": "2026-07-21T00:00:00.000Z",
+          "issued_at": "2026-07-20T00:00:00.000Z",
+          "expires_at": "2026-07-22T00:00:00.000Z"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "key_id": "vector-ed25519-001",
+          "signature": "not-base64url!"
+        }
+      }
+    },
+    {
+      "id": "unknown-key-id",
+      "expected_cryptographic_valid": false,
+      "receipt": {
+        "protocol": {
+          "schema_version": "vector-1",
+          "protocol_version": "1.0.0",
+          "protocol": "kaval-proof"
+        },
+        "proof_id": "proof_ed25519_vector_001",
+        "expiry": {
+          "recheck_at": "2026-07-21T00:00:00.000Z",
+          "issued_at": "2026-07-20T00:00:00.000Z",
+          "expires_at": "2026-07-22T00:00:00.000Z"
+        },
+        "created_at": "2026-07-20T00:00:00.000Z",
+        "research_contract": {
+          "held_belief": "The vector covers these exact bytes.",
+          "as_of": "2026-07-20T00:00:00.000Z"
+        },
+        "action_decision": {
+          "summary": "Fixture only.",
+          "decision": "ALLOW"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "key_id": "unknown-vector-key",
+          "signature": "nEhBjbwHB3wZGr4GE-rVb-mDBGBfK9BPOG-zxDNzORtVvHQGAIKFvoL4DONpnJa_cWiJwkXssDCt3kwUMy6QDg"
+        }
+      }
+    }
+  ]
+}

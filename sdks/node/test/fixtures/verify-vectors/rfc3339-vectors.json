@@ -1,0 +1,80 @@
+{
+  "contract_version": "1",
+  "description": "Component-valid RFC 3339 instant vectors for receipt freshness and key lifecycle metadata.",
+  "accepted": [
+    {
+      "id": "ordinary-utc",
+      "value": "2026-07-20T12:34:56Z"
+    },
+    {
+      "id": "gregorian-leap-day",
+      "value": "2024-02-29T23:59:59.123456789Z"
+    },
+    {
+      "id": "century-divisible-by-400",
+      "value": "2000-02-29T00:00:00.000Z"
+    },
+    {
+      "id": "positive-offset",
+      "value": "2026-07-20T18:04:56+05:30"
+    },
+    {
+      "id": "negative-offset",
+      "value": "2026-07-20T04:34:56-08:00"
+    }
+  ],
+  "rejected": [
+    {
+      "id": "non-leap-year-february-29",
+      "value": "2026-02-29T00:00:00.000Z"
+    },
+    {
+      "id": "century-not-divisible-by-400",
+      "value": "1900-02-29T00:00:00.000Z"
+    },
+    {
+      "id": "april-31",
+      "value": "2026-04-31T00:00:00.000Z"
+    },
+    {
+      "id": "month-13",
+      "value": "2026-13-01T00:00:00.000Z"
+    },
+    {
+      "id": "day-zero",
+      "value": "2026-07-00T00:00:00.000Z"
+    },
+    {
+      "id": "hour-24",
+      "value": "2026-07-20T24:00:00.000Z"
+    },
+    {
+      "id": "leap-second-unsupported",
+      "value": "2026-07-20T23:59:60.000Z"
+    },
+    {
+      "id": "offset-hour-24",
+      "value": "2026-07-20T00:00:00+24:00"
+    },
+    {
+      "id": "offset-minute-60",
+      "value": "2026-07-20T00:00:00+00:60"
+    },
+    {
+      "id": "unknown-local-offset",
+      "value": "2026-07-20T00:00:00-00:00"
+    },
+    {
+      "id": "date-only",
+      "value": "2026-07-20"
+    },
+    {
+      "id": "space-separator",
+      "value": "2026-07-20 00:00:00Z"
+    },
+    {
+      "id": "missing-zone",
+      "value": "2026-07-20T00:00:00"
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 # Kaval clients
 
-Open-source client libraries for [Kaval](https://usekaval.com). Before an AI agent acts, Kaval
-verifies the facts the action relies on and returns a time-bounded signed proof your policy can
-enforce — `ALLOW`, `REVIEW`, or `BLOCK`.
+Open-source client libraries for [Kaval](https://usekaval.com). **Before an agent acts, send Kaval
+the action. Kaval identifies the facts that action depends on, checks them against the sources it
+watches, and answers `ALLOW`, `REVIEW`, or `BLOCK` with a signed receipt.**
 
 **Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
 facts those rules depend on are still true.**
@@ -10,77 +10,166 @@ facts those rules depend on are still true.**
 These are **thin HTTP clients** for the hosted Kaval API (`https://api.usekaval.com`). Create an API
 key at [usekaval.com](https://usekaval.com).
 
-The Node, Python, and MCP surfaces automatically attach a unique idempotency key to billable
-operations and reuse it for one bounded retry only when the transport outcome is ambiguous or the
-API is still finalizing that operation.
-
 | Package                         | Language          | Install                 | Source                       |
 | ------------------------------- | ----------------- | ----------------------- | ---------------------------- |
 | [`@usekaval/kaval`](sdks/node)  | Node / TypeScript | `npm i @usekaval/kaval` | [sdks/node](sdks/node)       |
 | [`kaval`](sdks/python)          | Python            | `pip install kaval`     | [sdks/python](sdks/python)   |
 | [`@usekaval/mcp`](packages/mcp) | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
-## One verification surface
+> **0.6 is a breaking release.** Nine MCP tools collapsed to seven, and the whole verification
+> surface collapsed to one call. Every removed endpoint now answers a structured
+> `410 {"error":"tool_retired","replacement":"/v1/check"}`, and the clients translate that into an
+> error that names `check` by name. See [Migrating from 0.5](#migrating-from-05).
 
-- **`audit()`** builds the proof — the expensive path. It re-derives the facts behind an intended
-  action and returns a full signed proof packet with a typed action decision and expiry.
-- **`gate()`** applies that proof at act time — no search, no parsing, no model call. It answers
-  "is this proof still valid for this action, right now?" with a typed state and decision.
-- **`verify()`** is the compatibility surface for single conclusions: one assertable proposition
-  plus the evidence it rests on, in; a bounded status plus a signed receipt, out.
-
-## Verify a conclusion (Node)
+## One call
 
 ```ts
 import { Kaval } from "@usekaval/kaval";
 
 const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
 
-const result = await kaval.verify({
-  conclusion:
-    "The 2024 International Building Code is the current IBC edition.",
-  evidence_refs: [
-    "https://codes.iccsafe.org/content/IBC2024V2.0",
-    {
-      url: "https://www.iccsafe.org/products-and-services/",
-      document_id: "icc-catalog-2026",
-    },
-  ],
-  as_of: new Date().toISOString(),
-  materiality: "high",
+const result = await kaval.check({
+  action: "Approve this prior-authorization request at the in-network rate",
+  context: "payer: Aetna; CPT 12345; plan HMO",
+  materiality: "critical",
 });
 
-// result.status: "valid" | "invalidated" | "could_not_verify"
-if (result.status !== "valid") holdWorkflow(result);
-
-// result.receipt: { proof_id, decision: "ALLOW" | "BLOCK" | "REVIEW", reason,
-//                   share_endpoint: "/v1/proofs/<id>/share", packet: <full signed ProofPacket> }
-// Expiry lives on the signed packet: result.receipt.packet.action_decision.expires_at
-await saveReceipt(result.receipt);
+if (result.decision !== "ALLOW") {
+  // REVIEW is never permission to act.
+  holdForHuman(result.facts.filter((fact) => fact.status !== "holds"));
+}
 ```
 
-`evidence_refs` takes 1–20 entries; each is either a plain `https` URL string or a strict
-`{ url, document_id }` object (an object without `document_id` is invalid — use the plain string
-form instead), and `document_id` values must be unique. Optional fields: `as_of` (RFC 3339 with
-offset), `materiality` (`low | medium | high | critical`), `intended_action`, `reversibility`
-(`reversible | partially_reversible | irreversible | unknown`), `jurisdiction`, `context`. Unknown
-fields are rejected.
+```py
+import os
 
-## Verify a conclusion (Python)
-
-```python
 from kaval import KavalClient
 
 kaval = KavalClient(api_key=os.environ["KAVAL_API_KEY"])
-
-result = kaval.verify({
-    "conclusion": "The 2024 International Building Code is the current IBC edition.",
-    "evidence_refs": ["https://codes.iccsafe.org/content/IBC2024V2.0"],
-})
-if result["status"] != "valid":
-    hold_workflow(result)
-save_receipt(result["receipt"])  # receipt["decision"] is "ALLOW" | "BLOCK" | "REVIEW"
+result = kaval.check(action="Approve this prior-authorization request at the in-network rate")
+if result["decision"] != "ALLOW":
+    hold_for_human(result["facts"])
 ```
+
+What comes back:
+
+| field          | meaning                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| `decision`     | `ALLOW` (every material fact holds on fresh evidence) · `REVIEW` · `BLOCK`                      |
+| `reason_codes` | why, from a closed eight-code taxonomy                                                        |
+| `facts[]`      | one row per fact: `status` (`holds`/`changed`/`unknown`), `materiality`, and the sources it rests on |
+| `receipt`      | `{ id, signature, signed_at }` — fetch the full signed document with `getReceipt(id)`          |
+| `latency_ms`   | `{ compile, lookup, live, total }`                                                             |
+
+A check on facts a watched source already covers is a database read and returns in tens of
+milliseconds. A **cold** check does live research before it answers — search, fetch, adjudicate —
+and the server lets that run for up to 100s by default, so give the call room. `mode: "fast"`
+(equivalently `max_wait_ms: 0`) skips research entirely and reports anything it could not settle as
+`unknown`, which is `REVIEW`.
+
+The decision table is published, so the receipt's fact list re-derives the verdict offline, and the
+Ed25519 public keys are served unauthenticated at `GET /v1/proof-verification-keys/:kid` — checking a
+receipt needs no Kaval account and no API key.
+
+The verifier that does it for you ships **inside the SDK**: `@usekaval/kaval/verify` is a
+dependency-free subpath export of `@usekaval/kaval`, and the same package ships a
+`kaval-receipt-verify` CLI. Neither needs a Kaval account, an API key, or Kaval's database; the only
+request either can make is for the public keyset, and that one is optional. Hand it a receipt and a
+keyset — archived beside the receipt, or fetched from the key endpoint — and it answers three
+questions **separately**:
+
+1. **Cryptographic validity** — does the Ed25519 signature cover the exact canonical unsigned bytes?
+2. **Key trust** — is that `key_id` active or benignly retired, rather than revoked or compromised?
+3. **Freshness** — `fresh`, `recheck_due`, `expired`, `not_yet_issued`, or `unknown`.
+
+A valid signature proves who sealed those exact bytes. It does not prove the claim is still true, or
+that the key is still trusted, which is why the three answers never collapse into one boolean.
+
+```ts
+import { extractReceipt, parseJsonStrict, verifyReceipt } from "@usekaval/kaval/verify";
+
+const receipt = extractReceipt(parseJsonStrict(receiptText));
+const result = verifyReceipt(receipt, parseJsonStrict(keysetText));
+
+result.cryptographic.valid; // the signature covers these exact canonical bytes
+result.key.trusted;         // the signing key is not revoked or compromised
+result.freshness.status;    // separate fact — a check receipt carries no expiry, so `unknown`
+```
+
+```bash
+# Reproducible audit: archive the keyset beside the receipt and stay entirely offline.
+npx -p @usekaval/kaval kaval-receipt-verify verify receipt.json --keyset keys.json
+
+# Or resolve the key over HTTPS from the unauthenticated endpoint.
+npx -p @usekaval/kaval kaval-receipt-verify verify receipt.json \
+  --key-url https://api.usekaval.com/v1/proof-verification-keys
+```
+
+Exit `0` means the signature is valid and the key is trusted; a stale receipt still exits `0`,
+because freshness is a separate fact — pass `--require-fresh` to make anything but `fresh` non-zero.
+Exit `1` is a completed but unaccepted verification, `2` an input, I/O, or discovery failure. Parse
+untrusted receipt text with `parseJsonStrict`, not `JSON.parse`: duplicate members and lossy numbers
+are evidence, and `JSON.parse` throws that evidence away before any verifier can see it.
+
+## Keep it warm: watch the sources
+
+A check is a database read when the facts it needs are already backed by a watched source, and a
+bounded research run when they are not. Registering the *name* of an authority is usually enough:
+
+```ts
+await kaval.addSource({
+  kind: "entity",
+  name: "Aetna",
+  intent: "payer policy bulletins",
+});
+```
+
+Kaval resolves that to the pages that publish it, polls them adaptively (slower when nothing
+changes, faster when it does), and re-evaluates the dependent facts when they move. `kind: "url"`
+watches one page; `kind: "push"` is a document your own system sends in with `sendEvent()`. You do
+not have to register first — a source a check cites is auto-watched — but registering ahead of time
+is what makes the *first* check on a fact fast.
+
+Naming an entity is what enqueues the discovery that works out *how* to acquire the pages behind it.
+A `kind: "url"` source registered directly does not get one, so `recompileSource(id)` is how you ask
+for one — and it is also the only way back once a source's acquisition plan breaks. It answers `202
+{ source_id, job_id, created }`; `created: false` means an open job already covered it.
+
+## Close the loop: subscribe to deltas
+
+Watching is only half of it. Subscribe to `fact_state.delta` and Kaval pushes you what changed and
+what it flipped, instead of you discovering it on the next check:
+
+```ts
+const { webhook_verification } = await kaval.subscribeFactStateDeltas({
+  callback_url: "https://your-app.example.com/hooks/kaval",
+  external_scope_ids: ["plan:HMO"], // optional filter
+});
+// Store webhook_verification.secret — it is shown exactly once, and it is how you
+// authenticate every inbound delivery.
+```
+
+Each delivery names the source, the old and new content hashes, a diff summary, and the facts whose
+state changed — `{fingerprint, text, old_state → new_state, basis}` — plus a pointer to the receipt
+covering the re-evaluation. Manage subscriptions with `listWebhooks()`, `setWebhookEnabled()`,
+`deleteWebhook()`, and re-drive a dead letter with `replayWebhookDelivery()`.
+
+## Push your own documents
+
+For documents Kaval cannot fetch — a contract, an internal policy, a customer upload — push the new
+version and let the background loop do the rest:
+
+```ts
+const { changed, facts_pending_review } = await kaval.sendEvent({
+  namespace: "contracts",
+  document_id: "msa-2026-07",
+  content: extractedText,
+  scope_keys: ["contract:msa-2026-07"],
+});
+```
+
+Kaval diffs it against the previous version, marks the dependent facts stale, re-evaluates them, and
+emits the delta webhook. Checks that land mid-re-evaluation honestly return `REVIEW`.
 
 ## MCP
 
@@ -88,61 +177,65 @@ save_receipt(result["receipt"])  # receipt["decision"] is "ALLOW" | "BLOCK" | "R
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Exposes the verification surface (`verify`, `proof_audit`, `proof_gate`) plus the legacy
-compatibility tools (`currentness_check`, `currentness_extract_and_check`, `currentness_scan_store`,
-`currentness_monitor`, the legacy-named belief verify, and `report_outcome`) over stdio. See
-[packages/mcp](packages/mcp).
+Seven tools over stdio: **`check`** (the one that does the work), `get_receipt` (the full signed
+document behind a verdict), `add_source` / `list_sources` / `remove_source`, `report_outcome`, and
+the deprecated `verify` pilot alias. See [packages/mcp](packages/mcp).
 
-## Build a proof, then gate the action (Node)
+MCP clients cancel a tool call well before 100s, so the server narrows `check`'s research budget to
+fit inside that envelope instead of inheriting the full default. A cold check over MCP therefore
+comes back `REVIEW` more often than the same call through an SDK — register the sources it depends
+on and the warm path removes the difference.
 
-```ts
-const proof = await kaval.audit({
-  text: "Acme Corp's vendor security attestation is active and unexpired",
-  as_of: new Date().toISOString(),
-  intended_action: "Grant Acme's integration production data access",
-  materiality: "critical",
-  reversibility: "irreversible",
-});
-// proof is the full signed ProofPacket: proof_id, research_contract, claim_dag,
-// source_versions, evidence_spans, claim_assessments, action_decision, expiry, signature.
+## Migrating from 0.5
 
-const gate = await kaval.gate({
-  proof_id: proof.proof_id,
-  material_claim_ids: proof.action_decision.material_claim_ids,
-  threshold: proof.action_decision.threshold,
-  action: proof.research_contract.action,
-});
-// gate.state: "current" | "not_yet_valid" | "expired" | "invalidated" | "dependency_changed"
-//           | "integrity_failed" | "policy_mismatch" | "operational_failure"
-// (an unknown proof surfaces as a typed proof_not_found error, not a state)
-if (gate.state === "current" && gate.decision.decision === "ALLOW") {
-  await performAction();
-} else {
-  holdAction(gate); // REVIEW is never permission
-}
-```
+Everything below folded into `check`. The old routes answer `410 tool_retired`; the clients raise
+`KavalRetiredError` (Node) / `KavalRetiredError` (Python) naming the replacement, and the MCP server
+returns `{"error":"tool_retired"}` with a message telling the agent to call `check`.
 
-A changed, expired, or invalidated dependency prevents an old permission from silently remaining
-valid — the gate returns a typed non-`current` state instead of reusing the proof.
+### MCP tools
 
-## Signed receipts, verifiable offline
+| 0.5 tool                        | 0.6                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------- |
+| `currentness_check`             | `check` — `{ action }` or `{ claims: ["…"] }`                                          |
+| `currentness_verify`            | `check` — branch on `decision === "ALLOW"` instead of `act`                            |
+| `currentness_extract_and_check` | `check` — pass the paragraph as `action`/`context`; Kaval compiles the facts itself     |
+| `currentness_scan_store`        | `check` — `{ claims: [...] }`, up to 20 per call                                       |
+| `currentness_monitor`           | `add_source` + a `fact_state` webhook subscription — deltas are pushed, not swept       |
+| `proof_audit`                   | `check` — the receipt **is** the proof; `get_receipt` fetches it in full                |
+| `proof_gate`                    | `check` — the warm path re-checks in ~50ms, so there is nothing to re-apply separately |
+| `report_outcome`                | `report_outcome` (unchanged; pass `receipt.id`)                                        |
+| `verify`                        | `verify`, now deprecated → move to `check`                                             |
 
-Every proof packet carries a signature — `{ "algorithm": "Ed25519", "key_id":
-"proof-ed25519-2026-07", "signature": "…" }`. Anyone can verify a receipt offline with the open
-verifier (`@kaval/receipt-verifier` in the main repo) against the public JWK served at
-`GET /v1/proof-verification-keys/:kid` — no Kaval account required.
+### Node / Python methods
 
-**Honest boundaries:** demo results carry no organizational authority; a production `ALLOW`
-requires a customer-bound action policy and applicable empirical calibration; `REVIEW` is never
-permission.
+| 0.5                                                | 0.6                                                       |
+| -------------------------------------------------- | --------------------------------------------------------- |
+| `audit()`, `gate()`, `gateAction()`/`gate_action()` | `check()`                                                 |
+| `check(belief)` / `check(belief=…)`                 | `check({ action })` / `check(action=…)`                   |
+| `verifyBelief()` / `legacy_verify_belief()`         | `check({ action, context })`                              |
+| `extractAndCheck()` / `extract_and_check()`         | `check({ action: theText })`                              |
+| `scanStore()` / `scan_store()`                      | `check({ claims: [...] })`                                |
+| `monitor()`                                         | `addSource()` + `subscribeFactStateDeltas()`              |
+| `kaval()` / `kavalBatch()` / `kaval_batch()`        | `check({ claims: [{subject, predicate, object, scope}] })` |
+| `verify()`                                          | `verify()`, deprecated → `check()`                        |
+| —                                                   | new: `getReceipt`, `listSources`, `recompileSource`, `sendEvent`, webhooks |
+| `ProofNotFoundError` / `KavalProofNotFoundError`    | removed with `/v1/gate`                                    |
 
-## Legacy surfaces
+### Verdict mapping
 
-The pre-proof belief-freshness surfaces still work and stay supported: `check`,
-`extract-and-check`, `scan-store`, `monitor`, the structured `kaval` / `kaval-batch` endpoints,
-`report-outcome`, and `health`. The legacy belief-freshness verify remains available under a
-clearly-legacy name (see each package's README) — `verify` itself is the conclusion-verification
-surface above.
+| 0.5 belief status                                   | 0.6                                        |
+| --------------------------------------------------- | ------------------------------------------ |
+| `current` + `act: true`                             | `decision: "ALLOW"`, every fact `holds`     |
+| `stale` / `contradicted`                            | fact `changed` → `REVIEW` or `BLOCK` by materiality |
+| `unsupported` / `insufficient` / `conflicting`      | fact `unknown` → `REVIEW` (`BLOCK` if critical) |
+
+## Idempotency
+
+`verify()` (the deprecated pilot alias) and webhook creation are the only client operations that
+carry an `Idempotency-Key`. A check is a read of current state — the server does not replay it, so
+retrying one is free and no key is spent. `verify()` keeps the bounded single retry for ambiguous
+transport outcomes; `createWebhook()` generates a key when you do not supply one, because the API
+requires one.
 
 ## API origin env vars
 
@@ -154,18 +247,47 @@ Two names exist on purpose — they are **not** interchangeable:
 | Node `@usekaval/kaval`            | —                | pass `baseUrl` in constructor |
 | Marketing site proxy (`apps/web`) | `KAVAL_API_URL`  | yes (server only)             |
 
-Use the same origin value in both vars when self-hosting (e.g. `http://localhost:8787`). See
-[`SELFHOST.md`](https://github.com/LufeMC/kaval/blob/main/SELFHOST.md) in the core repo.
+Use the same origin value in both vars when self-hosting (e.g. `http://localhost:8787`, the port the
+server image listens on). The self-host guide ships with the server distribution rather than here —
+Kaval's core repo is private, so there is no public link to give you.
+
+## Honest boundaries
+
+Demo results carry no organizational authority; a production `ALLOW` requires a customer-bound
+action policy and applicable empirical calibration; **`REVIEW` is never permission to act**.
 
 ## Development
 
 ```bash
 pnpm install
 pnpm check        # build + lint + typecheck + test (the JS packages)
+pnpm check:docs   # this README and the CHANGELOG against the shipped surface
 
 # Python SDK
 cd sdks/python && pip install -e ".[dev]" && pytest
 ```
+
+Everything above is hermetic: it fakes the API, which is why a client that aborts its own headline
+call, or an endpoint that 404s, can pass it. Two suites talk to a real server, and both skip
+themselves when their credentials are absent:
+
+```bash
+export KAVAL_API_KEY=kv_live_…
+export KAVAL_BASE_URL=https://api.usekaval.com   # or http://localhost:8787
+
+pnpm --filter @usekaval/mcp exec vitest run test/live-tools.test.ts
+cd sdks/python && pytest tests/test_live.py
+```
+
+These need a running Kaval server and an issued API key, so they are opt-in and self-skip without
+one. They are **not** a release gate here: this repository cannot reach the server's source, and
+there is no staging deployment — the only deployment is production, and pointing a publish gate at
+it would write test sources, receipts and outcome reports into the live product on every tag.
+
+The real client-vs-server contract test lives in the Kaval server repository's CI, where a real
+Postgres and the server both exist. It boots the server, issues a scoped key, and drives these same
+clients against it on every push. Publishing from this repository gates on the hermetic suites,
+which is what this repository can honestly verify on its own.
 
 ## License
 

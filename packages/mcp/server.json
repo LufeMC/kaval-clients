@@ -2,26 +2,34 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.LufeMC/kaval",
   "title": "Kaval",
-  "description": "Fact verification for AI agents: signed, time-bounded proofs — ALLOW, REVIEW, or BLOCK.",
+  "description": "Verify the facts an agent's action depends on before it acts \u2014 ALLOW, REVIEW, or BLOCK.",
   "websiteUrl": "https://usekaval.com",
   "repository": {
     "url": "https://github.com/LufeMC/kaval-clients",
     "source": "github",
     "subfolder": "packages/mcp"
   },
-  "version": "0.5.0",
+  "version": "0.6.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@usekaval/mcp",
-      "version": "0.5.0",
-      "transport": { "type": "stdio" },
+      "version": "0.6.0",
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
         {
           "name": "KAVAL_API_KEY",
-          "description": "Bring-your-own Kaval bearer key (kv_live_…). Create one at https://usekaval.com.",
+          "description": "Bring-your-own Kaval bearer key (kv_live_\u2026). Create one at https://usekaval.com.",
           "isRequired": true,
           "isSecret": true
+        },
+        {
+          "name": "KAVAL_BASE_URL",
+          "description": "Point at a self-hosted or staging Kaval API instead of the hosted one. Defaults to https://api.usekaval.com.",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }

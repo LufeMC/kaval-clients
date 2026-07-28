@@ -105,9 +105,10 @@ def check_wheel(path: Path, version: str) -> None:
 
                 import kaval
                 from kaval import (
+                    CheckResult,
                     KavalCancellationToken,
                     KavalClient,
-                    KavalProofNotFoundError,
+                    KavalRetiredError,
                     ProofPacket,
                     VerifyInput,
                     VerifyResult,
@@ -118,12 +119,17 @@ def check_wheel(path: Path, version: str) -> None:
                     raise SystemExit(f"import resolved outside packed wheel: {module_path}")
 
                 expected_exports = {
+                    "CheckReceiptBasis",
+                    "CheckResult",
+                    "FACT_STATE_DELTA_EVENT_TYPE",
                     "KavalCancellationToken",
                     "KavalClient",
-                    "KavalProofNotFoundError",
+                    "KavalRetiredError",
+                    "NO_TIMEOUT",
                     "ProofPacket",
                     "VerifyInput",
                     "VerifyResult",
+                    "WatchedSource",
                 }
                 missing_exports = expected_exports - set(kaval.__all__)
                 if missing_exports:
@@ -131,11 +137,33 @@ def check_wheel(path: Path, version: str) -> None:
                         "packed wheel omits exports: " + ", ".join(sorted(missing_exports))
                     )
 
-                for method_name in ("verify", "audit", "gate_action", "gate"):
+                # The 0.6 surface: one call, the watched-source registry, document push,
+                # delta subscriptions, outcomes, and the deprecated pilot alias.
+                for method_name in (
+                    "check",
+                    "get_receipt",
+                    "add_source",
+                    "list_sources",
+                    "get_source",
+                    "pause_source",
+                    "resume_source",
+                    "recompile_source",
+                    "delete_source",
+                    "send_event",
+                    "subscribe_fact_state_deltas",
+                    "create_webhook",
+                    "list_webhooks",
+                    "set_webhook_enabled",
+                    "delete_webhook",
+                    "replay_webhook_delivery",
+                    "report_outcome",
+                    "verify",
+                    "health",
+                ):
                     method = getattr(KavalClient, method_name, None)
                     if not callable(method):
                         raise SystemExit(f"packed wheel omits KavalClient.{method_name}")
-                for method_name in ("verify", "audit"):
+                for method_name in ("check", "verify"):
                     parameters = inspect.signature(
                         getattr(KavalClient, method_name)
                     ).parameters
@@ -144,22 +172,37 @@ def check_wheel(path: Path, version: str) -> None:
                             f"packed wheel omits cancellation_token on {method_name}"
                         )
 
-                # The removed commerce surface must never ship again.
+                # Surfaces removed for good: the commerce tools (0.5) and the belief /
+                # proof-lifecycle methods that collapsed into check() (0.6).
                 for removed in (
                     "research_products",
                     "stream_product_research",
                     "search_offers",
                     "stream_offer_search",
                     "gate_offer_search",
+                    "audit",
+                    "gate",
+                    "gate_action",
+                    "legacy_verify_belief",
+                    "extract_and_check",
+                    "scan_store",
+                    "monitor",
+                    "kaval",
+                    "kaval_batch",
                 ):
                     if hasattr(KavalClient, removed):
                         raise SystemExit(
                             f"packed wheel still ships removed KavalClient.{removed}"
                         )
+                if hasattr(kaval, "KavalProofNotFoundError"):
+                    raise SystemExit(
+                        "packed wheel still exports KavalProofNotFoundError (/v1/gate is gone)"
+                    )
 
                 # These references make the import assertions explicit to static analyzers too.
+                assert CheckResult
                 assert KavalCancellationToken
-                assert KavalProofNotFoundError
+                assert KavalRetiredError
                 assert ProofPacket
                 assert VerifyInput
                 assert VerifyResult

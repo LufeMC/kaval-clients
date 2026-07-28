@@ -8,9 +8,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  fakeAuditProofPacket,
-  fakeGateResult,
+  fakeAddSourceResult,
+  fakeCheckReceipt,
+  fakeCheckResult,
   fakeKavalFetch,
+  fakeReceiptId,
   fakeVerifyReceipt,
   fakeVerifyRequest,
   parseToolText,
@@ -59,15 +61,13 @@ describe("published tarballs (not workspace-linked kaval)", () => {
       const names = tools.map((t) => t.name);
       expect(names).toEqual(
         expect.arrayContaining([
-          "verify",
-          "proof_audit",
-          "proof_gate",
-          "currentness_verify",
-          "currentness_check",
-          "currentness_extract_and_check",
-          "currentness_scan_store",
-          "currentness_monitor",
+          "check",
+          "get_receipt",
+          "add_source",
+          "list_sources",
+          "remove_source",
           "report_outcome",
+          "verify",
         ]),
       );
       expect(names.join(" ")).not.toMatch(/offer|product/);
@@ -76,7 +76,7 @@ describe("published tarballs (not workspace-linked kaval)", () => {
     }
   }, 30_000);
 
-  it("conformance: packed kaval + MCP server expose verify, proof, and currentness protocols", async () => {
+  it("conformance: packed kaval + MCP server expose check, the source registry, and the verify alias", async () => {
     const { Kaval } = (await import(
       install.kavalEntry
     )) as typeof import("@usekaval/kaval");
@@ -97,6 +97,43 @@ describe("published tarballs (not workspace-linked kaval)", () => {
       client.connect(clientTransport),
     ]);
 
+    const checkResult = await client.callTool({
+      name: "check",
+      arguments: {
+        action:
+          "Approve this prior-authorization request at the in-network rate",
+        context: "payer: Aetna; CPT 12345",
+      },
+    });
+    const check = parseToolText(checkResult);
+    expect(check).toEqual(fakeCheckResult);
+    expect(check.decision).toBe("BLOCK");
+    expect(check.receipt?.id).toBe(fakeReceiptId);
+
+    // get_receipt calls straight through to the packed client's getReceipt — a method the MCP
+    // surface now depends on, so a tarball published without it must fail here.
+    const receiptResult = await client.callTool({
+      name: "get_receipt",
+      arguments: { receipt_id: check.receipt!.id! },
+    });
+    expect(parseToolText(receiptResult).receipt).toEqual(fakeCheckReceipt);
+
+    const sourceResult = await client.callTool({
+      name: "add_source",
+      arguments: {
+        kind: "entity",
+        name: "Aetna",
+        intent: "payer policy bulletins",
+      },
+    });
+    expect(parseToolText(sourceResult)).toEqual(fakeAddSourceResult);
+
+    const listResult = await client.callTool({
+      name: "list_sources",
+      arguments: {},
+    });
+    expect(parseToolText(listResult).sources).toHaveLength(1);
+
     const verifyResult = await client.callTool({
       name: "verify",
       arguments: fakeVerifyRequest,
@@ -104,52 +141,5 @@ describe("published tarballs (not workspace-linked kaval)", () => {
     const verify = parseToolText(verifyResult);
     expect(verify).toEqual(fakeVerifyReceipt);
     expect(verify.receipt?.packet?.signature?.algorithm).toBe("Ed25519");
-
-    const legacyResult = await client.callTool({
-      name: "currentness_verify",
-      arguments: { belief: "Jane Doe is VP Engineering at Acme", mode: "deep" },
-    });
-    const legacy = parseToolText(legacyResult);
-    expect(legacy.tier).toBe("deep");
-    expect(legacy.explanation?.citations?.[0]?.url).toBe(
-      "https://acme.com/team",
-    );
-
-    const auditResult = await client.callTool({
-      name: "proof_audit",
-      arguments: {
-        text: "Acme is eligible for a refund",
-        as_of: "2026-07-10T20:00:00Z",
-        intended_action: "Issue the refund",
-        materiality: "critical",
-        reversibility: "irreversible",
-      },
-    });
-    const audit = parseToolText(auditResult);
-    expect(audit).toEqual(fakeAuditProofPacket);
-    expect(audit.action_decision?.decision).toBe("REVIEW");
-
-    const gateResult = await client.callTool({
-      name: "proof_gate",
-      arguments: {
-        proof_id: fakeGateResult.proofId,
-        material_claim_ids: ["claim_1"],
-        threshold: {
-          policy_id: "pricing-current",
-          policy_version: "1.0.0",
-          materiality: "low",
-          maximum_false_allow_risk: 0.01,
-          minimum_evidence_coverage: 0.95,
-        },
-        action: {
-          description: "Display the current value",
-          materiality: "low",
-          reversibility: "reversible",
-        },
-      },
-    });
-    const gate = parseToolText(gateResult);
-    expect(gate).toEqual(fakeGateResult);
-    expect(gate.enforcement?.executionAllowed).toBe(true);
   });
 });

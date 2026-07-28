@@ -22,5 +22,17 @@ export function createClientFromEnv(
     );
   }
   // KAVAL_BASE_URL is optional; the client defaults to https://api.usekaval.com.
-  return new Kaval({ apiKey, baseUrl: env.KAVAL_BASE_URL });
+  //
+  // The transport deadline is MCP's constraint, not the API's. A cold check researches for as long
+  // as the server's budget allows (up to 100s), so the client's own 30s default aborted the headline
+  // call a third of the way in — but the ceiling here is lower still: `@modelcontextprotocol/sdk`
+  // cancels a tool call after DEFAULT_REQUEST_TIMEOUT_MSEC (60s), and a caller-side cancellation
+  // reaches the agent as a dead request rather than an error it can act on. 55s is the widest
+  // deadline that still fires on OUR side, leaving room for the narrowed research budget in
+  // server.ts plus the round-trip around it.
+  return new Kaval({
+    apiKey,
+    baseUrl: env.KAVAL_BASE_URL,
+    timeoutMs: 55_000,
+  });
 }

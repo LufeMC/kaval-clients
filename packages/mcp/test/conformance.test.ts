@@ -4,13 +4,17 @@ import { Kaval } from "@usekaval/kaval";
 import { describe, expect, it } from "vitest";
 import { createMcpServer } from "../src/server.js";
 import {
-  failingKavalFetch,
-  fakeAuditProofPacket,
-  fakeGateResult,
+  fakeAddSourceResult,
+  fakeCheckReceipt,
+  fakeCheckResult,
   fakeKavalFetch,
+  fakeReceiptId,
+  fakeSourceId,
   fakeVerifyReceipt,
   fakeVerifyRequest,
+  failingKavalFetch,
   parseToolText,
+  retiredKavalFetch,
 } from "./helpers/fake-api.js";
 
 /**
@@ -36,17 +40,23 @@ async function connectClient(
   return client;
 }
 
-/** Capture path + idempotency key + JSON body of the single request a tool call makes. */
+/** Capture path + method + idempotency key + JSON body of the single request a tool call makes. */
 function capturingFetch(payload: unknown): {
   fetchImpl: typeof fetch;
   seen: () => {
     path: string;
+    method: string;
     key: string | null;
-    body: Record<string, unknown>;
+    body: Record<string, unknown> | null;
   };
 } {
   let captured:
-    | { path: string; key: string | null; body: Record<string, unknown> }
+    | {
+        path: string;
+        method: string;
+        key: string | null;
+        body: Record<string, unknown> | null;
+      }
     | undefined;
   const fetchImpl = (async (input, init) => {
     const url =
@@ -56,9 +66,12 @@ function capturingFetch(payload: unknown): {
           ? input.href
           : input.url;
     captured = {
-      path: new URL(url).pathname,
+      path: new URL(url).pathname + new URL(url).search,
+      method: (init?.method ?? "GET").toUpperCase(),
       key: new Headers(init?.headers).get("idempotency-key"),
-      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      body: init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : null,
     };
     return new Response(JSON.stringify(payload), {
       status: 200,
@@ -75,22 +88,20 @@ function capturingFetch(payload: unknown): {
 }
 
 describe("MCP conformance", () => {
-  it("exposes exactly the verification tool surface — no commerce tools", async () => {
+  it("exposes exactly the collapsed tool surface — check first, no retired tools", async () => {
     const client = await connectClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    // Exact surface snapshot: the primary verify tool first, then the proof lifecycle, then the
-    // legacy currentness compatibility tools and outcome reporting.
+    // Exact surface snapshot: the one call an agent needs, the proof behind its answer, the three
+    // registry tools, outcome reporting, and the deprecated pilot alias last.
     expect(names).toEqual([
-      "verify",
-      "proof_audit",
-      "proof_gate",
-      "currentness_verify",
-      "currentness_check",
-      "currentness_extract_and_check",
-      "currentness_scan_store",
-      "currentness_monitor",
+      "check",
+      "get_receipt",
+      "add_source",
+      "list_sources",
+      "remove_source",
       "report_outcome",
+      "verify",
     ]);
     for (const tool of tools) {
       expect(`${tool.name} ${tool.description}`).not.toMatch(
@@ -99,7 +110,334 @@ describe("MCP conformance", () => {
     }
   });
 
-  it("verify forwards the primary conclusion body and returns the signed receipt exactly", async () => {
+  it("gives an agent enough description to pick check without reading docs", async () => {
+    const client = await connectClient();
+    const { tools } = await client.listTools();
+    const check = tools.find((tool) => tool.name === "check");
+    expect(check?.description).toMatch(/ALLOW/);
+    expect(check?.description).toMatch(/REVIEW/);
+    expect(check?.description).toMatch(/BLOCK/);
+    // REVIEW is not permission to act, and an agent must be told so in the tool text itself.
+    expect(check?.description).toMatch(/REVIEW IS NEVER PERMISSION TO ACT/);
+    // The deprecated alias must point at its replacement by name.
+    const verify = tools.find((tool) => tool.name === "verify");
+    expect(verify?.description).toMatch(/DEPRECATED/);
+    expect(verify?.description).toMatch(/`check`/);
+  });
+
+  it("check forwards the action body to /v1/check and returns the verdict verbatim", async () => {
+    const { fetchImpl, seen } = capturingFetch(fakeCheckResult);
+    const client = await connectClient(fetchImpl);
+    const args = {
+      action: "Approve this prior-authorization request at the in-network rate",
+      context: "payer: Aetna; CPT 12345",
+      materiality: "critical",
+      max_wait_ms: 3_000,
+    };
+    const res = await client.callTool({ name: "check", arguments: args });
+    const out = parseToolText(res);
+
+    expect(seen()).toEqual({
+      path: "/v1/check",
+      method: "POST",
+      // A check is a read of current state — the server does not replay it, so no key is spent.
+      key: null,
+      body: args,
+    });
+    expect(out).toEqual(fakeCheckResult);
+    expect(out.decision).toBe("BLOCK");
+    expect(out.reason_codes).toEqual(["FACT_CHANGED"]);
+    expect(out.facts?.[0]?.status).toBe("changed");
+    expect(out.facts?.[0]?.served_from_state).toBe(true);
+    expect(out.receipt?.id).toBe(fakeReceiptId);
+  });
+
+  it("check accepts structured claims and forwards them unchanged (the zero-LLM path)", async () => {
+    const { fetchImpl, seen } = capturingFetch({
+      ...fakeCheckResult,
+      decision: "ALLOW",
+      reason_codes: ["ALL_FACTS_HOLD"],
+    });
+    const client = await connectClient(fetchImpl);
+    const args = {
+      claims: [
+        {
+          subject: "Aetna",
+          predicate: "requires_prior_auth_for",
+          object: "CPT 12345",
+          scope: { plan: "HMO", state: "CA" },
+          materiality: "critical",
+        },
+        "The 2024 IBC is the current edition",
+      ],
+      mode: "fast",
+    };
+    const res = await client.callTool({ name: "check", arguments: args });
+
+    expect(seen().body).toEqual({ ...args, max_wait_ms: 45_000 });
+    expect(parseToolText(res).decision).toBe("ALLOW");
+  });
+
+  it("sends an explicit research budget that fits inside the MCP request deadline", async () => {
+    // The API's own default is 100s. Inheriting it would put every cold check past the 60s at which
+    // the MCP caller cancels, so the agent would get a dead request instead of a verdict.
+    const { fetchImpl, seen } = capturingFetch(fakeCheckResult);
+    const client = await connectClient(fetchImpl);
+    await client.callTool({
+      name: "check",
+      arguments: { action: "Issue the refund" },
+    });
+    expect(seen().body?.["max_wait_ms"]).toBe(45_000);
+  });
+
+  it("lets a caller ask for less research, including none at all", async () => {
+    const { fetchImpl, seen } = capturingFetch(fakeCheckResult);
+    const client = await connectClient(fetchImpl);
+    await client.callTool({
+      name: "check",
+      arguments: { action: "Issue the refund", max_wait_ms: 0 },
+    });
+    // 0 disables research; it must survive the default, which `||` would have swallowed.
+    expect(seen().body?.["max_wait_ms"]).toBe(0);
+  });
+
+  it("accepts a budget the API accepts and rejects only what the transport cannot carry", async () => {
+    const { fetchImpl, seen } = capturingFetch(fakeCheckResult);
+    const client = await connectClient(fetchImpl);
+    // 30s used to be refused locally by a bound of 15000 the server never had.
+    await client.callTool({
+      name: "check",
+      arguments: { action: "Issue the refund", max_wait_ms: 30_000 },
+    });
+    expect(seen().body?.["max_wait_ms"]).toBe(30_000);
+
+    const overBudget = await client.callTool({
+      name: "check",
+      arguments: { action: "Issue the refund", max_wait_ms: 90_000 },
+    });
+    expect((overBudget as { isError?: boolean }).isError).toBe(true);
+  });
+
+  it("states the real budget in the tool text and claims no background warm-up", async () => {
+    const client = await connectClient();
+    const { tools } = await client.listTools();
+    const check = tools.find((tool) => tool.name === "check");
+    const budget = (
+      check?.inputSchema as {
+        properties?: { max_wait_ms?: { description?: string } };
+      }
+    ).properties?.max_wait_ms?.description;
+    expect(budget).toContain("45000");
+    expect(budget).toContain("100000");
+    // The numbers the docs kept quoting after the engine abandoned them.
+    expect(budget).not.toMatch(/default 3000|15000/);
+    // A timed-out fact does NOT warm the next check: that check recompiles the action and asks
+    // about different fingerprints, so it misses the state the detached audit wrote.
+    expect(`${budget} ${check?.description}`).not.toMatch(
+      /background|the next check is warm/i,
+    );
+  });
+
+  it("check refuses a call with neither action nor claims before touching the network", async () => {
+    let calls = 0;
+    const client = await connectClient((async () => {
+      calls += 1;
+      throw new Error("the API must not be called for invalid tool input");
+    }) as typeof fetch);
+    const res = await client.callTool({
+      name: "check",
+      arguments: { context: "just context" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(parseToolText(res)).toMatchObject({ error: "bad_request" });
+    expect(calls).toBe(0);
+  });
+
+  it("check rejects a credential-bearing origin URL before network access", async () => {
+    const client = await connectClient(() => {
+      throw new Error("the API must not be called for an invalid tool input");
+    });
+    const res = await client.callTool({
+      name: "check",
+      arguments: {
+        action: "Cite the current edition",
+        origin_urls: ["https://user:secret@example.com/codes"],
+      },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(
+      (res as { content: Array<{ text: string }> }).content[0]?.text,
+    ).toContain("must be an http(s) URL");
+  });
+
+  it("add_source registers an entity by name and reports what it resolved to", async () => {
+    const { fetchImpl, seen } = capturingFetch(fakeAddSourceResult);
+    const client = await connectClient(fetchImpl);
+    const args = {
+      kind: "entity",
+      name: "Aetna",
+      intent: "payer policy bulletins",
+      scope_keys: ["plan:HMO"],
+    };
+    const res = await client.callTool({ name: "add_source", arguments: args });
+    const out = parseToolText(res);
+
+    expect(seen()).toMatchObject({
+      path: "/v1/sources",
+      method: "POST",
+      body: args,
+    });
+    expect(out.created).toBe(true);
+    expect(out.resolved?.[0]?.origin).toBe("resolved");
+  });
+
+  it("add_source refuses a registration with no locator and no name", async () => {
+    let calls = 0;
+    const client = await connectClient((async () => {
+      calls += 1;
+      throw new Error("the API must not be called for invalid tool input");
+    }) as typeof fetch);
+    const res = await client.callTool({
+      name: "add_source",
+      arguments: { kind: "url" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(parseToolText(res)).toMatchObject({ error: "bad_request" });
+    expect(calls).toBe(0);
+  });
+
+  it("list_sources GETs the registry and threads include_inactive", async () => {
+    const client = await connectClient();
+    const active = parseToolText(
+      await client.callTool({ name: "list_sources", arguments: {} }),
+    );
+    expect(active.sources).toHaveLength(1);
+
+    const all = parseToolText(
+      await client.callTool({
+        name: "list_sources",
+        arguments: { include_inactive: true },
+      }),
+    );
+    expect(all.sources).toHaveLength(2);
+  });
+
+  it("report_outcome round-trips without requiring an idempotency key", async () => {
+    const { fetchImpl, seen } = capturingFetch({ ok: true });
+    const client = await connectClient(fetchImpl);
+    const res = await client.callTool({
+      name: "report_outcome",
+      arguments: {
+        id: fakeReceiptId,
+        kind: "relied_and_correct",
+        note: "worked",
+      },
+    });
+    expect((res as { isError?: boolean }).isError).not.toBe(true);
+    expect(seen()).toMatchObject({ path: "/v1/report-outcome", key: null });
+    expect(parseToolText(res).ok).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "a hallucinated receipt id",
+      arguments: {
+        id: "rcpt_01JKAVALCHECK00000000001",
+        kind: "relied_and_correct",
+      },
+      expected: /id/,
+    },
+    {
+      name: "a note past the server's 2048-char cap",
+      arguments: {
+        id: fakeReceiptId,
+        kind: "relied_and_correct",
+        note: "x".repeat(2_049),
+      },
+      expected: /note/,
+    },
+    {
+      name: "a note carrying a null byte",
+      arguments: {
+        id: fakeReceiptId,
+        kind: "relied_and_correct",
+        note: "worked\u0000",
+      },
+      expected: /note/,
+    },
+  ])(
+    // The server enforces all three; failing here names the offending field instead of returning a
+    // bare round-trip bad_request.
+    "report_outcome rejects $name locally, naming the field",
+    async ({ arguments: arguments_, expected }) => {
+      let calls = 0;
+      const client = await connectClient((async () => {
+        calls += 1;
+        throw new Error("the API must not be called for invalid tool input");
+      }) as typeof fetch);
+      const res = await client.callTool({
+        name: "report_outcome",
+        arguments: arguments_,
+      });
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      expect(
+        (res as { content: Array<{ text: string }> }).content[0]?.text,
+      ).toMatch(expected);
+      expect(calls).toBe(0);
+    },
+  );
+
+  it("get_receipt fetches the full signed document behind a check's receipt id", async () => {
+    const client = await connectClient();
+    const out = parseToolText(
+      await client.callTool({
+        name: "get_receipt",
+        arguments: { receipt_id: fakeReceiptId },
+      }),
+    );
+    expect(out.receipt).toEqual(fakeCheckReceipt);
+    // The three things `check`'s receipt stub cannot give an agent that has to show its work.
+    expect(out.receipt?.decision_rule_version).toBe("check-decision/1.0.0");
+    expect(out.receipt?.facts?.[0]?.basis?.[0]).toMatchObject({
+      source_locator: "https://www.aetna.com/health-care-professionals/",
+      version_sha256_of: "canonical_text",
+    });
+    expect(out.receipt?.signature).toMatchObject({ algorithm: "Ed25519" });
+  });
+
+  it("get_receipt refuses a receipt id the receipt route could not even match", async () => {
+    let calls = 0;
+    const client = await connectClient((async () => {
+      calls += 1;
+      throw new Error("the API must not be called for invalid tool input");
+    }) as typeof fetch);
+    const res = await client.callTool({
+      name: "get_receipt",
+      arguments: { receipt_id: "rcpt_01JKAVALCHECK00000000001" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  it("remove_source DELETEs the source, which is the only thing that frees the cap", async () => {
+    const { fetchImpl, seen } = capturingFetch({
+      deleted: true,
+      id: fakeSourceId,
+    });
+    const client = await connectClient(fetchImpl);
+    const res = await client.callTool({
+      name: "remove_source",
+      arguments: { id: fakeSourceId },
+    });
+    expect(seen()).toMatchObject({
+      path: `/v1/sources/${fakeSourceId}`,
+      method: "DELETE",
+      key: null,
+    });
+    expect(parseToolText(res).deleted).toBe(true);
+  });
+
+  it("verify still reaches /v1/verify with the pilot conclusion body", async () => {
     const { fetchImpl, seen } = capturingFetch(fakeVerifyReceipt);
     const client = await connectClient(fetchImpl);
     const res = await client.callTool({
@@ -113,40 +451,19 @@ describe("MCP conformance", () => {
 
     expect(seen()).toEqual({
       path: "/v1/verify",
+      method: "POST",
       key: "mcp-verify-operation-0001",
       body: fakeVerifyRequest,
     });
     expect(out).toEqual(fakeVerifyReceipt);
-    expect(out.status).toBe("valid");
     expect(out.receipt?.decision).toBe("ALLOW");
-    expect(out.receipt?.share_endpoint).toBe(
-      `/v1/proofs/${out.receipt?.proof_id}/share`,
-    );
-    // Expiry deliberately lives at receipt.packet.action_decision.expires_at, never on the receipt.
-    expect(out.receipt?.expires_at).toBeUndefined();
-    expect(out.receipt?.packet?.action_decision?.expires_at).toBe(
-      "2026-07-21T12:00:01.000Z",
-    );
     expect(out.receipt?.packet?.signature?.algorithm).toBe("Ed25519");
-    expect(out.receipt?.packet?.signature?.key_id).toBe(
-      "proof-ed25519-2026-07",
-    );
   });
 
   it.each([
     {
       name: "an empty evidence_refs array",
       arguments: { ...fakeVerifyRequest, evidence_refs: [] },
-    },
-    {
-      name: "more than 20 evidence_refs",
-      arguments: {
-        ...fakeVerifyRequest,
-        evidence_refs: Array.from(
-          { length: 21 },
-          (_, i) => `https://example.com/evidence/${i}`,
-        ),
-      },
     },
     {
       name: "a bare object without document_id",
@@ -173,13 +490,6 @@ describe("MCP conformance", () => {
       },
     },
     {
-      name: "a non-URL evidence string",
-      arguments: {
-        ...fakeVerifyRequest,
-        evidence_refs: ["the team page says so"],
-      },
-    },
-    {
       name: "a missing conclusion",
       arguments: { evidence_refs: fakeVerifyRequest.evidence_refs },
     },
@@ -201,149 +511,27 @@ describe("MCP conformance", () => {
     },
   );
 
-  it("currentness_verify still reaches /v1/verify with the legacy belief body", async () => {
-    const client = await connectClient();
+  it("translates a 410 tool_retired into an answer that names the check tool", async () => {
+    const client = await connectClient(retiredKavalFetch);
     const res = await client.callTool({
-      name: "currentness_verify",
-      arguments: { belief: "Jane Doe is VP Engineering at Acme", mode: "deep" },
-    });
-    const out = parseToolText(res);
-    expect(out.tier).toBe("deep"); // mode survived the MCP schema → client → /v1/verify body
-    expect(out.explanation?.confidence).toBe("high"); // deep-only cited synthesis surfaced
-    expect(out.explanation?.citations?.[0]?.url).toBe("https://acme.com/team");
-  });
-
-  it("an agent calls currentness_check and branches on status (the demo)", async () => {
-    const client = await connectClient();
-    const res = await client.callTool({
-      name: "currentness_check",
+      name: "verify",
       arguments: {
-        belief: "Jane Doe is VP Engineering at Acme",
-        context: "about to use in a cold email",
-        freshness_sla: "14d",
-      },
-    });
-    const gap = parseToolText(res);
-    expect([
-      "current",
-      "stale",
-      "contradicted",
-      "unsupported",
-      "conflicting",
-      "insufficient",
-    ]).toContain(gap.status);
-    expect(gap.id).toBeDefined();
-    // The DoD self-gating branch:
-    const safeToUse = gap.status === "current";
-    expect(typeof safeToUse).toBe("boolean");
-  });
-
-  it("extract_and_check finds the checkable beliefs in a paragraph", async () => {
-    const client = await connectClient();
-    const res = await client.callTool({
-      name: "currentness_extract_and_check",
-      arguments: { text: "Jane Doe is VP Eng at Acme. Acme has SOC 2." },
-    });
-    const out = parseToolText(res);
-    expect(out.beliefs).toHaveLength(2);
-  });
-
-  it("currentness_scan_store round-trips the sweep summary", async () => {
-    const client = await connectClient();
-    const res = await client.callTool({
-      name: "currentness_scan_store",
-      arguments: {
-        beliefs: [
-          "Jane Doe is VP Engineering at Acme",
-          "Acme is on our Enterprise plan",
-        ],
-        mode: "fast",
-      },
-    });
-    const out = parseToolText(res);
-    expect(out.total).toBe(2);
-    expect(out.tier).toBe("fast");
-    expect(Array.isArray(out.riskiest)).toBe(true);
-  });
-
-  it("currentness_monitor round-trips delivery and carry-forward state", async () => {
-    const client = await connectClient();
-    const res = await client.callTool({
-      name: "currentness_monitor",
-      arguments: {
-        beliefs: ["Acme is on our Enterprise plan"],
-        mode: "fast",
-        webhook: "https://example.com/hooks/stale",
-        state: { riskyKeys: [] },
-      },
-    });
-    const out = parseToolText(res);
-    expect(out.delivered).toBe(1);
-    expect(
-      (out as { state?: { riskyKeys?: string[] } }).state?.riskyKeys,
-    ).toEqual(["acme-plan"]);
-  });
-
-  it("report_outcome round-trips without requiring an idempotency key", async () => {
-    const client = await connectClient();
-    const res = await client.callTool({
-      name: "report_outcome",
-      arguments: { id: "vf_1", kind: "relied_and_correct", note: "worked" },
-    });
-    expect((res as { isError?: boolean }).isError).not.toBe(true);
-    expect(parseToolText(res).ok).toBe(true);
-  });
-
-  it("proof_audit passes the raw Ed25519-signed ProofPacket through exactly", async () => {
-    const { fetchImpl, seen } = capturingFetch(fakeAuditProofPacket);
-    const client = await connectClient(fetchImpl);
-    const arguments_ = {
-      text: "Acme is eligible for a refund",
-      as_of: "2026-07-10T20:00:00Z",
-      intended_action: "Issue the refund",
-      materiality: "critical",
-      reversibility: "irreversible",
-      false_allow_cost_usd: 12_000,
-      record: { system: "billing", table: "refunds", id: "acme" },
-    };
-    const res = await client.callTool({
-      name: "proof_audit",
-      arguments: { ...arguments_, idempotency_key: "mcp-audit-operation-0001" },
-    });
-    const out = parseToolText(res);
-
-    expect(seen()).toEqual({
-      path: "/v1/audit",
-      key: "mcp-audit-operation-0001",
-      body: arguments_,
-    });
-    expect(out).toEqual(fakeAuditProofPacket);
-    expect(out.action_decision?.decision).toBe("REVIEW");
-    expect(out.action_decision?.expires_at).toBeDefined();
-    expect(out.expiry?.recheck_at).toBeDefined();
-    expect(out.signature?.algorithm).toBe("Ed25519");
-    expect(out.signature?.key_id).toBe("proof-ed25519-2026-07");
-  });
-
-  it("proof_audit rejects credential-bearing origin URLs before network access", async () => {
-    const client = await connectClient(() => {
-      throw new Error("the API must not be called for an invalid tool input");
-    });
-    const res = await client.callTool({
-      name: "proof_audit",
-      arguments: {
-        text: "Acme is eligible for a refund",
-        as_of: "2026-07-10T20:00:00Z",
-        origin_urls: ["https://user:secret@example.com/refund"],
+        conclusion: fakeVerifyRequest.conclusion,
+        evidence_refs: ["https://codes.iccsafe.org/content/IBC2024V2.0"],
       },
     });
     expect((res as { isError?: boolean }).isError).toBe(true);
-    expect(
-      (res as { content: Array<{ text: string }> }).content[0]?.text,
-    ).toContain("must be an http(s) URL");
+    const out = parseToolText(res);
+    expect(out.error).toBe("tool_retired");
+    expect(out.status).toBe(410);
+    expect(out.message).toContain("`check`");
+    // The replacement comes off the error the API sent, so the message stays true past 0.6 — it
+    // used to tell a 0.6 client to upgrade to 0.6.
+    expect(out.message).toContain("/v1/check");
+    expect(out.message).not.toMatch(/upgrade/i);
   });
 
-  it("propagates MCP cancellation into proof_audit's HTTP request", async () => {
+  it("propagates MCP cancellation into check's HTTP request", async () => {
     let calls = 0;
     let markStarted!: () => void;
     let markAborted!: () => void;
@@ -372,13 +560,7 @@ describe("MCP conformance", () => {
     const client = await connectClient(cancellableFetch);
     const controller = new AbortController();
     const pending = client.callTool(
-      {
-        name: "proof_audit",
-        arguments: {
-          text: "Acme is eligible for a refund",
-          as_of: "2026-07-10T20:00:00Z",
-        },
-      },
+      { name: "check", arguments: { action: "Issue the refund" } },
       undefined,
       { signal: controller.signal },
     );
@@ -390,111 +572,6 @@ describe("MCP conformance", () => {
     expect(calls).toBe(1);
   });
 
-  it("proof_gate applies a current proof and passes the decision through exactly", async () => {
-    const { fetchImpl, seen } = capturingFetch(fakeGateResult);
-    const client = await connectClient(fetchImpl);
-    const arguments_ = {
-      proof_id: "proof_01JMCPAUDIT0000000000001",
-      material_claim_ids: [
-        "claim:sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      ],
-      threshold: {
-        policy_id: "pricing-current",
-        policy_version: "1.0.0",
-        materiality: "low",
-        maximum_false_allow_risk: 0.01,
-        minimum_evidence_coverage: 0.95,
-      },
-      action: {
-        description: "Display the current value",
-        materiality: "low",
-        reversibility: "reversible",
-      },
-    };
-    const res = await client.callTool({
-      name: "proof_gate",
-      arguments: arguments_,
-    });
-    const out = parseToolText(res);
-
-    expect(seen().path).toBe("/v1/gate");
-    expect(seen().body).toEqual(arguments_);
-    expect(out).toEqual(fakeGateResult);
-    expect(out.state).toBe("current");
-    expect(out.decision?.decision).toBe("ALLOW");
-    expect(out.billingClass).toBe("action_gate");
-    expect(out.proofReused).toBe(true);
-    expect(out.researchPerformed).toBe(false);
-    expect(typeof out.latencyMs).toBe("number");
-    expect(out.enforcement).toMatchObject({
-      mode: "bounded",
-      executionAllowed: true,
-    });
-  });
-
-  it("proof_gate rejects missing or ambiguous proof locators", async () => {
-    const client = await connectClient();
-    const common = {
-      material_claim_ids: ["claim_1"],
-      threshold: {
-        policy_id: "policy_1",
-        policy_version: "1",
-        materiality: "low",
-        maximum_false_allow_risk: 0.01,
-        minimum_evidence_coverage: 0.9,
-      },
-      action: {
-        description: "Display it",
-        materiality: "low",
-        reversibility: "reversible",
-      },
-    };
-    for (const arguments_ of [
-      common,
-      { ...common, proof_id: "proof_1", proof_key: "proof-key:1" },
-    ]) {
-      const res = await client.callTool({
-        name: "proof_gate",
-        arguments: arguments_,
-      });
-      expect((res as { isError?: boolean }).isError).toBe(true);
-      expect(parseToolText(res)).toMatchObject({ error: "bad_request" });
-    }
-  });
-
-  it("proof_gate surfaces a missing proof as a typed proof_not_found error, not a 200 state", async () => {
-    const client = await connectClient(
-      failingKavalFetch(
-        404,
-        "proof_not_found",
-        "no durable proof matches that locator",
-      ),
-    );
-    const res = await client.callTool({
-      name: "proof_gate",
-      arguments: {
-        proof_id: "proof_missing",
-        material_claim_ids: ["claim_1"],
-        threshold: {
-          policy_id: "policy_1",
-          policy_version: "1",
-          materiality: "low",
-          maximum_false_allow_risk: 0.01,
-          minimum_evidence_coverage: 0.9,
-        },
-        action: {
-          description: "Display it",
-          materiality: "low",
-          reversibility: "reversible",
-        },
-      },
-    });
-    expect((res as { isError?: boolean }).isError).toBe(true);
-    const out = parseToolText(res);
-    expect(out.error).toBe("proof_not_found");
-    expect(out.status).toBe(404);
-  });
-
   it("surfaces a zero-balance (402) as a clear out-of-credit error, not 'internal error'", async () => {
     const client = await connectClient(
       failingKavalFetch(
@@ -504,11 +581,8 @@ describe("MCP conformance", () => {
       ),
     );
     const res = await client.callTool({
-      name: "verify",
-      arguments: {
-        conclusion: fakeVerifyRequest.conclusion,
-        evidence_refs: ["https://codes.iccsafe.org/content/IBC2024V2.0"],
-      },
+      name: "check",
+      arguments: { action: "Issue the refund" },
     });
     expect((res as { isError?: boolean }).isError).toBe(true);
     const out = parseToolText(res);
@@ -523,15 +597,14 @@ describe("MCP conformance", () => {
       failingKavalFetch(401, "unauthorized", "invalid API key"),
     );
     const res = await client.callTool({
-      name: "currentness_check",
-      arguments: { belief: "Jane Doe is VP Engineering at Acme" },
+      name: "check",
+      arguments: { action: "Issue the refund" },
     });
     expect((res as { isError?: boolean }).isError).toBe(true);
     const out = parseToolText(res);
     expect(out.error).toBe("unauthorized");
     expect(out.message).toContain("invalid");
     expect(out.status).toBe(401);
-    expect(out.idempotency_key).toBeUndefined();
   });
 
   it("reuses and returns an MCP recovery key when event persistence is still pending", async () => {
@@ -560,9 +633,10 @@ describe("MCP conformance", () => {
     const operationKey = "mcp-logical-operation-0001";
 
     const res = await client.callTool({
-      name: "currentness_check",
+      name: "verify",
       arguments: {
-        belief: "Jane Doe is VP Engineering at Acme",
+        conclusion: fakeVerifyRequest.conclusion,
+        evidence_refs: ["https://codes.iccsafe.org/content/IBC2024V2.0"],
         idempotency_key: operationKey,
       },
     });
@@ -595,5 +669,79 @@ describe("MCP conformance", () => {
       error: "request_ambiguous",
       idempotency_key: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
+  });
+
+  it("names a check that ran out of time, with the move that gets an answer", async () => {
+    // The most likely failure on the cold path. "internal error" told the agent nothing and left it
+    // with nothing to try.
+    const timingOut = (async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener(
+          "abort",
+          () => reject(signal.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      })) as typeof fetch;
+    const kaval = new Kaval({
+      apiKey: "kv_live_test",
+      fetch: timingOut,
+      timeoutMs: 20,
+    });
+    const server = createMcpServer(kaval);
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const client = new McpClient({ name: "timeout-test", version: "0.0.0" });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const res = await client.callTool({
+      name: "check",
+      arguments: { action: "Issue the refund" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    const out = parseToolText(res);
+    expect(out.error).toBe("timeout");
+    expect(out.message).toContain("mode:'fast'");
+    expect(out.message).toContain("max_wait_ms");
+  });
+
+  it("names an unreachable API instead of blaming itself for a mistyped base URL", async () => {
+    const unreachable = (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    const client = await connectClient(unreachable);
+    const res = await client.callTool({
+      name: "check",
+      arguments: { action: "Issue the refund" },
+    });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    const out = parseToolText(res);
+    expect(out.error).toBe("network_unreachable");
+    expect(out.message).toContain("KAVAL_BASE_URL");
+  });
+
+  it("warns verify's caller off the phrasing the tool's own name invites", async () => {
+    // The API pipes `conclusion` through AssertableProposition, which rejects questions, role
+    // prefixes, and "verify whether|if|that …" — exactly what a model reaching for a tool called
+    // `verify` writes. `check`'s `action` has no such pipe, so only this one bites.
+    const client = await connectClient();
+    const { tools } = await client.listTools();
+    const conclusion = (
+      tools.find((tool) => tool.name === "verify")?.inputSchema as {
+        properties?: { conclusion?: { description?: string } };
+      }
+    ).properties?.conclusion?.description;
+    expect(conclusion).toMatch(/verify whether/i);
+    expect(conclusion).toMatch(/statement/i);
+    // And an example of the shape that is accepted, so the warning is actionable.
+    expect(conclusion).toContain(
+      "The 2024 International Building Code is the current IBC edition.",
+    );
   });
 });
