@@ -27,9 +27,7 @@
         },
         {
           "name": "KAVAL_BASE_URL",
-          "description": "Point at a self-hosted or staging Kaval API instead of the hosted one. Defaults to https://api.usekaval.com.",
-          "isRequired": false,
-          "isSecret": false
+          "description": "Point at a self-hosted or staging Kaval API instead of the hosted one. Defaults to https://api.usekaval.com."
         }
       ]
     }
