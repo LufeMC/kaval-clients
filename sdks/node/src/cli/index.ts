@@ -70,8 +70,25 @@ function verdictChip(verdict: string): string {
 
 const out = (line = "") => process.stdout.write(`${line}\n`);
 
-function renderAuthority(decisions: readonly AuthorityDecision[] | undefined): void {
+/**
+ * The decision log, rendered by what a reader can act on.
+ *
+ * When a reviewed catalog row names the entity's surfaces, search still runs and its candidates
+ * still pass through the authority filter — that is what keeps a lookalike's discard visible. But
+ * "accepted, and not watched, because a human already said which address" is not a decision anyone
+ * needs to read one line at a time. Against a live search for Aetna that is ten near-identical
+ * lines burying the one that matters. They are counted, not hidden, and never dropped from --json.
+ */
+function renderAuthority(
+  decisions: readonly AuthorityDecision[] | undefined,
+  watched: ReadonlySet<string>,
+): void {
+  let acceptedNotWatched = 0;
   for (const decision of decisions ?? []) {
+    if (decision.outcome === "accepted" && !watched.has(decision.url)) {
+      acceptedNotWatched += 1;
+      continue;
+    }
     const mark =
       decision.outcome === "accepted"
         ? green("✓")
@@ -86,6 +103,11 @@ function renderAuthority(decisions: readonly AuthorityDecision[] | undefined): v
     if (decision.outcome === "ambiguous") {
       out(`    ${amber("needs a decision — narrow it with --intent or a scope key")}`);
     }
+  }
+  if (acceptedNotWatched > 0) {
+    out(
+      `  ${faint(`+ ${acceptedNotWatched} more on the same domain passed the filter — a reviewed plan names the surface`)}`,
+    );
   }
 }
 
@@ -117,8 +139,9 @@ async function sourcesAdd(kaval: Kaval, rest: string[], flags: Flags): Promise<n
   });
   if (flags.json) return json(result);
 
+  const watchedUrls = new Set(result.resolved.map((source) => source.locator));
   out();
-  renderAuthority(result.authority);
+  renderAuthority(result.authority, watchedUrls);
   // A resolution that produced nothing is the interesting case, and it is reported rather than
   // rendered as an empty success.
   if (result.resolution_error) {

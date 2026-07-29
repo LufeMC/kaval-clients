@@ -1,0 +1,445 @@
+{
+  "contract_version": "1",
+  "note": "Generated from apps/server/src/webhooks/callback-signing.ts, the module that signs production deliveries. Regenerate only alongside a deliberate change there.",
+  "signed_content": "<webhook-id>.<webhook-timestamp>.<exact UTF-8 request body>",
+  "vectors": [
+    {
+      "name": "valid_minimal",
+      "why": "the plain happy path",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_delta_event",
+      "why": "a real fact_state.delta body, the shape both READMEs document",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"specversion\":\"1.0\",\"id\":\"01J8Z3W0QK5M7N2P4R6T8V0XZA\",\"type\":\"fact_state.delta\",\"source\":\"urn:kaval:sources\",\"subject\":\"src_7d2f19\",\"time\":\"2026-07-27T14:03:11.412Z\",\"correlation_id\":\"src_7d2f19\",\"sequence\":1,\"data\":{\"tenant_id\":\"tenant_4411\",\"workspace_id\":\"ws_9f2b1a04\",\"source\":{\"watched_source_id\":\"src_7d2f19\",\"kind\":\"url\",\"locator\":\"https://www.aetna.com/health-care-professionals/precertification/2026-bulletin.html\",\"label\":\"Aetna precertification bulletin\"},\"old_version_sha256\":\"9c1185a5c5e9fc54612808977ee8f548b2258d31c1c6f2b1a5f5b0f0e2f1c3d4\",\"new_version_sha256\":\"3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea\",\"diff_summary\":{\"changed_sections\":[{\"heading\":\"Precertification list — musculoskeletal\",\"change_kind\":\"modified\",\"excerpt\":\"CPT 12345 now requires prior authorization for all commercial plans.\"}],\"stats\":{\"added\":1,\"removed\":0,\"modified\":2,\"unchanged\":187,\"changed_ratio\":0.016,\"truncated\":false}},\"facts\":[{\"fingerprint\":\"fact:sha256:1f0c8b2d\",\"text\":\"Aetna does not require prior authorization for CPT 12345\",\"materiality\":\"critical\",\"old_state\":\"holds\",\"new_state\":\"changed\",\"basis\":[{\"source_locator\":\"https://www.aetna.com/health-care-professionals/precertification/2026-bulletin.html\",\"version_sha256\":\"3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea\",\"fetched_at\":\"2026-07-27T14:03:09.001Z\"}]}],\"receipt\":{\"proof_packet_id\":\"rcpt_18ac93f2\"},\"changed_at\":\"2026-07-27T14:03:11.412Z\"}}",
+      "headers": {
+        "webhook-id": "01J8Z3W0QK5M7N2P4R6T8V0XZA",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,SoebaCq4OqrVtykUV9-YrVriMu1upUbyVj-5T1-_BOg"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_unicode_body",
+      "why": "locks the UTF-8 encoding of the body: a latin-1 or code-unit reading gives a different MAC",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"label\":\"Aetna — précertification 中文\",\"note\":\"\\u00e9\"}",
+      "headers": {
+        "webhook-id": "evt_02",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,tGEfDwH3GssX0VgX6iIC8QfCelty6zieMWaOlT0KkSw"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_body_with_incidental_whitespace",
+      "why": "the exact bytes are signed — a verifier that re-serialises a parsed object cannot pass this",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\n  \"type\": \"fact_state.delta\",\n  \"sequence\": 1\n}",
+      "headers": {
+        "webhook-id": "evt_03",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,28O3O6lC7EdxZ_FSg2kKm9ZQTfPSO3fnpxlI-mbq1SA"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_previous_generation_during_rotation",
+      "why": "webhook-key-id selects the retiring generation while both are held",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_04",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_04",
+        "webhook-signature": "v1,D6oH8ikXAMlznJZIbVBtu4-nXiaeclpC4tKaprK38cI"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_millisecond_timestamp",
+      "why": "the signer accepts 10-13 digits; a millisecond stamp must not read as a year-58000 second stamp",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_05",
+        "webhook-timestamp": "1785247391000",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,VgcofpjPRwFpvb6T-PQCbJsdzoz9PopgPFPWrYjkD_k"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_among_several_offered_signatures",
+      "why": "Standard Webhooks lets a sender offer more than one; one matching v1 element is enough",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v2,AAAA v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "valid_with_tolerance_disabled",
+      "why": "an explicitly opted-out tolerance accepts an old but authentic delivery",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785333791,
+      "tolerance_seconds": null,
+      "expected": {
+        "valid": true,
+        "reason": null
+      }
+    },
+    {
+      "name": "invalid_body_tampered",
+      "why": "one byte of the body changed after signing",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":false}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "signature_mismatch"
+      }
+    },
+    {
+      "name": "invalid_signature_bits_flipped",
+      "why": "a signature of the right length that is simply not the MAC",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "signature_mismatch"
+      }
+    },
+    {
+      "name": "invalid_another_subscriptions_secret",
+      "why": "the derivation isolates subscriptions: a sibling's genuine signature must not verify here",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_06",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,rGEWw942OHhN3zlXyQUPvzA0WW2xjefoysIfpE852ZI"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "signature_mismatch"
+      }
+    },
+    {
+      "name": "invalid_unknown_key_id",
+      "why": "a generation we hold no secret for is not silently tried against the ones we do",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2099_01",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "unknown_key_id"
+      }
+    },
+    {
+      "name": "invalid_timestamp_rewritten",
+      "why": "the timestamp is inside the signed content, so moving it breaks the MAC",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247451",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247451,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "signature_mismatch"
+      }
+    },
+    {
+      "name": "invalid_timestamp_too_old",
+      "why": "authentic, but outside the replay window",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247992,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "timestamp_out_of_tolerance"
+      }
+    },
+    {
+      "name": "invalid_timestamp_too_far_ahead",
+      "why": "authentic, but dated past the window — a clock this wrong is not a delivery to trust",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785246790,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "timestamp_out_of_tolerance"
+      }
+    },
+    {
+      "name": "invalid_unsupported_version",
+      "why": "only v1 exists; an unknown scheme is refused rather than assumed compatible",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v2,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "unsupported_signature_version"
+      }
+    },
+    {
+      "name": "invalid_signature_without_version",
+      "why": "a bare MAC with no version prefix",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "malformed_signature"
+      }
+    },
+    {
+      "name": "invalid_missing_signature_header",
+      "why": "an unsigned POST to the callback URL",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "missing_header"
+      }
+    },
+    {
+      "name": "invalid_missing_id_header",
+      "why": "webhook-id is signed content; without it there is nothing to check against",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-timestamp": "1785247391",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "missing_header"
+      }
+    },
+    {
+      "name": "invalid_missing_key_id_header",
+      "why": "without the generation there is no defined secret to use",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "1785247391",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "missing_header"
+      }
+    },
+    {
+      "name": "invalid_non_numeric_timestamp",
+      "why": "the signer only ever emits 10-13 digits",
+      "secrets": {
+        "wsk_2026_07": "8O9VzyjeHLLUsQqU9qOaHYxpeOhKvf4Q1lQKH0G827Y",
+        "wsk_2026_04": "1HZNmQMQ9rsnumEfvyE2LXqxDeOdAA__HD_wXkpwgUw"
+      },
+      "body": "{\"ok\":true}",
+      "headers": {
+        "webhook-id": "evt_01",
+        "webhook-timestamp": "2026-07-27T14:03:11Z",
+        "webhook-key-id": "wsk_2026_07",
+        "webhook-signature": "v1,JgxG9BcsO7nN9k0IKzdWtycynntQOk4O79apvN3NRf8"
+      },
+      "now": 1785247391,
+      "tolerance_seconds": 300,
+      "expected": {
+        "valid": false,
+        "reason": "malformed_timestamp"
+      }
+    }
+  ]
+}
