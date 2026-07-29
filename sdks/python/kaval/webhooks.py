@@ -23,7 +23,7 @@ import hmac
 import math
 import re
 import time
-from typing import Literal, Mapping, Optional, Union
+from typing import Iterable, Literal, Mapping, Optional, Tuple, Union, cast
 
 # The only signature scheme that exists. A `v2` would be a new format, not a new key.
 WEBHOOK_SIGNATURE_VERSION = "v1"
@@ -114,7 +114,11 @@ def _header(headers: Mapping[str, str], name: str) -> Optional[str]:
             return value
     items = getattr(headers, "items", None)
     if callable(items):
-        for key, value in items():
+        # `getattr` erases the return type to `object`, which is not iterable as far as a type
+        # checker is concerned. The cast states what a mapping's `items()` yields; the isinstance
+        # guards below are what actually make it safe, since `headers` may be any framework's
+        # header object rather than a real Mapping.
+        for key, value in cast(Iterable[Tuple[object, object]], items()):
             if isinstance(key, str) and key.lower() == name and isinstance(value, str):
                 return value
     return None
