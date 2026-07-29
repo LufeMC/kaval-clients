@@ -310,7 +310,7 @@ async function safe(fn: () => Promise<unknown>, signal?: AbortSignal) {
  * underscores for client portability.
  */
 export function createMcpServer(client: Kaval): McpServer {
-  const server = new McpServer({ name: "kaval", version: "0.6.0" });
+  const server = new McpServer({ name: "kaval", version: "0.7.0" });
   const api = client as unknown as WireClient;
 
   server.registerTool(
