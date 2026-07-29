@@ -32,7 +32,7 @@ const HELP = `Usage:
   kaval sources add <name-or-url> [--intent <text>] [--kind entity|url]
   kaval sources ls [--all]
   kaval sources plan <source-id>
-  kaval check "<action>" [--as-of <date>] [--fast]
+  kaval check "<action>" [--as-of <date>] [--origin <url>]... [--fast]
   kaval exposure [--limit <n>]
   kaval receipt <receipt-id>
 
@@ -259,6 +259,12 @@ async function check(
   const result: CheckResult = await kaval.check({
     action,
     ...(flags.asOf === undefined ? {} : { as_of: flags.asOf }),
+    // The documents the caller already read. An agent closing a claim knows which bulletin it
+    // relied on, and saying so is the difference between research reading THAT page and research
+    // going looking: an action naming no document compiled into sound premises and then bound them
+    // to the Social Security Administration's policy manual, because "underpayment review" and
+    // "denial upheld" are words that live there too.
+    ...(flags.origins.length === 0 ? {} : { origin_urls: flags.origins }),
     ...(flags.fast === true ? { mode: "fast" as const } : {}),
   });
   if (flags.json) return json(result);
@@ -366,6 +372,7 @@ interface Flags {
   json: boolean;
   all: boolean;
   fast: boolean;
+  origins: string[];
   intent?: string;
   asOf?: string;
   kind?: string;
@@ -406,7 +413,7 @@ function normalizeAsOf(value: string): string {
 
 function parse(argv: readonly string[]): { rest: string[]; flags: Flags } {
   const rest: string[] = [];
-  const flags: Flags = { json: false, all: false, fast: false };
+  const flags: Flags = { json: false, all: false, fast: false, origins: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
     switch (token) {
@@ -431,6 +438,11 @@ function parse(argv: readonly string[]): { rest: string[]; flags: Flags } {
       case "--kind":
         flags.kind = argv[(index += 1)];
         break;
+      case "--origin": {
+        const value = argv[(index += 1)];
+        if (value !== undefined) flags.origins.push(value);
+        break;
+      }
       case "--limit":
         flags.limit = argv[(index += 1)];
         break;
