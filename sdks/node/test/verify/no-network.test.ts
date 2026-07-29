@@ -166,6 +166,10 @@ test("the /verify source import graph reaches no network code", () => {
     "src/verify/rfc3339.ts",
     "src/verify/types.ts",
     "src/verify/verify.ts",
+    // The webhook verifier belongs behind the same guarantee: deciding whether an inbound request is
+    // genuine is a pure HMAC over bytes you already hold, and a receiver that had to call out to
+    // decide would be a worse receiver.
+    "src/verify/webhook.ts",
   ]);
   // discovery.ts and cli.ts are the two modules that do I/O. Neither is reachable from here.
   expect(files).not.toContain("src/verify/discovery.ts");
@@ -185,6 +189,7 @@ test("the shipped dist/verify import graph reaches no network code", () => {
     "dist/verify/rfc3339.js",
     "dist/verify/types.js",
     "dist/verify/verify.js",
+    "dist/verify/webhook.js",
   ]);
 });
 

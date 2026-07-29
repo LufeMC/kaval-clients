@@ -34,11 +34,11 @@ Three entry points, one zero-dependency package:
 | Import                              | What it is                                                            |
 | ----------------------------------- | --------------------------------------------------------------------- |
 | `@usekaval/kaval`                   | the API client — `check()` and everything that configures it           |
-| `@usekaval/kaval/verify`            | the offline receipt verifier; no network code in its import graph      |
+| `@usekaval/kaval/verify`            | the offline verifier — receipts + webhook signatures, no network code  |
 | `@usekaval/kaval/verify/discovery`  | live HTTPS key discovery, kept separate so the network choice is loud  |
 
 It also installs one command, `kaval-receipt-verify`. See
-[`/verify`](#verify--the-offline-receipt-verifier).
+[`/verify`](#verify--the-offline-verifier).
 
 ## check() — the one call
 
@@ -136,7 +136,7 @@ const receipt = await kaval.getReceipt(result.receipt.id);
 
 Returned exactly as signed. Because the decision table is published, the receipt's own fact list
 re-derives the verdict offline, byte for byte, with no server — verify the Ed25519 signature with
-[`@usekaval/kaval/verify`](#verify--the-offline-receipt-verifier), which ships inside this package.
+[`@usekaval/kaval/verify`](#verify--the-offline-verifier), which ships inside this package.
 
 Each fact carries its `basis`: the sources it was proved against. When a basis entry has a
 `version_sha256`, it also names what that digest covers — `version_sha256_of: "canonical_text"` (the
@@ -144,11 +144,14 @@ extracted text, with `parser_name` / `parser_version` naming the extractor) or `
 document as fetched). A PDF has both and they differ, so re-hash the artifact the label names. All
 three labels are inside the signed bytes, so a rewritten one fails verification.
 
-## `/verify` — the offline receipt verifier
+## `/verify` — the offline verifier
 
 ```ts
-import { verifyReceipt } from "@usekaval/kaval/verify";
+import { verifyReceipt, verifyWebhookSignature } from "@usekaval/kaval/verify";
 ```
+
+Everything Kaval signs, checked without Kaval: the Ed25519 **receipt** a check returns, and the HMAC
+**webhook signature** on an inbound `fact_state.delta` ([worked example](#verifying-a-delivery)).
 
 The subpath is the whole verifier: zero dependencies, and **nothing in its import graph touches the
 network** — no `fetch`, no `node:http`, no sockets, transitively. That is enforced by a test that
@@ -156,7 +159,10 @@ walks the real module graph of both the source and the shipped `dist`, so "offli
 property rather than a promise. It never reads an API key and never contacts Kaval, which is what
 makes it something you can hand to a counterparty who does not trust us.
 
-It answers three questions **separately**, and conflating them is the mistake it exists to prevent:
+### Receipts
+
+`verifyReceipt` answers three questions **separately**, and conflating them is the mistake it exists
+to prevent:
 
 1. **Cryptographic validity** — does the Ed25519 signature cover the exact canonical unsigned bytes?
 2. **Key trust** — is the immutable `key_id` active or benignly retired, or revoked/compromised?
@@ -191,11 +197,12 @@ Use `parseJsonStrict` (or `verifyReceiptText`, which does it for you) on anythin
 untrusted JSON **text**. Plain `JSON.parse` silently discards duplicate-member and lossy-number
 evidence before any object-level verifier can see it.
 
-Exported: `verifyReceipt` · `verifyReceiptText` · `extractReceipt` · `parseJsonStrict` ·
-`stableCanonicalJson` · `canonicalUnsignedReceiptJson` · `canonicalUnsignedReceiptBytes` ·
-`parseVerificationKey` · `verificationKeyFromDocument` · `isRfc3339Timestamp` ·
-`parseRfc3339Instant` · `rfc3339TimestampMilliseconds` · `rfc3339TimestampNanoseconds` ·
-`KAVAL_CANONICALIZATION` · `MAX_JSON_NUMBER_CHARACTERS`.
+Exported: `verifyReceipt` · `verifyReceiptText` · `extractReceipt` · `verifyWebhookSignature` ·
+`parseJsonStrict` · `stableCanonicalJson` · `canonicalUnsignedReceiptJson` ·
+`canonicalUnsignedReceiptBytes` · `parseVerificationKey` · `verificationKeyFromDocument` ·
+`isRfc3339Timestamp` · `parseRfc3339Instant` · `rfc3339TimestampMilliseconds` ·
+`rfc3339TimestampNanoseconds` · `KAVAL_CANONICALIZATION` · `MAX_JSON_NUMBER_CHARACTERS` ·
+`WEBHOOK_SIGNATURE_VERSION` · `WEBHOOK_SIGNED_CONTENT` · `DEFAULT_WEBHOOK_TOLERANCE_SECONDS`.
 
 Both documents Kaval signs verify here: a ProofPacket, whose signature block is
 `{algorithm, key_id, signature}`, and a `/v1/check` receipt, which adds `signed_at`. That block is a
@@ -328,6 +335,69 @@ Each delivery is a `FactStateDeltaEvent`: the source, `old_version_sha256 → ne
 diff summary, and the facts whose state changed (`{fingerprint, text, old_state → new_state,
 basis}`), plus a pointer to the receipt covering the re-evaluation.
 
+### Verifying a delivery
+
+Your callback URL is a public HTTPS endpoint, and a delta is an instruction worth forging — "a fact
+your agent relies on just flipped". `verifyWebhookSignature` is the receiving half of Kaval's
+signature: HMAC-SHA256 over `<webhook-id>.<webhook-timestamp>.<raw body>`, compared in constant time.
+
+```ts
+import express from "express";
+import type { FactStateDeltaEvent } from "@usekaval/kaval";
+import { verifyWebhookSignature } from "@usekaval/kaval/verify";
+
+// webhook-key-id → that generation's secret. During a rotation overlap BOTH generations sign real
+// deliveries, so hold both here and the rollover is a config change instead of an outage.
+const secrets = {
+  [process.env.KAVAL_WEBHOOK_KEY_ID!]: process.env.KAVAL_WEBHOOK_SECRET!,
+};
+const seen = new Set<string>(); // illustrative; a real receiver dedupes in its database
+
+const app = express();
+
+// express.raw, NOT express.json: the signature covers the exact bytes on the wire. A body that has
+// been parsed and re-serialised has a different MAC, and no genuine delivery would ever verify.
+app.post("/hooks/kaval", express.raw({ type: "application/json" }), (req, res) => {
+  const result = verifyWebhookSignature({
+    body: req.body,             // Buffer, untouched
+    headers: req.headers,
+    secrets,
+    toleranceSeconds: 300,      // default; the replay window either side of now
+  });
+  if (!result.valid) {
+    // 400, not 401 — a retry will not make an unsigned request signed. `result.reason` is one of
+    // missing_header · malformed_timestamp · unknown_key_id · unsupported_signature_version ·
+    // malformed_signature · signature_mismatch · timestamp_out_of_tolerance, and is safe to log.
+    return res.status(400).json({ error: result.reason });
+  }
+
+  // Delivery is at-least-once by design: a retry after your 500 is a legitimate duplicate. Dedupe
+  // on result.webhookId (the event's own id) before doing anything with side effects.
+  if (seen.has(result.webhookId)) return res.status(200).end();
+  seen.add(result.webhookId);
+
+  const event = JSON.parse(req.body.toString("utf8")) as FactStateDeltaEvent;
+  const { source, old_version_sha256, new_version_sha256, diff_summary, facts } = event.data;
+
+  for (const fact of facts) {
+    // "Aetna requires prior auth for CPT 12345" — holds → changed, at critical materiality.
+    console.log(
+      `${fact.materiality} ${fact.old_state} → ${fact.new_state}: ${fact.text}`,
+      `via ${source.locator} (${old_version_sha256?.slice(0, 12)} → ${new_version_sha256.slice(0, 12)})`,
+      fact.basis.map((ref) => ref.source_locator),
+    );
+  }
+  void diff_summary; // changed_sections + stats, if you want to show what moved in the document
+
+  // Answer 2xx quickly and do the work after; Kaval retries non-2xx with backoff, then dead-letters.
+  res.status(202).end();
+});
+```
+
+The verifier lives on the `/verify` subpath, so a receiver that never constructs a client pulls in no
+HTTP code — and, like the receipt verifier, it never contacts Kaval to decide whether a request is
+genuine.
+
 ```ts
 await kaval.listWebhooks();
 await kaval.setWebhookEnabled(subscription.subscription_id, false);
@@ -455,8 +525,8 @@ Construct with `{ apiKey, baseUrl?, fetch?, timeoutMs? }` — `baseUrl` defaults
 `https://api.usekaval.com`. Works in Node 18+, browsers, and edge runtimes (uses the global `fetch`).
 
 Offline verification is a separate surface with no client and no key:
-[`@usekaval/kaval/verify`](#verify--the-offline-receipt-verifier), plus the
-`kaval-receipt-verify` command.
+[`@usekaval/kaval/verify`](#verify--the-offline-verifier) — `verifyReceipt` for receipts,
+`verifyWebhookSignature` for inbound deliveries — plus the `kaval-receipt-verify` command.
 
 **Env vars:** this package does **not** read `KAVAL_BASE_URL` from the environment — pass
 `baseUrl` in the constructor (Python SDK and MCP use `KAVAL_BASE_URL`; the marketing-site proxy

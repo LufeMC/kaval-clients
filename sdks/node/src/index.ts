@@ -546,8 +546,15 @@ export class Kaval {
     options?: RequestOptions & { limit?: number },
   ): Promise<PortfolioExposure> {
     const query =
-      options?.limit === undefined ? "" : `?limit=${encodeURIComponent(String(options.limit))}`;
-    return this.request<PortfolioExposure>("GET", `/v1/exposure${query}`, undefined, options);
+      options?.limit === undefined
+        ? ""
+        : `?limit=${encodeURIComponent(String(options.limit))}`;
+    return this.request<PortfolioExposure>(
+      "GET",
+      `/v1/exposure${query}`,
+      undefined,
+      options,
+    );
   }
 
   async pauseSource(

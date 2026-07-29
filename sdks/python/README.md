@@ -128,8 +128,73 @@ secret = subscription["webhook_verification"]["secret"]   # shown once — store
 Without a subscription the background loops still keep fact state fresh, but nothing tells you a
 fact flipped until your next `check()`. Each delivery is a `fact_state.delta` event (typed as
 `FactStateDeltaEvent`) naming the source, the old/new content hashes, and every fact whose state
-changed with its basis. Verify each inbound delivery's HMAC signature with the returned
-`webhook_verification` — it is the only time the signing secret is shown.
+changed with its basis.
+
+### Verifying a delivery
+
+Your callback URL is a public HTTPS endpoint, and a delta is an instruction worth forging — "a fact
+your agent relies on just flipped". `verify_webhook_signature` is the receiving half of Kaval's
+signature: HMAC-SHA256 over `<webhook-id>.<webhook-timestamp>.<raw body>`, compared in constant time.
+It imports nothing but the standard library and never contacts Kaval.
+
+```python
+import json
+import os
+
+from fastapi import FastAPI, Request, Response
+from kaval import FactStateDeltaEvent, verify_webhook_signature
+
+# webhook-key-id → that generation's secret. During a rotation overlap BOTH generations sign real
+# deliveries, so hold both here and the rollover is a config change instead of an outage.
+SECRETS = {os.environ["KAVAL_WEBHOOK_KEY_ID"]: os.environ["KAVAL_WEBHOOK_SECRET"]}
+
+app = FastAPI()
+
+
+@app.post("/hooks/kaval")
+async def kaval_delta(request: Request) -> Response:
+    # await request.body(), NOT the parsed model: the signature covers the exact bytes on the wire.
+    # A body that has been parsed and re-serialised has a different MAC, and no genuine delivery
+    # would ever verify.
+    raw = await request.body()
+    result = verify_webhook_signature(
+        body=raw,
+        headers=request.headers,
+        secrets=SECRETS,
+        tolerance_seconds=300,  # default; the replay window either side of now
+    )
+    if not result:
+        # 400, not 401 — a retry will not make an unsigned request signed. `result.reason` is one of
+        # missing_header · malformed_timestamp · unknown_key_id · unsupported_signature_version ·
+        # malformed_signature · signature_mismatch · timestamp_out_of_tolerance, safe to log.
+        return Response(status_code=400, content=result.reason)
+
+    # Delivery is at-least-once by design: a retry after your 500 is a legitimate duplicate. Dedupe
+    # on result.webhook_id (the event's own id) before doing anything with side effects.
+    if already_processed(result.webhook_id):
+        return Response(status_code=200)
+
+    event: FactStateDeltaEvent = json.loads(raw)
+    data = event["data"]
+    for fact in data["facts"]:
+        # "Aetna requires prior auth for CPT 12345" — holds → changed, at critical materiality.
+        print(
+            fact["materiality"],
+            f"{fact['old_state']} → {fact['new_state']}: {fact['text']}",
+            f"via {data['source']['locator']}",
+            f"({data['old_version_sha256']} → {data['new_version_sha256']})",
+            [ref["source_locator"] for ref in fact["basis"]],
+        )
+    # data["diff_summary"] carries changed_sections + stats, if you want to show what moved.
+
+    # Answer 2xx quickly; Kaval retries non-2xx with backoff, then dead-letters the delivery.
+    return Response(status_code=202)
+```
+
+`WebhookSignatureResult` is truthy exactly when it is valid, so `if not result:` is both the obvious
+spelling and the correct one. On success it also carries `key_id`, `webhook_id`, and the signer's
+`timestamp` as an aware `datetime`. It raises `TypeError` only for your own mistakes — an empty
+`secrets` mapping, a parsed body — never for anything an attacker controls.
 
 `POST /v1/webhooks` requires an `Idempotency-Key`; the client always sends one (a fresh UUID when
 you supply no `idempotency_key=`). Manage subscriptions with `list_webhooks()`,
@@ -325,6 +390,9 @@ you genuinely want a faster, bounded verdict. `timeout=None` per call means "inh
 `KavalClient(base_url=?, api_key=?, timeout=?)` — `base_url` defaults to
 `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
 `npm install @usekaval/kaval`.
+
+`verify_webhook_signature` is a module-level function, not a client method: a receiver needs no API
+key, no base URL and no network to decide whether an inbound delivery is genuine.
 
 ## Test
 

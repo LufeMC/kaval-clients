@@ -67,8 +67,7 @@ export interface WebhookSignatureRejected {
 }
 
 export type WebhookSignatureResult =
-  | WebhookSignatureAccepted
-  | WebhookSignatureRejected;
+  WebhookSignatureAccepted | WebhookSignatureRejected;
 
 /**
  * Anything a web framework calls a header bag: a `fetch`-style object with `.get()` (Next.js route
@@ -103,11 +102,19 @@ export interface VerifyWebhookSignatureInput {
   now?: Date | number;
 }
 
+/** SHA-256's digest size — the only length a `v1` MAC can decode to. */
+const MAC_BYTES = 32;
+
 function reject(
   reason: WebhookRejectionReason,
   message: string,
 ): WebhookSignatureRejected {
   return { valid: false, reason, message };
+}
+
+/** Attacker-controlled header text ends up in someone's log line. Bound what it can put there. */
+function quoted(value: string): string {
+  return value.length <= 128 ? value : `${value.slice(0, 128)}…`;
 }
 
 /**
@@ -135,7 +142,11 @@ function headerValue(source: WebhookHeaderSource, name: string): string | null {
     }
   }
   if (typeof value === "string") return value;
-  if (Array.isArray(value) && value.length === 1 && typeof value[0] === "string") {
+  if (
+    Array.isArray(value) &&
+    value.length === 1 &&
+    typeof value[0] === "string"
+  ) {
     return value[0];
   }
   return null;
@@ -156,7 +167,9 @@ interface OfferedSignatures {
 function offeredSignatures(header: string): OfferedSignatures {
   const macs: Uint8Array[] = [];
   let otherVersion = false;
-  for (const element of header.split(/\s+/u).filter((part) => part.length > 0)) {
+  for (const element of header
+    .split(/\s+/u)
+    .filter((part) => part.length > 0)) {
     const parts = element.split(",");
     const encoded = parts[1];
     if (parts.length !== 2 || encoded === undefined || encoded === "") continue;
@@ -167,7 +180,7 @@ function offeredSignatures(header: string): OfferedSignatures {
     // Decoded leniently and then length-checked, which is what the signer's own receiver does. A MAC
     // that is not 32 bytes cannot be a SHA-256 one whatever it decodes from.
     const decoded = Buffer.from(encoded, "base64url");
-    if (decoded.byteLength === 32) macs.push(decoded);
+    if (decoded.byteLength === MAC_BYTES) macs.push(decoded);
   }
   return { macs, otherVersion };
 }
@@ -228,7 +241,9 @@ export function verifyWebhookSignature(
       : input.toleranceSeconds;
   if (
     tolerance !== null &&
-    (typeof tolerance !== "number" || !Number.isFinite(tolerance) || tolerance < 0)
+    (typeof tolerance !== "number" ||
+      !Number.isFinite(tolerance) ||
+      tolerance < 0)
   ) {
     throw new TypeError(
       "toleranceSeconds must be a non-negative finite number, or null to disable the window",
@@ -239,21 +254,15 @@ export function verifyWebhookSignature(
   const timestamp = headerValue(input.headers, "webhook-timestamp");
   const keyId = headerValue(input.headers, "webhook-key-id");
   const signature = headerValue(input.headers, "webhook-signature");
-  for (const [name, value] of [
-    ["webhook-id", webhookId],
-    ["webhook-timestamp", timestamp],
-    ["webhook-key-id", keyId],
-    ["webhook-signature", signature],
-  ] as const) {
-    if (value === null || value === "") {
-      return reject(
-        "missing_header",
-        `${name} is missing, empty, or repeated — this was not signed by Kaval`,
-      );
-    }
-  }
+  const UNSIGNED = "is missing, empty, or repeated — Kaval did not sign this";
+  if (!webhookId) return reject("missing_header", `webhook-id ${UNSIGNED}`);
+  if (!timestamp)
+    return reject("missing_header", `webhook-timestamp ${UNSIGNED}`);
+  if (!keyId) return reject("missing_header", `webhook-key-id ${UNSIGNED}`);
+  if (!signature)
+    return reject("missing_header", `webhook-signature ${UNSIGNED}`);
 
-  const milliseconds = timestampMilliseconds(timestamp!);
+  const milliseconds = timestampMilliseconds(timestamp);
   if (milliseconds === null) {
     return reject(
       "malformed_timestamp",
@@ -261,15 +270,15 @@ export function verifyWebhookSignature(
     );
   }
 
-  const secret = Object.hasOwn(secrets, keyId!) ? secrets[keyId!] : undefined;
+  const secret = Object.hasOwn(secrets, keyId) ? secrets[keyId] : undefined;
   if (typeof secret !== "string" || secret === "") {
     return reject(
       "unknown_key_id",
-      `no secret was supplied for webhook-key-id ${keyId} — if the key was just rotated, add the new generation`,
+      `no secret was supplied for webhook-key-id ${quoted(keyId)} — if the key was just rotated, add the new generation`,
     );
   }
 
-  const { macs, otherVersion } = offeredSignatures(signature!);
+  const { macs, otherVersion } = offeredSignatures(signature);
   if (macs.length === 0) {
     return otherVersion
       ? reject(
@@ -278,14 +287,14 @@ export function verifyWebhookSignature(
         )
       : reject(
           "malformed_signature",
-          `webhook-signature must be ${WEBHOOK_SIGNATURE_VERSION},<base64url 32-byte MAC>`,
+          `webhook-signature must be ${WEBHOOK_SIGNATURE_VERSION},<base64url ${MAC_BYTES}-byte MAC>`,
         );
   }
 
   const expected = createHmac("sha256", Buffer.from(secret, "base64url"))
-    .update(webhookId!, "utf8")
+    .update(webhookId, "utf8")
     .update(".", "utf8")
-    .update(timestamp!, "utf8")
+    .update(timestamp, "utf8")
     .update(".", "utf8")
     .update(body)
     .digest();
@@ -316,10 +325,5 @@ export function verifyWebhookSignature(
     }
   }
 
-  return {
-    valid: true,
-    keyId: keyId!,
-    webhookId: webhookId!,
-    timestamp: new Date(milliseconds),
-  };
+  return { valid: true, keyId, webhookId, timestamp: new Date(milliseconds) };
 }

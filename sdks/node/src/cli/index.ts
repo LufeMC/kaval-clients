@@ -49,8 +49,10 @@ Exit status: 0 ALLOW · 2 REVIEW · 3 BLOCK · 1 usage/transport/auth.
 
 /* --------------------------------- rendering --------------------------------- */
 
-const tty = process.stdout.isTTY === true && process.env["NO_COLOR"] === undefined;
-const c = (code: string) => (text: string) => (tty ? `[${code}m${text}[0m` : text);
+const tty =
+  process.stdout.isTTY === true && process.env["NO_COLOR"] === undefined;
+const c = (code: string) => (text: string) =>
+  tty ? `[${code}m${text}[0m` : text;
 const dim = c("38;5;245");
 const faint = c("38;5;240");
 const ink = c("38;5;252");
@@ -64,7 +66,11 @@ const mag = c("38;5;140");
 function verdictChip(verdict: string): string {
   if (!tty) return verdict;
   const background =
-    verdict === "ALLOW" ? "48;5;71" : verdict === "BLOCK" ? "48;5;167" : "48;5;179";
+    verdict === "ALLOW"
+      ? "48;5;71"
+      : verdict === "BLOCK"
+        ? "48;5;167"
+        : "48;5;179";
   return `[${background};38;5;235;1m ${verdict} [0m`;
 }
 
@@ -101,7 +107,9 @@ function renderAuthority(
     // API disagree about why a source was dropped.
     if (decision.reason) out(`    ${faint(decision.reason)}`);
     if (decision.outcome === "ambiguous") {
-      out(`    ${amber("needs a decision — narrow it with --intent or a scope key")}`);
+      out(
+        `    ${amber("needs a decision — narrow it with --intent or a scope key")}`,
+      );
     }
   }
   if (acceptedNotWatched > 0) {
@@ -122,7 +130,11 @@ function splitUrl(url: string): { host: string; path: string } {
 
 /* ---------------------------------- commands --------------------------------- */
 
-async function sourcesAdd(kaval: Kaval, rest: string[], flags: Flags): Promise<number> {
+async function sourcesAdd(
+  kaval: Kaval,
+  rest: string[],
+  flags: Flags,
+): Promise<number> {
   const target = rest[0];
   if (target === undefined) return usage("sources add needs a name or URL");
   const kind =
@@ -151,7 +163,8 @@ async function sourcesAdd(kaval: Kaval, rest: string[], flags: Flags): Promise<n
     out(`  ${amber("!")} ${ink(`plan discovery: ${result.discovery_error}`)}`);
   }
   out();
-  const watched = result.resolved.length > 0 ? result.resolved : [result.source];
+  const watched =
+    result.resolved.length > 0 ? result.resolved : [result.source];
   for (const source of watched) {
     out(`  ${dim("watching")}  ${ink(source.label ?? source.locator)}`);
     out(`            ${faint(source.id)}`);
@@ -161,24 +174,38 @@ async function sourcesAdd(kaval: Kaval, rest: string[], flags: Flags): Promise<n
 }
 
 async function sourcesList(kaval: Kaval, flags: Flags): Promise<number> {
-  const sources = await kaval.listSources(flags.all ? { includeInactive: true } : {});
+  const sources = await kaval.listSources(
+    flags.all ? { includeInactive: true } : {},
+  );
   if (flags.json) return json({ sources });
   out();
   if (sources.length === 0) {
-    out(`  ${dim("no watched sources yet — try")} ${ink('kaval sources add "Aetna"')}`);
+    out(
+      `  ${dim("no watched sources yet — try")} ${ink('kaval sources add "Aetna"')}`,
+    );
     out();
     return 0;
   }
-  for (const source of sources as Array<WatchedSource & { current_plan_id?: string | null }>) {
-    const planned = source.current_plan_id ? green("planned") : faint("no plan");
-    out(`  ${ink(source.label ?? source.locator)}  ${dim(source.kind)}  ${planned}`);
+  for (const source of sources as Array<
+    WatchedSource & { current_plan_id?: string | null }
+  >) {
+    const planned = source.current_plan_id
+      ? green("planned")
+      : faint("no plan");
+    out(
+      `  ${ink(source.label ?? source.locator)}  ${dim(source.kind)}  ${planned}`,
+    );
     out(`    ${faint(source.id)}  ${faint(source.locator)}`);
   }
   out();
   return 0;
 }
 
-async function sourcesPlan(kaval: Kaval, rest: string[], flags: Flags): Promise<number> {
+async function sourcesPlan(
+  kaval: Kaval,
+  rest: string[],
+  flags: Flags,
+): Promise<number> {
   const id = rest[0];
   if (id === undefined) return usage("sources plan needs a source id");
   const view = await kaval.getSourcePlan(id);
@@ -192,18 +219,28 @@ async function sourcesPlan(kaval: Kaval, rest: string[], flags: Flags): Promise<
     const probation = view.plan.last_validated_at === null;
     out(
       `  ${green("✓")} ${bold(`tier ${view.plan.tier}`)} ${dim(`· ${view.plan.origin}`)}` +
-        (probation ? ` ${faint("· on probation until its first successful poll")}` : ""),
+        (probation
+          ? ` ${faint("· on probation until its first successful poll")}`
+          : ""),
     );
-    out(`    ${faint(view.plan.steps.map((step: { kind: string }) => step.kind).join(" → "))}`);
+    out(
+      `    ${faint(view.plan.steps.map((step: { kind: string }) => step.kind).join(" → "))}`,
+    );
     if (view.plan.items_in_scope !== null) {
-      out(`  ${dim("in scope")}  ${bold(view.plan.items_in_scope.toLocaleString())} ${dim("documents")}`);
+      out(
+        `  ${dim("in scope")}  ${bold(view.plan.items_in_scope.toLocaleString())} ${dim("documents")}`,
+      );
     }
   }
   if (view.discovery !== null) {
     // READ, never asserted. This is the only honest way to print "0 model calls".
     const spend = view.discovery.cost_usd;
     const spendText =
-      spend === null ? "" : Number(spend) === 0 ? " · 0 model calls" : ` · $${spend}`;
+      spend === null
+        ? ""
+        : Number(spend) === 0
+          ? " · 0 model calls"
+          : ` · $${spend}`;
     out(`  ${dim("discovery")}  ${view.discovery.status}${dim(spendText)}`);
     if (view.discovery.error) out(`    ${red(view.discovery.error)}`);
   }
@@ -211,7 +248,11 @@ async function sourcesPlan(kaval: Kaval, rest: string[], flags: Flags): Promise<
   return 0;
 }
 
-async function check(kaval: Kaval, rest: string[], flags: Flags): Promise<number> {
+async function check(
+  kaval: Kaval,
+  rest: string[],
+  flags: Flags,
+): Promise<number> {
   const action = rest.join(" ").trim();
   if (action === "") return usage("check needs an action");
 
@@ -237,7 +278,11 @@ async function check(kaval: Kaval, rest: string[], flags: Flags): Promise<number
   out();
   for (const fact of facts) {
     const changed = fact.status === "changed";
-    const dot = changed ? red("●") : fact.status === "holds" ? green("●") : amber("●");
+    const dot = changed
+      ? red("●")
+      : fact.status === "holds"
+        ? green("●")
+        : amber("●");
     const label = changed
       ? red("changed")
       : fact.status === "holds"
@@ -249,12 +294,16 @@ async function check(kaval: Kaval, rest: string[], flags: Flags): Promise<number
       const { host, path } = splitUrl(source.locator);
       const name = host === source.locator ? source.locator : `${host}${path}`;
       // The digest only when there IS one, and only truncated the way a person reads it.
-      const digest = source.version_sha256 ? `  ${source.version_sha256.slice(0, 16)}…` : "";
+      const digest = source.version_sha256
+        ? `  ${source.version_sha256.slice(0, 16)}…`
+        : "";
       out(`             ${faint(`${name}${digest}`)}`);
     }
   }
   out();
-  out(`  ${dim("receipt")}  ${mag(result.receipt.id)}  ${faint("ed25519 · signed")}`);
+  out(
+    `  ${dim("receipt")}  ${mag(result.receipt.id)}  ${faint("ed25519 · signed")}`,
+  );
   out();
   return result.decision === "ALLOW" ? 0 : result.decision === "BLOCK" ? 3 : 2;
 }
@@ -275,8 +324,11 @@ async function exposure(kaval: Kaval, flags: Flags): Promise<number> {
   );
   out();
   const pad = (value: string, width: number) => value.padEnd(width);
-  const rt = (value: string | number, width: number) => String(value).padStart(width);
-  out(`    ${dim(pad("SOURCE", 34) + pad("MOVED", 12) + rt("CONCLUSIONS", 12))}`);
+  const rt = (value: string | number, width: number) =>
+    String(value).padStart(width);
+  out(
+    `    ${dim(pad("SOURCE", 34) + pad("MOVED", 12) + rt("CONCLUSIONS", 12))}`,
+  );
   for (const row of view.sources) {
     const name = (row.label ?? row.locator).slice(0, 33);
     // An inferred date is marked, not laundered: `~` means "it changed, we do not know when".
@@ -289,9 +341,13 @@ async function exposure(kaval: Kaval, flags: Flags): Promise<number> {
     );
   }
   out(`    ${faint("─".repeat(58))}`);
-  out(`    ${pad("", 34)}${pad("", 12)}${bold(rt(view.total_conclusions, 12))}`);
+  out(
+    `    ${pad("", 34)}${pad("", 12)}${bold(rt(view.total_conclusions, 12))}`,
+  );
   if (view.truncated) {
-    out(`    ${faint(`showing ${view.sources.length} of ${view.total_sources} sources`)}`);
+    out(
+      `    ${faint(`showing ${view.sources.length} of ${view.total_sources} sources`)}`,
+    );
   }
   out();
   return 0;
@@ -322,7 +378,9 @@ function describePayload(payload: unknown): string {
   if (error !== null && typeof error === "object") {
     const { code, message } = error as { code?: unknown; message?: unknown };
     if (typeof code === "string" || typeof message === "string") {
-      return [code, message].filter((part) => typeof part === "string").join(" — ");
+      return [code, message]
+        .filter((part) => typeof part === "string")
+        .join(" — ");
     }
   }
   return JSON.stringify(payload);
@@ -365,7 +423,10 @@ function parse(argv: readonly string[]): { rest: string[]; flags: Flags } {
         flags.intent = argv[(index += 1)];
         break;
       case "--as-of":
-        flags.asOf = argv[(index += 1)] === undefined ? undefined : normalizeAsOf(argv[index]!);
+        flags.asOf =
+          argv[(index += 1)] === undefined
+            ? undefined
+            : normalizeAsOf(argv[index]!);
         break;
       case "--kind":
         flags.kind = argv[(index += 1)];
@@ -397,7 +458,9 @@ async function main(): Promise<number> {
   }
   const baseIndex = argv.indexOf("--api-base");
   const baseUrl =
-    baseIndex === -1 ? process.env["KAVAL_API_BASE"] : (argv[baseIndex + 1] ?? undefined);
+    baseIndex === -1
+      ? process.env["KAVAL_API_BASE"]
+      : (argv[baseIndex + 1] ?? undefined);
 
   const kaval = new Kaval({ apiKey, ...(baseUrl ? { baseUrl } : {}) });
   const { rest, flags } = parse(argv);
