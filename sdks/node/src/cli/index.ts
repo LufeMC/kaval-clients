@@ -32,7 +32,7 @@ const HELP = `Usage:
   kaval sources add <name-or-url> [--intent <text>] [--kind entity|url]
   kaval sources ls [--all]
   kaval sources plan <source-id>
-  kaval check "<action>" [--as-of <date>] [--origin <url>]... [--fast]
+  kaval check "<action>" [--origin <url>]... [--fast]
   kaval exposure [--limit <n>]
   kaval receipt <receipt-id>
 
@@ -258,7 +258,6 @@ async function check(
 
   const result: CheckResult = await kaval.check({
     action,
-    ...(flags.asOf === undefined ? {} : { as_of: flags.asOf }),
     // The documents the caller already read. An agent closing a claim knows which bulletin it
     // relied on, and saying so is the difference between research reading THAT page and research
     // going looking: an action naming no document compiled into sound premises and then bound them
@@ -275,8 +274,7 @@ async function check(
   out(
     `  ${verdictChip(result.decision)}  ${dim(result.reason_codes[0] ?? "")}   ` +
       `${dim(`${facts.length} facts · ${warm} from state`)}` +
-      ` · ${bold(`${result.latency_ms.total}ms`)}` +
-      (flags.asOf === undefined ? "" : `   ${faint(`as of ${flags.asOf}`)}`),
+      ` · ${bold(`${result.latency_ms.total}ms`)}`,
   );
   if (facts.length > 0 && warm === facts.length) {
     out(`  ${faint("no fetch, no model call — answered from stored state")}`);
@@ -374,7 +372,6 @@ interface Flags {
   fast: boolean;
   origins: string[];
   intent?: string;
-  asOf?: string;
   kind?: string;
   limit?: string;
 }
@@ -403,13 +400,21 @@ function usage(message: string): number {
   return 1;
 }
 
-/**
- * The server's `as_of` is `z.string().datetime({offset: true})`, so a bare date 400s. Widening it
- * here rather than at the boundary keeps the CLI usable the way a person actually types a date.
+/*
+ * `--as-of` USED TO BE HERE, and it was a false capability.
+ *
+ * It parsed a date, normalized it, and sent `as_of` — and the server does read that field, but only
+ * to stamp the compiler's clock and the research contract. It never reaches the state lookup:
+ * `lookupByFingerprints` takes no time argument and there is no fact-history relation, so a dated
+ * check and an undated one read the identical row and return the identical verdict. The flag looked
+ * like point-in-time replay and was a no-op.
+ *
+ * Removed rather than fixed. The demo it existed for now reproduces the reversal with a fact that
+ * genuinely holds and then moves (see demo/FACTS.md in the server repo), so nothing needs the flag,
+ * and shipping a verb that quietly does nothing is worse than not shipping it. If point-in-time
+ * lands later it should be receipt replay — "here is the receipt we signed that day" — which is
+ * durable, already signed, and a stronger claim than replaying mutable state.
  */
-function normalizeAsOf(value: string): string {
-  return /^\d{4}-\d{2}-\d{2}$/u.test(value) ? `${value}T00:00:00Z` : value;
-}
 
 function parse(argv: readonly string[]): { rest: string[]; flags: Flags } {
   const rest: string[] = [];
@@ -430,10 +435,14 @@ function parse(argv: readonly string[]): { rest: string[]; flags: Flags } {
         flags.intent = argv[(index += 1)];
         break;
       case "--as-of":
-        flags.asOf =
-          argv[(index += 1)] === undefined
-            ? undefined
-            : normalizeAsOf(argv[index]!);
+        // Accepted and ignored, loudly, so anyone with it in a script learns why rather than
+        // silently getting the same answer they were already getting.
+        index += 1;
+        process.stderr.write(
+          "kaval: --as-of is no longer supported. It never reached fact state — a dated check and " +
+            "an undated one read the same row — so it has been removed rather than left to look " +
+            "like point-in-time replay.\n",
+        );
         break;
       case "--kind":
         flags.kind = argv[(index += 1)];
