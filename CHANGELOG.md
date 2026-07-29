@@ -2,7 +2,23 @@
 
 All packages in this repo version in lockstep (`scripts/bump.mjs`).
 
-## 0.6.0 — unreleased
+## 0.7.0 — unreleased
+
+### Fixed
+
+- **`--as-of` removed from the `kaval` CLI.** It parsed a date and sent `as_of`, and the server does
+  read that field — but only to stamp the compiler clock and the research contract. It never reaches
+  the state lookup, so a dated check and an undated one read the same row and returned the same
+  verdict. A flag that looks like point-in-time replay and is a no-op is worse than no flag; it now
+  warns on stderr and is ignored, so anyone with it in a script learns why.
+
+### Added
+
+- **`--origin` on `kaval check`**, for documents the caller has already read.
+- **The `kaval` binary is published.** 0.6.0 shipped a bin map containing only
+  `kaval-receipt-verify`, so `npx @usekaval/kaval` installed a package with no `kaval` command.
+
+## 0.6.0 — released 2026-07-27
 
 The whole verification surface collapses to **one call**. Send Kaval the action an agent is about to
 take; it identifies the facts that action depends on, checks them against the sources it watches, and
