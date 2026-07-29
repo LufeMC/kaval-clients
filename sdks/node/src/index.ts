@@ -17,11 +17,13 @@ import type {
   CheckResult,
   CreateWebhookInput,
   CreateWebhookResult,
+  PortfolioExposure,
   RecompileSourceResult,
   RotateWebhookSigningKeyResult,
   SourceEventInput,
   SourceEventResult,
   WatchedSource,
+  WatchedSourcePlan,
   WebhookDeliveryPage,
   WebhookSubscription,
 } from "./check.js";
@@ -512,6 +514,42 @@ export class Kaval {
   }
 
   /** Stop polling a source without forgetting it or the facts that depend on it. */
+  /**
+   * How Kaval reaches one source: the active acquisition plan's SHAPE, how much is in scope, and
+   * the state of its last discovery job.
+   *
+   * The plan DOCUMENT is deliberately not published — it carries the user agent the plan was
+   * validated with, the selectors it extracts by, and the interstitial markers it rejects on, which
+   * together are a map of how to serve Kaval something it would accept. What you get is enough to
+   * answer "is this watched properly, and what did working that out cost".
+   */
+  async getSourcePlan(
+    sourceId: string,
+    options?: RequestOptions,
+  ): Promise<WatchedSourcePlan> {
+    return this.request<WatchedSourcePlan>(
+      "GET",
+      `/v1/sources/${encodeId(sourceId)}/plan`,
+      undefined,
+      options,
+    );
+  }
+
+  /**
+   * Every conclusion in this workspace resting on a source whose content has moved since the
+   * conclusion was reached, grouped by source.
+   *
+   * The same predicate a check uses to refuse a warm answer, run across the whole portfolio: these
+   * are exactly the facts that would come back REVIEW or BLOCK if you asked about them again.
+   */
+  async getExposure(
+    options?: RequestOptions & { limit?: number },
+  ): Promise<PortfolioExposure> {
+    const query =
+      options?.limit === undefined ? "" : `?limit=${encodeURIComponent(String(options.limit))}`;
+    return this.request<PortfolioExposure>("GET", `/v1/exposure${query}`, undefined, options);
+  }
+
   async pauseSource(
     sourceId: string,
     options?: RequestOptions,

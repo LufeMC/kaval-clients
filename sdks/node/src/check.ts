@@ -247,6 +247,62 @@ export interface AuthorityDecision {
   reason: string;
 }
 
+/** How Kaval reaches one source. The plan document itself is deliberately not published. */
+export interface WatchedSourcePlan {
+  source_id: string;
+  plan: {
+    id: string;
+    plan_version: number;
+    /** `manual` (a reviewed catalog row), `deterministic`, `llm`, or `ratchet`. */
+    origin: string;
+    active: boolean;
+    /** NULL means PROBATION: adopted or derived, and not yet proven against the live source. */
+    last_validated_at: string | null;
+    /** 0 declared feed · 1 backing document · 2 templated · 3 static crawl · 4 scripted browser. */
+    tier: number;
+    steps: Array<{ id: string; kind: string }>;
+    emit_kind: string;
+    /** Documents the last successful poll found in the library. Null until one has run. */
+    items_in_scope: number | null;
+  } | null;
+  discovery: {
+    status: string;
+    reason: string;
+    attempts: number;
+    error: string | null;
+    /** Model spend on working out how to reach this source. `"0"` is the common case. */
+    cost_usd: string | null;
+    completed_at: string | null;
+  } | null;
+}
+
+/** One source whose content moved, and how many of your conclusions were resting on it. */
+export interface SourceExposure {
+  source_id: string;
+  locator: string;
+  label: string | null;
+  kind: string;
+  moved_at: string | null;
+  /**
+   * False when `moved_at` is inferred from the current version's fetch time rather than read off a
+   * recorded diff — the source moved, but there was no previous text to date the change against.
+   */
+  moved_at_is_recorded_change: boolean;
+  conclusions: number;
+  /** Already re-adjudicated and flipped. */
+  conclusions_changed: number;
+  /** Not yet re-read. A check answers REVIEW for these today. */
+  conclusions_pending: number;
+}
+
+export interface PortfolioExposure {
+  sources: SourceExposure[];
+  /** Distinct conclusions across every exposed source — not a sum of the page. */
+  total_conclusions: number;
+  total_sources: number;
+  truncated: boolean;
+}
+
 export interface AddSourceResult {
   source: WatchedSource;
   created: boolean;

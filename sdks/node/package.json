@@ -22,6 +22,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "kaval": "./dist/cli/index.js",
     "kaval-receipt-verify": "./dist/verify/cli.js"
   },
   "files": [
