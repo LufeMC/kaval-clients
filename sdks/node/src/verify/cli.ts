@@ -18,12 +18,15 @@ Options:
   --key-url <url>            HTTPS per-key endpoint or keyset endpoint
   --at <RFC3339>             Evaluate freshness at an explicit time
   --require-fresh            Exit non-zero unless freshness is "fresh"
+  --derive-verdict           Also re-derive a check receipt's ALLOW/REVIEW/BLOCK from its own
+                             facts using the published decision table, and require it to match
   --allow-http-loopback      Permit http://localhost/127.0.0.0/8/::1 for local development
   --compact                  Emit compact JSON
   -h, --help                 Show this help
 
 Exit status 0 means the signature is valid and the key is trusted. Freshness is reported
-separately unless --require-fresh is supplied.
+separately unless --require-fresh is supplied. With --derive-verdict the verdict must also
+re-derive from the receipt's own facts, and the "decision" block explains any mismatch.
 `;
 
 interface Arguments {
@@ -32,6 +35,7 @@ interface Arguments {
   keyUrl?: string;
   at?: string;
   requireFresh: boolean;
+  deriveVerdict: boolean;
   allowHttpLoopback: boolean;
   compact: boolean;
 }
@@ -50,12 +54,14 @@ function parseArguments(argv: string[]): Arguments | null {
   const result: Arguments = {
     receiptPath,
     requireFresh: false,
+    deriveVerdict: false,
     allowHttpLoopback: false,
     compact: false,
   };
   while (values.length > 0) {
     const flag = values.shift()!;
     if (flag === "--require-fresh") result.requireFresh = true;
+    else if (flag === "--derive-verdict") result.deriveVerdict = true;
     else if (flag === "--allow-http-loopback") result.allowHttpLoopback = true;
     else if (flag === "--compact") result.compact = true;
     else if (flag === "--keyset" || flag === "--key-url" || flag === "--at") {
@@ -146,6 +152,7 @@ async function main(): Promise<void> {
         });
   const result = verifyReceipt(receipt, keyDocument, {
     ...(args.at ? { at: args.at } : {}),
+    ...(args.deriveVerdict ? { derive_verdict: true } : {}),
   });
   print(result, args.compact);
   if (

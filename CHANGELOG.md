@@ -2,7 +2,30 @@
 
 All packages in this repo version in lockstep (`scripts/bump.mjs`).
 
-## 0.7.0 — unreleased
+## 0.7.1 — unreleased
+
+### Added
+
+- **The check-decision table ships in `@usekaval/kaval/verify`.** Until now a holder could verify a
+  receipt's Ed25519 signature offline but had to run Kaval's server code to re-derive the ALLOW /
+  REVIEW / BLOCK it states. The current table is `check-decision/1.1.0`, and the verifier also
+  supports receipts issued under `check-decision/1.0.0`. It exports `decideCheck`,
+  `deriveCheckDecision`, `checkDecisionInputFromReceipt`, the `CHECK_*` enums, and these one-call
+  forms: `verifyReceipt(receipt, keys, { derive_verdict: true })` and
+  `kaval-receipt-verify --derive-verdict`.
+  - **Additive by construction.** `derive_verdict` is off by default. Without it the result keeps
+    the original shape: `scope: "signature_envelope"`, no `decision` block, and acceptance decided
+    by signature and key trust alone. With it, `scope` reads
+    `"signature_envelope+decision_table"`, a `decision` block appears, and a receipt whose stated
+    verdict does not follow from its own facts is **not** accepted.
+  - **It re-derives from the evidence, never from the answer.** The input is `facts[]` plus
+    `compilation_uncertain`; `decision` and `reason_codes` are reported as `stated` and are never
+    read as an input. A receipt missing a discriminator is refused rather than guessed.
+  - **Pinned against the issuer.** `check-decision-vectors.json` joins the shared conformance
+    vectors, pinned here in `test/verify/mirror-pin.test.ts` and in the issuer copy's
+    `mirror-manifest.json`, and executed on both sides. A table that drifted fails one side.
+
+## 0.7.0 — released 2026-07-29
 
 ### Fixed
 

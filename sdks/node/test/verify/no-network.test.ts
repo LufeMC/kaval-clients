@@ -161,6 +161,10 @@ test("the /verify source import graph reaches no network code", () => {
     .sort();
   expect(files).toEqual([
     "src/verify/canonicalize.ts",
+    // The decision table re-derives a verdict from a receipt's own facts. It is arithmetic over a
+    // JSON document you already hold — no clock, no storage, no I/O — which is why the appeal-packet
+    // claim survives being made offline.
+    "src/verify/decision.ts",
     "src/verify/index.ts",
     "src/verify/key-document.ts",
     "src/verify/rfc3339.ts",
@@ -184,6 +188,7 @@ test("the shipped dist/verify import graph reaches no network code", () => {
     [...graph.keys()].map((path) => relative(packageRoot, path)).sort(),
   ).toEqual([
     "dist/verify/canonicalize.js",
+    "dist/verify/decision.js",
     "dist/verify/index.js",
     "dist/verify/key-document.js",
     "dist/verify/rfc3339.js",

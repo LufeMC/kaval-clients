@@ -8,6 +8,12 @@ import {
   parseJsonStrict,
 } from "./canonicalize.js";
 import {
+  CHECK_DECISION_RULE_VERSION,
+  CHECK_DECISION_RULE_VERSIONS,
+  ReceiptNotSelfDerivableError,
+  deriveCheckDecision,
+} from "./decision.js";
+import {
   decodeCanonicalBase64Url,
   verificationKeyFromDocument,
 } from "./key-document.js";
@@ -15,7 +21,9 @@ import { parseRfc3339Instant } from "./rfc3339.js";
 import {
   KAVAL_CANONICALIZATION,
   type FreshnessStatus,
+  type VerificationDecision,
   type VerificationResult,
+  type VerificationScope,
   type VerifyOptions,
 } from "./types.js";
 
@@ -153,14 +161,135 @@ function freshness(
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * Verdict re-derivation (opt-in; see VerifyOptions.derive_verdict)     *
+ * ------------------------------------------------------------------ */
+
+function scopeFor(derive: boolean): VerificationScope {
+  return derive ? "signature_envelope+decision_table" : "signature_envelope";
+}
+
+function statedDecision(
+  receipt: Record<string, unknown>,
+): VerificationDecision["stated"] {
+  const codes = receipt["reason_codes"];
+  const stated = {
+    ...(typeof receipt["decision"] === "string"
+      ? { verdict: receipt["decision"] }
+      : {}),
+    ...(Array.isArray(codes) && codes.every((code) => typeof code === "string")
+      ? { reason_codes: [...(codes as string[])] }
+      : {}),
+  };
+  return Object.keys(stated).length === 0 ? undefined : stated;
+}
+
+/** Set equality: the codes are what carry meaning, their array order is only determinism. */
+function sameCodes(
+  stated: readonly string[],
+  derived: readonly string[],
+): boolean {
+  const left = [...stated].sort();
+  const right = [...derived].sort();
+  return (
+    left.length === right.length &&
+    left.every((code, index) => code === right[index])
+  );
+}
+
+/**
+ * Re-derive the receipt's verdict from its own facts and compare with what it claims.
+ *
+ * Every exit that is not a clean match sets `matches: false`, because a verifier that could not
+ * answer the question must never read as one that answered it favourably. A receipt decided under a
+ * decision-table version this build does not implement is refused for that reason and named: it is
+ * not evidence of tampering, and pretending to re-derive it across a rule change would be worse than
+ * saying so.
+ */
+function decisionResult(
+  receipt: Record<string, unknown> | null,
+): VerificationDecision {
+  const supported = { supported_rule_version: CHECK_DECISION_RULE_VERSION };
+  if (receipt === null) {
+    return {
+      ...supported,
+      matches: false,
+      error: "receipt is not a JSON object",
+    };
+  }
+  const ruleVersion = receipt["decision_rule_version"];
+  const stated = statedDecision(receipt);
+  const head: VerificationDecision = {
+    ...supported,
+    ...(typeof ruleVersion === "string"
+      ? { receipt_rule_version: ruleVersion }
+      : {}),
+    ...(stated === undefined ? {} : { stated }),
+    matches: false,
+  };
+  if (typeof ruleVersion !== "string") {
+    return { ...head, error: "receipt names no decision rule version" };
+  }
+  if (
+    !(CHECK_DECISION_RULE_VERSIONS as readonly string[]).includes(ruleVersion)
+  ) {
+    return {
+      ...head,
+      error: `receipt was decided under ${ruleVersion}, which this verifier does not implement`,
+    };
+  }
+  let derived;
+  try {
+    derived = deriveCheckDecision(receipt);
+  } catch (error) {
+    return {
+      ...head,
+      error:
+        error instanceof ReceiptNotSelfDerivableError
+          ? error.message
+          : `verdict re-derivation failed: ${(error as Error).message}`,
+    };
+  }
+  if (stated?.verdict === undefined || stated.reason_codes === undefined) {
+    return {
+      ...head,
+      derived,
+      error: "receipt states no verdict to compare against",
+    };
+  }
+  if (stated.verdict !== derived.verdict) {
+    return {
+      ...head,
+      derived,
+      error: `receipt states ${stated.verdict} but its own facts re-derive as ${derived.verdict}`,
+    };
+  }
+  if (!sameCodes(stated.reason_codes, derived.reason_codes)) {
+    return {
+      ...head,
+      derived,
+      error: `receipt states reason codes [${stated.reason_codes.join(", ")}] but its own facts re-derive [${derived.reason_codes.join(", ")}]`,
+    };
+  }
+  return { ...head, derived, matches: true };
+}
+
+function decisionFields(
+  receipt: Record<string, unknown> | null,
+  derive: boolean,
+): { decision?: VerificationDecision } {
+  return derive ? { decision: decisionResult(receipt) } : {};
+}
+
 function malformedResult(
   receipt: Record<string, unknown> | null,
   at: { nanoseconds: bigint; iso: string },
   error: string,
+  derive = false,
 ): VerificationResult {
   return {
     contract_version: "1",
-    scope: "signature_envelope",
+    scope: scopeFor(derive),
     accepted: false,
     format: { valid: false, error },
     receipt: {
@@ -183,14 +312,22 @@ function malformedResult(
     freshness: receipt
       ? freshness(receipt, at)
       : { status: "unknown", evaluated_at: at.iso },
+    ...decisionFields(receipt, derive),
   };
 }
 
 /**
  * Verify the exact Ed25519 signature bytes and evaluate key trust/freshness independently.
  *
- * This intentionally validates only the signature envelope. Full ProofPacket schema validation is
- * the issuer/application's job and must not be confused with cryptographic verification.
+ * By default this validates only the SIGNATURE ENVELOPE — `scope: "signature_envelope"` — and says
+ * nothing about what the receipt concluded. Pass `derive_verdict: true` and it also re-derives the
+ * verdict from the receipt's own facts through the published `check-decision` table and requires the
+ * two to agree; `scope` then reads `"signature_envelope+decision_table"` and a `decision` block is
+ * present. The default is off so that every caller written before that option existed keeps its
+ * result shape and its acceptance semantics unchanged.
+ *
+ * Neither scope is full ProofPacket schema validation: that remains the issuer/application's job and
+ * must not be confused with cryptographic verification.
  */
 export function verifyReceipt(
   receiptValue: unknown,
@@ -198,17 +335,19 @@ export function verifyReceipt(
   options: VerifyOptions = {},
 ): VerificationResult {
   const at = evaluatedAt(options.at);
+  const derive = options.derive_verdict === true;
   const receipt = record(receiptValue);
   if (!receipt)
-    return malformedResult(null, at, "receipt must be a JSON object");
+    return malformedResult(null, at, "receipt must be a JSON object", derive);
   const signature = record(receipt["signature"]);
   if (!signature)
-    return malformedResult(receipt, at, "receipt signature is missing");
+    return malformedResult(receipt, at, "receipt signature is missing", derive);
   if (!signatureFieldSetIsValid(signature)) {
     return malformedResult(
       receipt,
       at,
       "receipt signature has an invalid field set",
+      derive,
     );
   }
   if (
@@ -219,6 +358,7 @@ export function verifyReceipt(
       receipt,
       at,
       "receipt signature signed_at is not an RFC 3339 instant",
+      derive,
     );
   }
   /*
@@ -245,6 +385,7 @@ export function verifyReceipt(
         receipt,
         at,
         "receipt signature signed_at does not match the signed checked_at",
+        derive,
       );
     }
   }
@@ -253,11 +394,17 @@ export function verifyReceipt(
       receipt,
       at,
       "only Ed25519 receipt signatures are supported",
+      derive,
     );
   }
   const keyId = signature["key_id"];
   if (typeof keyId !== "string" || !keyId.trim() || keyId.length > 128) {
-    return malformedResult(receipt, at, "receipt signature key_id is invalid");
+    return malformedResult(
+      receipt,
+      at,
+      "receipt signature key_id is invalid",
+      derive,
+    );
   }
   let signatureBytes: Buffer;
   try {
@@ -267,14 +414,14 @@ export function verifyReceipt(
       "receipt Ed25519 signature",
     );
   } catch (error) {
-    return malformedResult(receipt, at, (error as Error).message);
+    return malformedResult(receipt, at, (error as Error).message, derive);
   }
 
   let canonicalBytes: Uint8Array;
   try {
     canonicalBytes = canonicalUnsignedReceiptBytes(receipt);
   } catch (error) {
-    return malformedResult(receipt, at, (error as Error).message);
+    return malformedResult(receipt, at, (error as Error).message, derive);
   }
   const digest = createHash("sha256").update(canonicalBytes).digest("hex");
   const canonicalization = {
@@ -297,7 +444,7 @@ export function verifyReceipt(
   } catch (error) {
     return {
       contract_version: "1",
-      scope: "signature_envelope",
+      scope: scopeFor(derive),
       accepted: false,
       format: { valid: true },
       receipt: receiptIdentity,
@@ -314,12 +461,13 @@ export function verifyReceipt(
         reason: `verification key document is malformed: ${(error as Error).message}`,
       },
       freshness: freshness(receipt, at),
+      ...decisionFields(receipt, derive),
     };
   }
   if (!key) {
     return {
       contract_version: "1",
-      scope: "signature_envelope",
+      scope: scopeFor(derive),
       accepted: false,
       format: { valid: true },
       receipt: receiptIdentity,
@@ -336,6 +484,7 @@ export function verifyReceipt(
         reason: "the key document does not contain this immutable key ID",
       },
       freshness: freshness(receipt, at),
+      ...decisionFields(receipt, derive),
     };
   }
 
@@ -391,10 +540,21 @@ export function verifyReceipt(
     trustReason = "key lifecycle is unspecified";
   }
 
+  /*
+   * The verdict half, when it was asked for.
+   *
+   * It is computed AFTER the signature so the two answers stay separable in the result — a holder
+   * must be able to see "the bytes are authentic but the verdict does not follow from them" as a
+   * distinct outcome from "these bytes were never signed by us". It gates `accepted` in one
+   * direction only: it can refuse, never rescue. A receipt whose signature fails is not saved by
+   * re-deriving cleanly.
+   */
+  const decision = derive ? decisionResult(receipt) : undefined;
+
   return {
     contract_version: "1",
-    scope: "signature_envelope",
-    accepted: cryptographicallyValid && trusted,
+    scope: scopeFor(derive),
+    accepted: cryptographicallyValid && trusted && (decision?.matches ?? true),
     format: { valid: true },
     receipt: receiptIdentity,
     canonicalization,
@@ -418,6 +578,7 @@ export function verifyReceipt(
         : { status_changed_at: key.lifecycle.status_changed_at }),
     },
     freshness: freshness(receipt, at),
+    ...(decision === undefined ? {} : { decision }),
   };
 }
 
@@ -427,6 +588,8 @@ export function verifyReceiptText(
   options: VerifyOptions = {},
 ): VerificationResult {
   const at = evaluatedAt(options.at);
+  const derive = options.derive_verdict === true;
+  const forward = { at: at.iso, ...(derive ? { derive_verdict: true } : {}) };
   let receipt: unknown;
   try {
     receipt = parseJsonStrict(receiptJson);
@@ -435,6 +598,7 @@ export function verifyReceiptText(
       null,
       at,
       `receipt JSON is invalid: ${(error as Error).message}`,
+      derive,
     );
   }
   let keyDocument: unknown;
@@ -442,7 +606,7 @@ export function verifyReceiptText(
     keyDocument = parseJsonStrict(keyDocumentJson);
   } catch (error) {
     const message = `verification key JSON is invalid: ${(error as Error).message}`;
-    const result = verifyReceipt(receipt, {}, { at: at.iso });
+    const result = verifyReceipt(receipt, {}, forward);
     return {
       ...result,
       cryptographic: { valid: false, error: message },
@@ -456,5 +620,5 @@ export function verifyReceiptText(
       accepted: false,
     };
   }
-  return verifyReceipt(receipt, keyDocument, { at: at.iso });
+  return verifyReceipt(receipt, keyDocument, forward);
 }

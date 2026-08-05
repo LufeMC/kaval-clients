@@ -74,13 +74,13 @@ receipt needs no Kaval account and no API key.
 The verifier that does it for you ships **inside the SDK**: `@usekaval/kaval/verify` is a
 dependency-free subpath export of `@usekaval/kaval`, and the same package ships a
 `kaval-receipt-verify` CLI. Neither needs a Kaval account, an API key, or Kaval's database; the only
-request either can make is for the public keyset, and that one is optional. Hand it a receipt and a
-keyset — archived beside the receipt, or fetched from the key endpoint — and it answers three
-questions **separately**:
+request either can make is for the public keyset, and that request is optional. Hand it a receipt and
+a keyset. It answers three questions by default and one optional verdict question:
 
 1. **Cryptographic validity** — does the Ed25519 signature cover the exact canonical unsigned bytes?
 2. **Key trust** — is that `key_id` active or benignly retired, rather than revoked or compromised?
 3. **Freshness** — `fresh`, `recheck_due`, `expired`, `not_yet_issued`, or `unknown`.
+4. **Verdict derivation** — does the receipt's fact list produce its stated verdict and reason codes?
 
 A valid signature proves who sealed those exact bytes. It does not prove the claim is still true, or
 that the key is still trusted, which is why the three answers never collapse into one boolean.
@@ -89,16 +89,18 @@ that the key is still trusted, which is why the three answers never collapse int
 import { extractReceipt, parseJsonStrict, verifyReceipt } from "@usekaval/kaval/verify";
 
 const receipt = extractReceipt(parseJsonStrict(receiptText));
-const result = verifyReceipt(receipt, parseJsonStrict(keysetText));
+const result = verifyReceipt(receipt, parseJsonStrict(keysetText), { derive_verdict: true });
 
 result.cryptographic.valid; // the signature covers these exact canonical bytes
 result.key.trusted;         // the signing key is not revoked or compromised
 result.freshness.status;    // separate fact — a check receipt carries no expiry, so `unknown`
+result.decision?.matches;   // the published table reproduced the verdict and reason codes
 ```
 
 ```bash
 # Reproducible audit: archive the keyset beside the receipt and stay entirely offline.
 npx -p @usekaval/kaval kaval-receipt-verify verify receipt.json --keyset keys.json
+npx -p @usekaval/kaval kaval-receipt-verify verify receipt.json --keyset keys.json --derive-verdict
 
 # Or resolve the key over HTTPS from the unauthenticated endpoint.
 npx -p @usekaval/kaval kaval-receipt-verify verify receipt.json \

@@ -1,0 +1,597 @@
+{
+  "contract_version": "1",
+  "decision_rule_version": "check-decision/1.1.0",
+  "description": "Frozen conformance vectors for the published check-decision table. Byte-identical copies live on both sides of the receipt: the issuer copy (@kaval/receipt-verifier) and the published mirror (@usekaval/kaval/verify). Two implementations that both pass these cannot disagree about any verdict, reason-code set, or refusal these cases cover — which is the only enforceable form of 'the customer runs the same table the issuer ran'.",
+  "enums": {
+    "rule_version": "check-decision/1.1.0",
+    "verdicts": ["ALLOW", "REVIEW", "BLOCK"],
+    "reason_codes": [
+      "ALL_FACTS_HOLD",
+      "FACT_CHANGED",
+      "FACT_EXPIRED",
+      "FACT_UNKNOWN",
+      "SOURCE_UPDATED_PENDING_REVIEW",
+      "SOURCE_UNREACHABLE",
+      "NEW_FACT_UNVERIFIED",
+      "COMPILATION_UNCERTAIN"
+    ],
+    "fact_methods": ["state", "live", "timeout"],
+    "fact_states": ["holds", "changed", "unknown"],
+    "materialities": ["low", "medium", "high", "critical"],
+    "freshness_failures": [
+      "stale",
+      "dormant",
+      "basis_superseded",
+      "source_unreachable",
+      "ttl_expired"
+    ]
+  },
+  "decide": [
+    {
+      "id": "row1-high-changed-blocks",
+      "facts": [
+        {
+          "materiality": "high",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "superseded"
+        }
+      ],
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_CHANGED"]
+    },
+    {
+      "id": "row1-expired-temporal-state-names-expired",
+      "facts": [
+        {
+          "materiality": "high",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "expired"
+        }
+      ],
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_EXPIRED"]
+    },
+    {
+      "id": "row1-beats-row2",
+      "facts": [
+        {
+          "materiality": "critical",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "superseded"
+        },
+        { "materiality": "critical", "status": "unknown", "method": "state" }
+      ],
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_CHANGED", "FACT_UNKNOWN"]
+    },
+    {
+      "id": "row1-changed-branch-precedes-stale-pending",
+      "facts": [
+        {
+          "materiality": "high",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "expired",
+          "stalePending": true
+        }
+      ],
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_EXPIRED"]
+    },
+    {
+      "id": "row1-repeated-cause-is-named-once",
+      "facts": [
+        {
+          "materiality": "high",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "superseded"
+        },
+        {
+          "materiality": "high",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "superseded"
+        }
+      ],
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_CHANGED"]
+    },
+    {
+      "id": "row2-critical-unknown-blocks",
+      "facts": [{ "materiality": "critical", "status": "unknown", "method": "state" }],
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_UNKNOWN"]
+    },
+    {
+      "id": "row2-critical-unknown-unreachable-source",
+      "facts": [
+        {
+          "materiality": "critical",
+          "status": "unknown",
+          "method": "state",
+          "freshnessFailure": "source_unreachable"
+        }
+      ],
+      "verdict": "BLOCK",
+      "reason_codes": ["SOURCE_UNREACHABLE"]
+    },
+    {
+      "id": "row3-critical-contested-unknown-reviews",
+      "facts": [
+        {
+          "materiality": "critical",
+          "status": "unknown",
+          "method": "state",
+          "contested": true
+        }
+      ],
+      "verdict": "REVIEW",
+      "reason_codes": ["FACT_UNKNOWN"]
+    },
+    {
+      "id": "row3-low-materiality-change-reviews-never-blocks",
+      "facts": [
+        {
+          "materiality": "low",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "superseded"
+        }
+      ],
+      "verdict": "REVIEW",
+      "reason_codes": ["FACT_CHANGED"]
+    },
+    {
+      "id": "row3-medium-materiality-change-reviews-never-blocks",
+      "facts": [
+        {
+          "materiality": "medium",
+          "status": "changed",
+          "method": "state",
+          "temporalState": null
+        }
+      ],
+      "verdict": "REVIEW",
+      "reason_codes": ["FACT_CHANGED"]
+    },
+    {
+      "id": "row3-non-critical-unknown-reviews",
+      "facts": [{ "materiality": "low", "status": "unknown", "method": "state" }],
+      "verdict": "REVIEW",
+      "reason_codes": ["FACT_UNKNOWN"]
+    },
+    {
+      "id": "row3-novel-unknown-is-new-fact-unverified",
+      "facts": [{ "materiality": "medium", "status": "unknown", "method": "state", "novel": true }],
+      "verdict": "REVIEW",
+      "reason_codes": ["NEW_FACT_UNVERIFIED"]
+    },
+    {
+      "id": "row3-timed-out-unknown-is-new-fact-unverified",
+      "facts": [{ "materiality": "medium", "status": "unknown", "method": "timeout" }],
+      "verdict": "REVIEW",
+      "reason_codes": ["NEW_FACT_UNVERIFIED"]
+    },
+    {
+      "id": "row3-stale-pending-reviews-even-on-a-holding-critical-fact",
+      "facts": [
+        {
+          "materiality": "critical",
+          "status": "holds",
+          "method": "state",
+          "stalePending": true
+        }
+      ],
+      "verdict": "REVIEW",
+      "reason_codes": ["SOURCE_UPDATED_PENDING_REVIEW"]
+    },
+    {
+      "id": "row3-stale-pending-branch-precedes-the-unknown-codes",
+      "facts": [
+        {
+          "materiality": "medium",
+          "status": "unknown",
+          "method": "timeout",
+          "stalePending": true,
+          "novel": true
+        }
+      ],
+      "verdict": "REVIEW",
+      "reason_codes": ["SOURCE_UPDATED_PENDING_REVIEW"]
+    },
+    {
+      "id": "row3-a-holding-fact-that-timed-out-falls-back-to-unknown",
+      "facts": [{ "materiality": "medium", "status": "holds", "method": "timeout" }],
+      "verdict": "REVIEW",
+      "reason_codes": ["FACT_UNKNOWN"]
+    },
+    {
+      "id": "row3-compilation-uncertain-with-no-facts-at-all",
+      "facts": [],
+      "options": { "compilationUncertain": true },
+      "verdict": "REVIEW",
+      "reason_codes": ["COMPILATION_UNCERTAIN"]
+    },
+    {
+      "id": "row3-compilation-uncertain-outranks-a-clean-fact-list",
+      "facts": [{ "materiality": "critical", "status": "holds", "method": "state" }],
+      "options": { "compilationUncertain": true },
+      "verdict": "REVIEW",
+      "reason_codes": ["COMPILATION_UNCERTAIN"]
+    },
+    {
+      "id": "row3-codes-are-table-order-then-fact-order",
+      "facts": [
+        {
+          "materiality": "low",
+          "status": "changed",
+          "method": "state",
+          "temporalState": "superseded"
+        },
+        {
+          "materiality": "medium",
+          "status": "unknown",
+          "method": "state",
+          "freshnessFailure": "source_unreachable"
+        },
+        {
+          "materiality": "high",
+          "status": "holds",
+          "method": "state",
+          "stalePending": true
+        }
+      ],
+      "options": { "compilationUncertain": true },
+      "verdict": "REVIEW",
+      "reason_codes": [
+        "COMPILATION_UNCERTAIN",
+        "FACT_CHANGED",
+        "SOURCE_UNREACHABLE",
+        "SOURCE_UPDATED_PENDING_REVIEW"
+      ]
+    },
+    {
+      "id": "row4-every-material-fact-holds",
+      "facts": [
+        { "materiality": "medium", "status": "holds", "method": "state" },
+        { "materiality": "critical", "status": "holds", "method": "live" }
+      ],
+      "verdict": "ALLOW",
+      "reason_codes": ["ALL_FACTS_HOLD"]
+    },
+    {
+      "id": "row4-is-vacuously-true-for-an-empty-fact-list",
+      "facts": [],
+      "verdict": "ALLOW",
+      "reason_codes": ["ALL_FACTS_HOLD"]
+    }
+  ],
+  "derive": [
+    {
+      "id": "receipt-block-on-a-changed-high-materiality-fact",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_CHANGED"]
+    },
+    {
+      "id": "receipt-block-names-expired-not-changed",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "critical",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": "expired",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "verdict": "BLOCK",
+      "reason_codes": ["FACT_EXPIRED"]
+    },
+    {
+      "id": "receipt-block-on-an-unreachable-critical-source",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "critical",
+            "state": "unknown",
+            "method": "state",
+            "temporal_state": null,
+            "freshness_failure": "source_unreachable",
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "verdict": "BLOCK",
+      "reason_codes": ["SOURCE_UNREACHABLE"]
+    },
+    {
+      "id": "receipt-review-on-a-null-temporal-state",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "medium",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": null,
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "verdict": "REVIEW",
+      "reason_codes": ["FACT_CHANGED"]
+    },
+    {
+      "id": "receipt-review-on-a-stale-pending-fact-that-still-holds",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "holds",
+            "method": "state",
+            "temporal_state": "current",
+            "freshness_failure": null,
+            "stale_pending": true,
+            "novel": false
+          }
+        ]
+      },
+      "verdict": "REVIEW",
+      "reason_codes": ["SOURCE_UPDATED_PENDING_REVIEW"]
+    },
+    {
+      "id": "receipt-review-on-a-novel-unknown-fact",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "medium",
+            "state": "unknown",
+            "method": "state",
+            "temporal_state": null,
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": true
+          }
+        ]
+      },
+      "verdict": "REVIEW",
+      "reason_codes": ["NEW_FACT_UNVERIFIED"]
+    },
+    {
+      "id": "receipt-review-on-uncertain-compilation-with-no-facts",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": true,
+        "facts": []
+      },
+      "verdict": "REVIEW",
+      "reason_codes": ["COMPILATION_UNCERTAIN"]
+    },
+    {
+      "id": "receipt-allow-when-every-fact-holds-on-a-fresh-basis",
+      "receipt": {
+        "decision_rule_version": "check-decision/1.1.0",
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "critical",
+            "state": "holds",
+            "method": "state",
+            "temporal_state": "current",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          },
+          {
+            "materiality": "low",
+            "state": "holds",
+            "method": "live",
+            "temporal_state": "current",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "verdict": "ALLOW",
+      "reason_codes": ["ALL_FACTS_HOLD"]
+    }
+  ],
+  "refuse": [
+    {
+      "id": "refuse-a-receipt-that-is-not-a-json-object",
+      "receipt": "this is a string, not a receipt",
+      "message_contains": "it is not a JSON object"
+    },
+    {
+      "id": "refuse-a-receipt-that-does-not-state-compilation-certainty",
+      "receipt": { "facts": [] },
+      "message_contains": "it does not state whether compilation was uncertain"
+    },
+    {
+      "id": "refuse-a-receipt-with-no-fact-list",
+      "receipt": { "compilation_uncertain": false },
+      "message_contains": "it does not carry a fact list"
+    },
+    {
+      "id": "refuse-a-fact-that-is-not-a-json-object",
+      "receipt": { "compilation_uncertain": false, "facts": [42] },
+      "message_contains": "fact 0 is not a JSON object"
+    },
+    {
+      "id": "refuse-a-fact-missing-stale-pending",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 omits the stale-pending/novel discriminators"
+    },
+    {
+      "id": "refuse-a-fact-missing-novel",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "stale_pending": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 omits the stale-pending/novel discriminators"
+    },
+    {
+      "id": "refuse-a-fact-missing-its-temporal-state",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "state",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 omits its temporal state"
+    },
+    {
+      "id": "refuse-a-freshness-failure-outside-the-published-set",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "critical",
+            "state": "unknown",
+            "method": "state",
+            "temporal_state": null,
+            "freshness_failure": "quantum_decoherence",
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 carries a freshness failure this contract does not define"
+    },
+    {
+      "id": "refuse-a-materiality-outside-the-published-set",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "catastrophic",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 carries a materiality this contract does not define"
+    },
+    {
+      "id": "refuse-a-state-outside-the-published-set",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "probably_fine",
+            "method": "state",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 carries a state this contract does not define"
+    },
+    {
+      "id": "refuse-a-method-outside-the-published-set",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "vibes",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 carries a method this contract does not define"
+    },
+    {
+      "id": "refuse-a-non-textual-temporal-state",
+      "receipt": {
+        "compilation_uncertain": false,
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": 5,
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false
+          }
+        ]
+      },
+      "message_contains": "fact 0 carries a non-textual temporal state"
+    }
+  ]
+}

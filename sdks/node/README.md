@@ -161,13 +161,14 @@ makes it something you can hand to a counterparty who does not trust us.
 
 ### Receipts
 
-`verifyReceipt` answers three questions **separately**, and conflating them is the mistake it exists
-to prevent:
+`verifyReceipt` answers three questions by default. It answers a fourth question when you set
+`derive_verdict: true`:
 
 1. **Cryptographic validity** — does the Ed25519 signature cover the exact canonical unsigned bytes?
 2. **Key trust** — is the immutable `key_id` active or benignly retired, or revoked/compromised?
 3. **Freshness** — at the instant you name, is the receipt `fresh`, `recheck_due`, `expired`, or
    `not_yet_issued`?
+4. **Verdict derivation** — does the receipt's fact list produce its stated verdict and reason codes?
 
 A valid signature proves who sealed these exact bytes. It does not prove the claim is true, that its
 evidence is still current, or that the key is still trusted. `accepted` means signature **and** key
@@ -184,13 +185,17 @@ import {
 const receipt = extractReceipt(parseJsonStrict(receiptText));
 const keyset = parseJsonStrict(keysetText);
 
-const result = verifyReceipt(receipt, keyset, { at: "2026-07-20T12:00:00.000Z" });
+const result = verifyReceipt(receipt, keyset, {
+  at: "2026-07-20T12:00:00.000Z",
+  derive_verdict: true,
+});
 
 result.cryptographic.valid; // the bytes really were signed by this key
 result.key.lifecycle_status; // "active" | "retired" | "revoked" | "compromised" | "unknown"
 result.key.trusted;
 result.freshness.status; // "fresh" | "recheck_due" | "expired" | "not_yet_issued" | "unknown"
-result.accepted; // cryptographic.valid && key.trusted
+result.decision?.matches; // the published table reproduced the verdict and reason codes
+result.accepted; // the signature, key trust, and requested verdict derivation passed
 ```
 
 Use `parseJsonStrict` (or `verifyReceiptText`, which does it for you) on anything that arrives as
@@ -198,6 +203,7 @@ untrusted JSON **text**. Plain `JSON.parse` silently discards duplicate-member a
 evidence before any object-level verifier can see it.
 
 Exported: `verifyReceipt` · `verifyReceiptText` · `extractReceipt` · `verifyWebhookSignature` ·
+`decideCheck` · `deriveCheckDecision` · `checkDecisionInputFromReceipt` ·
 `parseJsonStrict` · `stableCanonicalJson` · `canonicalUnsignedReceiptJson` ·
 `canonicalUnsignedReceiptBytes` · `parseVerificationKey` · `verificationKeyFromDocument` ·
 `isRfc3339Timestamp` · `parseRfc3339Instant` · `rfc3339TimestampMilliseconds` ·
@@ -249,6 +255,7 @@ Options:
   --key-url <url>            HTTPS per-key endpoint or keyset endpoint
   --at <RFC3339>             Evaluate freshness at an explicit time
   --require-fresh            Exit non-zero unless freshness is "fresh"
+  --derive-verdict           Re-derive the check verdict and require it to match
   --allow-http-loopback      Permit http://localhost/127.0.0.0/8/::1 for local development
   --compact                  Emit compact JSON
   -h, --help                 Show this help
@@ -256,9 +263,10 @@ Options:
 
 It prints the full `VerificationResult` as JSON and takes the receipt from a file or `-` (stdin).
 **Exit `0`** means the signature is valid and the key is trusted — an expired receipt still exits
-`0`, because freshness is a different question; add `--require-fresh` to make anything but `fresh`
-exit non-zero. **Exit `1`** is a completed verification that was not accepted. **Exit `2`** is an
-input, I/O, or discovery failure.
+`0`, because freshness is a different question. Add `--require-fresh` to require fresh evidence.
+Add `--derive-verdict` to require the stated verdict to match the published decision table.
+**Exit `1`** is a completed verification that was not accepted. **Exit `2`** is an input, I/O, or
+discovery failure.
 
 `--at` and every receipt/key timestamp must be a component-valid RFC 3339 instant. Date-only
 strings, impossible calendar days (`2026-02-29`), leap-second `:60`, and the `-00:00`

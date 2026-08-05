@@ -14,9 +14,14 @@
  * File-level byte-identity across the two is not a property that could hold — the implementation is
  * restructured here into a subpath export. What IS comparable is the frozen conformance vectors:
  * two implementations that both pass byte-identical vectors cannot disagree about anything the
- * vectors cover, whatever their file layout. So both sides pin the same three digests. The issuer
- * copy pins them in `mirror-manifest.json` (`vectors`); this file is the other half of that pair,
- * and the two lists of hex below are meant to be literally the same strings.
+ * vectors cover, whatever their file layout. So both sides pin the same digests, one per file in
+ * the shared vector set. The issuer copy pins them in `mirror-manifest.json` (`vectors`); this file
+ * is the other half of that pair, and the two lists of hex below are meant to be literally the same
+ * strings.
+ *
+ * Since `check-decision-vectors.json` joined the set, the pair covers the VERDICT as well as the
+ * signature: `decision-vectors.test.ts` runs those cases against this copy of the decision table,
+ * and the issuer's `check-decision-vectors.test.mjs` runs them against the table it signs with.
  *
  * A one-byte edit to a vector on this side fails here. A one-byte edit on the issuer side fails
  * there. Neither can be made silently, which is the whole point: the digests are only allowed to
@@ -44,6 +49,8 @@ const SUITE_DIRECTORY = fileURLToPath(new URL("./", import.meta.url));
 const PINNED_VECTOR_DIGESTS: Readonly<Record<string, string>> = {
   "canonicalization-vectors.json":
     "sha256:b0b9c61e9370c1a6a454426b8201d1e9c3215120a5ac50ac89f001e8b960aa73",
+  "check-decision-vectors.json":
+    "sha256:64739c2912d765c8c41e9d16dd9afd191fb8bab392d493ce35135a2c5249ee99",
   "ed25519-receipt-vectors.json":
     "sha256:8de7a80962a23bef3bf77d4b91bde52c4afed9d6679b89d4d10a2765822fd416",
   "rfc3339-vectors.json":

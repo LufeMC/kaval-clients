@@ -95,6 +95,43 @@ test("CLI can require freshness without conflating it with signature validity", 
   }
 });
 
+test("CLI forwards --derive-verdict and fails closed for a receipt without facts", async () => {
+  const directory = await mkdtemp(`${tmpdir()}/kaval-receipt-verifier-`);
+  try {
+    const receiptPath = `${directory}/receipt.json`;
+    await writeFile(
+      receiptPath,
+      JSON.stringify(vectors.signed_receipt),
+      "utf8",
+    );
+    const error = await execute(
+      process.execPath,
+      [
+        distCli,
+        receiptPath,
+        "--keyset",
+        vectorsFile,
+        "--derive-verdict",
+        "--compact",
+      ],
+      { encoding: "utf8" },
+    ).then(
+      () => {
+        throw new Error("the CLI accepted a receipt without decision inputs");
+      },
+      (thrown: NodeJS.ErrnoException & { stdout: string }) => thrown,
+    );
+    const result = JSON.parse(error.stdout);
+    expect(result.scope).toBe("signature_envelope+decision_table");
+    expect(result.cryptographic.valid).toBe(true);
+    expect(result.decision.matches).toBe(false);
+    expect(result.decision.error).toMatch(/names no decision rule version/u);
+    expect(error.code).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CLI rejects a nonexistent --at calendar day before freshness evaluation", async () => {
   const directory = await mkdtemp(`${tmpdir()}/kaval-receipt-verifier-`);
   try {
