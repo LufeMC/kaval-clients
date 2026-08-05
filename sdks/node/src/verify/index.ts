@@ -3,9 +3,17 @@
  *
  * Nothing reachable from this entry point performs I/O of any kind: no `fetch`, no `node:http`,
  * no `node:https`, no sockets. It reads a receipt and a key document you already hold and answers
- * three separate questions — is the Ed25519 signature over the exact canonical bytes, is the key
- * trusted, and is the receipt fresh at the instant you name. That is the whole point of the
- * subpath, and `test/verify/no-network.test.ts` holds the import graph to it.
+ * four separate questions — is the Ed25519 signature over the exact canonical bytes, is the key
+ * trusted, is the receipt fresh at the instant you name, and (only when you pass
+ * `derive_verdict: true`) does the receipt's stated ALLOW/REVIEW/BLOCK actually follow from the
+ * facts the receipt itself carries. That is the whole point of the subpath, and
+ * `test/verify/no-network.test.ts` holds the import graph to it.
+ *
+ * The fourth question is what makes a receipt an appeal packet rather than a signed assertion. The
+ * decision table it runs is `./decision.js` — `check-decision/1.1.0`, the same table Kaval's issuer
+ * executes, carried here so a holder never has to run Kaval's software to check Kaval's verdict.
+ * `decision.ts` is a mirrored copy of the issuer's; `test/verify/mirror-pin.test.ts` pins the shared
+ * conformance vectors that make the two answer identically.
  *
  * `verifyWebhookSignature` is here for the same reason: authenticating an inbound `fact_state.delta`
  * is a pure HMAC over bytes you were handed, and a receiver that had to reach the network to decide
@@ -25,6 +33,30 @@ export {
   stableCanonicalJson,
 } from "./canonicalize.js";
 export {
+  CHECK_DECISION_RULE_VERSION,
+  CHECK_DECISION_RULE_VERSIONS,
+  CHECK_FACT_METHODS,
+  CHECK_FACT_STATES,
+  CHECK_FRESHNESS_FAILURES,
+  CHECK_MATERIALITIES,
+  CHECK_REASON_CODES,
+  CHECK_VERDICTS,
+  ReceiptNotSelfDerivableError,
+  checkDecisionInputFromReceipt,
+  decideCheck,
+  deriveCheckDecision,
+  type CheckDecision,
+  type CheckDecisionFact,
+  type CheckDecisionOptions,
+  type CheckDecisionRuleVersion,
+  type CheckFactMethod,
+  type CheckFactState,
+  type CheckFreshnessFailure,
+  type CheckMateriality,
+  type CheckReasonCode,
+  type CheckVerdict,
+} from "./decision.js";
+export {
   parseVerificationKey,
   verificationKeyFromDocument,
 } from "./key-document.js";
@@ -41,8 +73,10 @@ export {
   type JsonValue,
   type KeyLifecycle,
   type KeyLifecycleStatus,
+  type VerificationDecision,
   type VerificationKey,
   type VerificationResult,
+  type VerificationScope,
   type VerifyOptions,
 } from "./types.js";
 export { extractReceipt, verifyReceipt, verifyReceiptText } from "./verify.js";
