@@ -1,4 +1,4 @@
-import type { CheckDecision } from "./decision.js";
+import type { DerivedCheckDecision } from "./decision.js";
 
 export const KAVAL_CANONICALIZATION = "kaval-stable-json-v1" as const;
 
@@ -58,7 +58,7 @@ export type VerificationScope =
  * field that may move `accepted`.
  */
 export interface VerificationDecision {
-  /** The decision-table version this verifier executes. */
+  /** The latest decision-table version this verifier executes. */
   supported_rule_version: string;
   /** The decision-table version the receipt names, when it names one. */
   receipt_rule_version?: string;
@@ -66,7 +66,7 @@ export interface VerificationDecision {
     verdict?: string;
     reason_codes?: string[];
   };
-  derived?: CheckDecision;
+  derived?: DerivedCheckDecision;
   /** True only when a verdict AND its reason-code set were re-derived and both agree. */
   matches: boolean;
   error?: string;

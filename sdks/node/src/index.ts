@@ -34,15 +34,65 @@ import type {
   VerifyRequest,
   VerifyResponse,
 } from "./proof.js";
+import type {
+  BulletinExtractionAttemptDetailResponse,
+  BulletinExtractionAttemptListOptions,
+  BulletinExtractionAttemptPage,
+  BulletinExtractionAttemptResource,
+  BulletinListOptions,
+  BulletinPage,
+  BulletinRecord,
+  ContractClaimPage,
+  ContractClaimReviewInput,
+  ContractClaimReviewResource,
+  ContractCreateInput,
+  ContractExtractionIssueListOptions,
+  ContractExtractionIssuePage,
+  ContractResource,
+  ContractUploadInput,
+  ContractUploadResource,
+  FactImportInput,
+  FactImportResource,
+  TrainingFeedbackConsent,
+  TrainingFeedbackConsentInput,
+  TrainingFeedbackListOptions,
+  TrainingFeedbackReviewList,
+  TrainingJob,
+  TrainingJobPage,
+  TrainingJobStatus,
+} from "./portfolio.js";
+import {
+  API_KEY_SCOPES,
+  BULLETIN_EXTRACTION_ATTEMPT_STATUSES,
+  CONTRACT_EXTRACTION_ISSUE_CODES,
+  CONTRACT_EXTRACTION_REVIEW_STATES,
+  MAX_CONTRACT_PDF_BYTES,
+  MAX_FACT_IMPORT_ITEMS,
+  MAX_FACT_IMPORT_SOURCE_REFERENCES,
+  MAX_INLINE_CONTRACT_BYTES,
+  MAX_PORTFOLIO_PAGE_SIZE,
+} from "./portfolio.js";
 
 export type * from "./proof.js";
 export type * from "./check.js";
+export type * from "./portfolio.js";
 export {
   DEFAULT_CHECK_MAX_WAIT_MS,
   FACT_STATE_DELTA_EVENT_TYPE,
   MAX_CHECK_MAX_WAIT_MS,
   MIN_CHECK_MAX_WAIT_MS,
 } from "./check.js";
+export {
+  API_KEY_SCOPES,
+  BULLETIN_EXTRACTION_ATTEMPT_STATUSES,
+  CONTRACT_EXTRACTION_ISSUE_CODES,
+  CONTRACT_EXTRACTION_REVIEW_STATES,
+  MAX_CONTRACT_PDF_BYTES,
+  MAX_FACT_IMPORT_ITEMS,
+  MAX_FACT_IMPORT_SOURCE_REFERENCES,
+  MAX_INLINE_CONTRACT_BYTES,
+  MAX_PORTFOLIO_PAGE_SIZE,
+} from "./portfolio.js";
 
 export type OutcomeKind =
   | "current_later_contradicted"
@@ -115,8 +165,8 @@ export interface KavalOptions {
 
 /** Transport options for one API operation. */
 export interface RequestOptions {
-  /** Billable operations only. Kaval generates a UUID by default; supply the same key when
-   * coordinating a retry outside this client after an ambiguous/no-response failure. */
+  /** Mutations that require idempotency only. Kaval generates a UUID by default. Reuse the key
+   * when you coordinate a retry after an ambiguous or no-response failure. */
   idempotencyKey?: string;
   /** Cancels the operation and every bounded retry. */
   signal?: AbortSignal;
@@ -263,6 +313,112 @@ function encodeId(id: string): string {
   return encodeURIComponent(id.trim());
 }
 
+function assertPortfolioPageLimit(limit: number | undefined): void {
+  if (
+    limit !== undefined &&
+    (!Number.isInteger(limit) || limit < 1 || limit > MAX_PORTFOLIO_PAGE_SIZE)
+  ) {
+    throw new RangeError(
+      `limit must be an integer from 1 through ${MAX_PORTFOLIO_PAGE_SIZE}`,
+    );
+  }
+}
+
+function assertContractUploadInput(input: ContractUploadInput): void {
+  if (
+    input.content_type !== "application/pdf" ||
+    !Number.isInteger(input.size_bytes) ||
+    input.size_bytes < 1 ||
+    input.size_bytes > MAX_CONTRACT_PDF_BYTES ||
+    !/^[0-9a-f]{64}$/u.test(input.sha256)
+  ) {
+    throw new TypeError("the contract upload metadata is invalid");
+  }
+}
+
+function assertContractCreateInput(input: ContractCreateInput): void {
+  if (
+    input.effective_from !== null &&
+    input.effective_to !== null &&
+    input.effective_to < input.effective_from
+  ) {
+    throw new RangeError("effective_to must not be before effective_from");
+  }
+  if (
+    input.source.kind === "canonical_text" &&
+    new TextEncoder().encode(input.source.content).byteLength >
+      MAX_INLINE_CONTRACT_BYTES
+  ) {
+    throw new RangeError(
+      `canonical contract text must not exceed ${MAX_INLINE_CONTRACT_BYTES} UTF-8 bytes`,
+    );
+  }
+}
+
+function assertContractReviewInput(input: ContractClaimReviewInput): void {
+  if (
+    (input.decision === "correct") !==
+    (input.corrected_claim !== undefined)
+  ) {
+    throw new TypeError(
+      "corrected_claim is required only for a correct decision",
+    );
+  }
+}
+
+function assertFactImportInput(input: FactImportInput): void {
+  if (
+    !Array.isArray(input.items) ||
+    input.items.length < 1 ||
+    input.items.length > MAX_FACT_IMPORT_ITEMS
+  ) {
+    throw new RangeError(
+      `fact imports must contain 1 through ${MAX_FACT_IMPORT_ITEMS} items`,
+    );
+  }
+  const itemIds = new Set<string>();
+  for (const item of input.items) {
+    if (itemIds.has(item.item_id)) {
+      throw new TypeError("fact import item_id values must be unique");
+    }
+    itemIds.add(item.item_id);
+    if (item.source_ids.length > MAX_FACT_IMPORT_SOURCE_REFERENCES) {
+      throw new RangeError(
+        `source_ids must contain at most ${MAX_FACT_IMPORT_SOURCE_REFERENCES} entries`,
+      );
+    }
+    if (new Set(item.source_ids).size !== item.source_ids.length) {
+      throw new TypeError("fact import source_ids values must be unique");
+    }
+  }
+}
+
+function assertTrainingFeedbackConsentInput(
+  input: TrainingFeedbackConsentInput,
+): void {
+  if (input.schema_version !== "training-feedback-consent-request/1.0.0") {
+    throw new TypeError(
+      "schema_version must be training-feedback-consent-request/1.0.0",
+    );
+  }
+  if (
+    (input.training_use !== "approved" && input.training_use !== "withheld") ||
+    typeof input.consent_to_training !== "boolean"
+  ) {
+    throw new TypeError("training_use and consent_to_training are invalid");
+  }
+  if ((input.training_use === "approved") !== input.consent_to_training) {
+    throw new TypeError("approved training use requires explicit consent");
+  }
+  if (
+    input.reason !== undefined &&
+    input.reason !== null &&
+    (input.reason.trim().length < 1 || input.reason.trim().length > 1_000)
+  ) {
+    throw new RangeError("reason must contain 1 through 1000 characters");
+  }
+}
+
 /**
  * The Kaval client.
  *
@@ -365,24 +521,32 @@ export class Kaval {
     options: RequestOptions = {},
     extraHeaders: Record<string, string> = {},
   ): Promise<T> {
+    const operationKey = extraHeaders["idempotency-key"];
     const request = requestSignal(
       options.signal,
       options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
     );
     try {
-      const res = await this.f(`${this.base}${path}`, {
-        method,
-        headers: { ...this.headers, ...extraHeaders },
-        signal: request.signal,
-        // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
+      let res: Response;
+      try {
+        res = await this.f(`${this.base}${path}`, {
+          method,
+          headers: { ...this.headers, ...extraHeaders },
+          signal: request.signal,
+          // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      } catch (error) {
+        throw operationKey === undefined
+          ? error
+          : attachIdempotencyKey(error, operationKey);
+      }
       const payload: unknown = await res.json().catch(() => null);
       if (!res.ok) {
         if (res.status === 410 && isRetiredPayload(payload)) {
           throw new KavalRetiredError(payload, path);
         }
-        throw new KavalError(res.status, payload);
+        throw new KavalError(res.status, payload, operationKey);
       }
       return payload as T;
     } finally {
@@ -430,6 +594,285 @@ export class Kaval {
       options,
     );
     return receipt;
+  }
+
+  /* -------------------------- contract portfolio --------------------------- */
+
+  /** Create a private PDF upload target. Upload the bytes before contract creation. */
+  createContractUpload(
+    input: ContractUploadInput,
+    options?: RequestOptions,
+  ): Promise<ContractUploadResource> {
+    assertContractUploadInput(input);
+    return this.request("POST", "/v1/contract-uploads", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  /** Queue one contract for extraction and review. */
+  createContract(
+    input: ContractCreateInput,
+    options?: RequestOptions,
+  ): Promise<ContractResource> {
+    assertContractCreateInput(input);
+    return this.request("POST", "/v1/contracts", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  getContract(
+    contractId: string,
+    options?: RequestOptions,
+  ): Promise<ContractResource> {
+    return this.request(
+      "GET",
+      `/v1/contracts/${encodeId(contractId)}`,
+      undefined,
+      options,
+    );
+  }
+
+  listContractClaims(
+    contractId: string,
+    options?: RequestOptions & {
+      status?: "proposed" | "approved" | "corrected" | "rejected";
+      activationState?: "inactive" | "active" | "conflict" | "superseded";
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<ContractClaimPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.status !== undefined) query.set("status", options.status);
+    if (options?.activationState !== undefined)
+      query.set("activation_state", options.activationState);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/contracts/${encodeId(contractId)}/claims${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** List deterministic extraction failures that require customer review. */
+  listContractExtractionIssues(
+    contractId: string,
+    options?: RequestOptions & ContractExtractionIssueListOptions,
+  ): Promise<ContractExtractionIssuePage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.issueCode !== undefined)
+      query.set("issue_code", options.issueCode);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/contracts/${encodeId(contractId)}/extraction-issues${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  reviewContractClaim(
+    contractId: string,
+    claimId: string,
+    input: ContractClaimReviewInput,
+    options?: RequestOptions,
+  ): Promise<ContractClaimReviewResource> {
+    assertContractReviewInput(input);
+    return this.request(
+      "POST",
+      `/v1/contracts/${encodeId(contractId)}/claims/${encodeId(claimId)}/reviews`,
+      input,
+      options,
+      {
+        "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+      },
+    );
+  }
+
+  /** Queue at most 400 facts. The server processes them in groups of 20. */
+  createFactImport(
+    input: FactImportInput,
+    options?: RequestOptions,
+  ): Promise<FactImportResource> {
+    assertFactImportInput(input);
+    return this.request("POST", "/v1/fact-imports", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  getFactImport(
+    importId: string,
+    options?: RequestOptions,
+  ): Promise<FactImportResource> {
+    return this.request(
+      "GET",
+      `/v1/fact-imports/${encodeId(importId)}`,
+      undefined,
+      options,
+    );
+  }
+
+  async getBulletin(
+    bulletinId: string,
+    options?: RequestOptions,
+  ): Promise<BulletinRecord> {
+    const { bulletin } = await this.request<{ bulletin: BulletinRecord }>(
+      "GET",
+      `/v1/bulletins/${encodeId(bulletinId)}`,
+      undefined,
+      options,
+    );
+    return bulletin;
+  }
+
+  listBulletins(
+    options?: RequestOptions & BulletinListOptions,
+  ): Promise<BulletinPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.sourceId !== undefined)
+      query.set("source_id", options.sourceId);
+    if (options?.payerId !== undefined) query.set("payer_id", options.payerId);
+    if (options?.policyNumber !== undefined)
+      query.set("policy_number", options.policyNumber);
+    if (options?.code !== undefined) query.set("code", options.code);
+    if (options?.recordStatus !== undefined)
+      query.set("record_status", options.recordStatus);
+    if (options?.publishedFrom !== undefined)
+      query.set("published_from", options.publishedFrom);
+    if (options?.publishedTo !== undefined)
+      query.set("published_to", options.publishedTo);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/bulletins${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** List the customer-readable extraction lifecycle for structured bulletins. */
+  listBulletinExtractionAttempts(
+    options?: RequestOptions & BulletinExtractionAttemptListOptions,
+  ): Promise<BulletinExtractionAttemptPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.sourceId !== undefined)
+      query.set("source_id", options.sourceId);
+    if (options?.status !== undefined) query.set("status", options.status);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/bulletins/extraction-attempts${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** Get one bulletin extraction attempt by its source-version identifier. */
+  async getBulletinExtractionAttempt(
+    sourceVersionId: string,
+    options?: RequestOptions,
+  ): Promise<BulletinExtractionAttemptResource> {
+    const response =
+      await this.request<BulletinExtractionAttemptDetailResponse>(
+        "GET",
+        `/v1/bulletins/extraction-attempts/${encodeId(sourceVersionId)}`,
+        undefined,
+        options,
+      );
+    return response.data;
+  }
+
+  async getTrainingJob(
+    jobId: string,
+    options?: RequestOptions,
+  ): Promise<TrainingJob> {
+    const response = await this.request<TrainingJob | { job: TrainingJob }>(
+      "GET",
+      `/v1/training-jobs/${encodeId(jobId)}`,
+      undefined,
+      options,
+    );
+    return "job" in response ? response.job : response;
+  }
+
+  listTrainingJobs(
+    options?: RequestOptions & {
+      status?: TrainingJobStatus;
+      demoOnly?: boolean;
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<TrainingJobPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.status !== undefined) query.set("status", options.status);
+    if (options?.demoOnly !== undefined)
+      query.set("demo_only", String(options.demoOnly));
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request<
+      | TrainingJobPage
+      | { training_jobs: TrainingJob[]; next_cursor: string | null }
+    >(
+      "GET",
+      `/v1/training-jobs${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    ).then((response) =>
+      "training_jobs" in response
+        ? { jobs: response.training_jobs, next_cursor: response.next_cursor }
+        : response,
+    );
+  }
+
+  /** List feedback that requires an explicit training-use decision. */
+  listTrainingFeedback(
+    options?: RequestOptions & TrainingFeedbackListOptions,
+  ): Promise<TrainingFeedbackReviewList> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.effectiveTrainingUse !== undefined)
+      query.set("effective_training_use", options.effectiveTrainingUse);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/training-feedback${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** Record the operator's explicit training-use decision for one feedback item. */
+  recordTrainingFeedbackConsent(
+    feedbackId: string,
+    input: TrainingFeedbackConsentInput,
+    options?: RequestOptions,
+  ): Promise<TrainingFeedbackConsent> {
+    assertTrainingFeedbackConsentInput(input);
+    return this.request(
+      "POST",
+      `/v1/training-feedback/${encodeId(feedbackId)}/consent`,
+      input,
+      options,
+      {
+        "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+      },
+    );
   }
 
   /* --------------------------------- sources --------------------------------- */

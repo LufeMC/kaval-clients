@@ -49,6 +49,8 @@ const SUITE_DIRECTORY = fileURLToPath(new URL("./", import.meta.url));
 const PINNED_VECTOR_DIGESTS: Readonly<Record<string, string>> = {
   "canonicalization-vectors.json":
     "sha256:b0b9c61e9370c1a6a454426b8201d1e9c3215120a5ac50ac89f001e8b960aa73",
+  "check-decision-v2-vectors.json":
+    "sha256:7a2082d5ee9cbdae7cadce03828460618d4ab8f418c57c0dea7488e53e24156f",
   "check-decision-vectors.json":
     "sha256:64739c2912d765c8c41e9d16dd9afd191fb8bab392d493ce35135a2c5249ee99",
   "ed25519-receipt-vectors.json":

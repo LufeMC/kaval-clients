@@ -1,5 +1,5 @@
 /**
- * Opt-in live test: every MCP tool → real /v1/* on the hosted API.
+ * Opt-in live test: core MCP tools → real /v1/* on the hosted API.
  * Run: KAVAL_API_KEY=kv_live_… pnpm test test/live-tools.test.ts
  * Point at a local server with KAVAL_BASE_URL=http://localhost:4000.
  */
@@ -164,6 +164,30 @@ describe.skipIf(!apiKey)("MCP live tools (hosted API)", () => {
       }),
     );
     expect(out.ok).toBe(true);
+  }, 120_000);
+
+  it("list_training_feedback reads the explicit-consent review queue", async () => {
+    const client = await connectLiveClient();
+    const out = expectToolOk(
+      await client.callTool({
+        name: "list_training_feedback",
+        arguments: { limit: 10 },
+      }),
+    ) as Record<string, unknown>;
+    expect(out["schema_version"]).toBe("training-feedback-review-list/1.0.0");
+    expect(Array.isArray(out["feedback"])).toBe(true);
+  }, 120_000);
+
+  it("list_bulletin_extraction_attempts reads customer-visible status", async () => {
+    const client = await connectLiveClient();
+    const out = expectToolOk(
+      await client.callTool({
+        name: "list_bulletin_extraction_attempts",
+        arguments: { limit: 10 },
+      }),
+    ) as Record<string, unknown>;
+    expect(out["schema_version"]).toBe("bulletin-extraction-attempt/1.0.0");
+    expect(Array.isArray(out["data"])).toBe(true);
   }, 120_000);
 
   it("verify (deprecated alias) → /v1/verify still returns a signed proof receipt", async () => {

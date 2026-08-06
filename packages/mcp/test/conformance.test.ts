@@ -92,11 +92,27 @@ describe("MCP conformance", () => {
     const client = await connectClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    // Exact surface snapshot: the one call an agent needs, the proof behind its answer, the three
-    // registry tools, outcome reporting, and the deprecated pilot alias last.
+    // This snapshot includes the check, its proof, portfolio reads, source controls, and feedback.
+    // The deprecated pilot alias stays last.
     expect(names).toEqual([
       "check",
       "get_receipt",
+      "prepare_contract_upload",
+      "ingest_contract",
+      "get_contract",
+      "list_contract_claims",
+      "list_contract_extraction_issues",
+      "review_contract_claim",
+      "import_facts",
+      "get_fact_import",
+      "list_bulletins",
+      "get_bulletin",
+      "list_bulletin_extraction_attempts",
+      "get_bulletin_extraction_attempt",
+      "list_training_jobs",
+      "get_training_job",
+      "list_training_feedback",
+      "record_training_feedback_consent",
       "add_source",
       "list_sources",
       "remove_source",

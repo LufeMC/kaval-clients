@@ -4,10 +4,14 @@ Before an AI agent acts, Kaval verifies the facts the action depends on and retu
 `REVIEW`, or `BLOCK` with a signed receipt.
 
 One call does the work: **`check()`**. Everything else configures what Kaval watches, so that a
-check stays a warm database read (~50 ms) instead of a research run: register sources with
+check stays a warm database read instead of a research run: register sources with
 `add_source()`, push your own documents with `send_event()`, and subscribe to `fact_state.delta`
-webhooks with `subscribe_fact_state_deltas()` so you are *told* when a fact flips instead of
+webhooks with `subscribe_fact_state_deltas()` so you are _told_ when a fact flips instead of
 polling for it.
+
+Version 0.7.2 does not expose contracts, fact imports, structured bulletins, or training review.
+
+Use the Node SDK or MCP server for those portfolio operations.
 
 Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
 facts those rules depend on are still true.
@@ -40,16 +44,16 @@ with KavalClient(api_key="kv_live_...") as kaval:
 `check()` takes either one mapping (`kaval.check({"action": ...})`) or the same fields as keywords
 — never both:
 
-| field          | meaning                                                                       |
-| -------------- | ----------------------------------------------------------------------------- |
-| `action`       | what the agent is about to do, in plain language. Kaval compiles the facts.    |
-| `context`      | anything the agent already knows that bears on the action.                     |
-| `claims`       | facts to check directly — plain sentences or structured claims (max 20).       |
-| `mode`         | `fast` (stored fact state only) or `standard` (allows the live fallback).      |
-| `max_wait_ms`  | live-path budget (default 100000, max 100000; `0` disables research). See below. |
-| `origin_urls`  | caller-declared origins, merged with the workspace's watched sources.          |
-| `materiality`  | `low` \| `medium` \| `high` \| `critical`.                                     |
-| `as_of`        | RFC 3339 timestamp to check against.                                           |
+| field         | meaning                                                                          |
+| ------------- | -------------------------------------------------------------------------------- |
+| `action`      | what the agent is about to do, in plain language. Kaval compiles the facts.      |
+| `context`     | anything the agent already knows that bears on the action.                       |
+| `claims`      | facts to check directly — plain sentences or structured claims (max 20).         |
+| `mode`        | `fast` (stored fact state only) or `standard` (allows the live fallback).        |
+| `max_wait_ms` | live-path budget (default 100000, max 100000; `0` disables research). See below. |
+| `origin_urls` | caller-declared origins, merged with the workspace's watched sources.            |
+| `materiality` | `low` \| `medium` \| `high` \| `critical`.                                       |
+| `as_of`       | RFC 3339 timestamp to check against.                                             |
 
 At least one of `action` or `claims` is required — the client raises `ValueError` before any HTTP
 call otherwise. A check is a **read**: it sends no `Idempotency-Key`, and retrying it is free.
@@ -216,16 +220,16 @@ Every pre-0.6 verification endpoint collapsed into `POST /v1/check`. The old rou
 `410 {"error": "tool_retired"}` on every method, which this client raises as `KavalRetiredError`
 (a `KavalError` with `.replacement`, and a message that names `check()`).
 
-| old                                     | new                                                                                       |
-| --------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `audit()` / `gate()` / `gate_action()`   | `check()` — the receipt IS the proof; the warm path re-checks in ~50 ms                    |
-| `check(belief=...)` (old belief shape)   | `check(action=...)` or `check(claims=[...])`                                               |
-| `legacy_verify_belief()`                 | `check(action=..., context=...)`                                                           |
-| `extract_and_check(text=...)`            | `check(action=<the text>)` — Kaval compiles the facts itself                               |
-| `scan_store(beliefs=[...])`              | `check(claims=[...])` (up to 20 per call)                                                  |
-| `monitor(...)`                           | `add_source()` + `subscribe_fact_state_deltas()` — deltas are pushed to you                |
-| `kaval()` / `kaval_batch()`              | `check(claims=[...])` with structured claims                                               |
-| `verify()`                               | still `verify()`, deprecated → move to `check()`                                           |
+| old                                    | new                                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------------- |
+| `audit()` / `gate()` / `gate_action()` | `check()` — the receipt IS the proof; the warm path re-checks from stored state |
+| `check(belief=...)` (old belief shape) | `check(action=...)` or `check(claims=[...])`                                    |
+| `legacy_verify_belief()`               | `check(action=..., context=...)`                                                |
+| `extract_and_check(text=...)`          | `check(action=<the text>)` — Kaval compiles the facts itself                    |
+| `scan_store(beliefs=[...])`            | `check(claims=[...])` (up to 20 per call)                                       |
+| `monitor(...)`                         | `add_source()` + `subscribe_fact_state_deltas()` — deltas are pushed to you     |
+| `kaval()` / `kaval_batch()`            | `check(claims=[...])` with structured claims                                    |
+| `verify()`                             | still `verify()`, deprecated → move to `check()`                                |
 
 `KavalProofNotFoundError` is gone with `/v1/gate`.
 

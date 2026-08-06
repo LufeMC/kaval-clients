@@ -9,6 +9,7 @@ import {
 } from "./canonicalize.js";
 import {
   CHECK_DECISION_RULE_VERSION,
+  CHECK_DECISION_RULE_LATEST_VERSION,
   CHECK_DECISION_RULE_VERSIONS,
   ReceiptNotSelfDerivableError,
   deriveCheckDecision,
@@ -209,7 +210,9 @@ function sameCodes(
 function decisionResult(
   receipt: Record<string, unknown> | null,
 ): VerificationDecision {
-  const supported = { supported_rule_version: CHECK_DECISION_RULE_VERSION };
+  const supported = {
+    supported_rule_version: CHECK_DECISION_RULE_LATEST_VERSION,
+  };
   if (receipt === null) {
     return {
       ...supported,

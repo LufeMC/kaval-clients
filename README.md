@@ -16,6 +16,10 @@ key at [usekaval.com](https://usekaval.com).
 | [`kaval`](sdks/python)          | Python            | `pip install kaval`     | [sdks/python](sdks/python)   |
 | [`@usekaval/mcp`](packages/mcp) | MCP server        | `npx -y @usekaval/mcp`  | [packages/mcp](packages/mcp) |
 
+The 0.7.2 portfolio methods are available in the Node SDK and MCP server.
+
+The Python SDK does not yet expose contracts, fact imports, bulletins, or training review.
+
 > **0.6 is a breaking release.** Nine MCP tools collapsed to seven, and the whole verification
 > surface collapsed to one call. Every removed endpoint now answers a structured
 > `410 {"error":"tool_retired","replacement":"/v1/check"}`, and the clients translate that into an
@@ -53,16 +57,16 @@ if result["decision"] != "ALLOW":
 
 What comes back:
 
-| field          | meaning                                                                                      |
-| -------------- | -------------------------------------------------------------------------------------------- |
-| `decision`     | `ALLOW` (every material fact holds on fresh evidence) · `REVIEW` · `BLOCK`                      |
-| `reason_codes` | why, from a closed eight-code taxonomy                                                        |
+| field          | meaning                                                                                              |
+| -------------- | ---------------------------------------------------------------------------------------------------- |
+| `decision`     | `ALLOW` (every material fact holds on fresh evidence) · `REVIEW` · `BLOCK`                           |
+| `reason_codes` | why, from a closed eight-code taxonomy                                                               |
 | `facts[]`      | one row per fact: `status` (`holds`/`changed`/`unknown`), `materiality`, and the sources it rests on |
-| `receipt`      | `{ id, signature, signed_at }` — fetch the full signed document with `getReceipt(id)`          |
-| `latency_ms`   | `{ compile, lookup, live, total }`                                                             |
+| `receipt`      | `{ id, signature, signed_at }` — fetch the full signed document with `getReceipt(id)`                |
+| `latency_ms`   | `{ compile, lookup, live, total }`                                                                   |
 
-A check on facts a watched source already covers is a database read and returns in tens of
-milliseconds. A **cold** check does live research before it answers — search, fetch, adjudicate —
+A check on facts a watched source already covers is a database read: no model call, no fetch,
+nothing on the wire. A **cold** check does live research before it answers — search, fetch, adjudicate —
 and the server lets that run for up to 100s by default, so give the call room. `mode: "fast"`
 (equivalently `max_wait_ms: 0`) skips research entirely and reports anything it could not settle as
 `unknown`, which is `REVIEW`.
@@ -86,15 +90,21 @@ A valid signature proves who sealed those exact bytes. It does not prove the cla
 that the key is still trusted, which is why the three answers never collapse into one boolean.
 
 ```ts
-import { extractReceipt, parseJsonStrict, verifyReceipt } from "@usekaval/kaval/verify";
+import {
+  extractReceipt,
+  parseJsonStrict,
+  verifyReceipt,
+} from "@usekaval/kaval/verify";
 
 const receipt = extractReceipt(parseJsonStrict(receiptText));
-const result = verifyReceipt(receipt, parseJsonStrict(keysetText), { derive_verdict: true });
+const result = verifyReceipt(receipt, parseJsonStrict(keysetText), {
+  derive_verdict: true,
+});
 
 result.cryptographic.valid; // the signature covers these exact canonical bytes
-result.key.trusted;         // the signing key is not revoked or compromised
-result.freshness.status;    // separate fact — a check receipt carries no expiry, so `unknown`
-result.decision?.matches;   // the published table reproduced the verdict and reason codes
+result.key.trusted; // the signing key is not revoked or compromised
+result.freshness.status; // separate fact — a check receipt carries no expiry, so `unknown`
+result.decision?.matches; // the published table reproduced the verdict and reason codes
 ```
 
 ```bash
@@ -116,7 +126,7 @@ are evidence, and `JSON.parse` throws that evidence away before any verifier can
 ## Keep it warm: watch the sources
 
 A check is a database read when the facts it needs are already backed by a watched source, and a
-bounded research run when they are not. Registering the *name* of an authority is usually enough:
+bounded research run when they are not. Registering the _name_ of an authority is usually enough:
 
 ```ts
 await kaval.addSource({
@@ -130,9 +140,9 @@ Kaval resolves that to the pages that publish it, polls them adaptively (slower 
 changes, faster when it does), and re-evaluates the dependent facts when they move. `kind: "url"`
 watches one page; `kind: "push"` is a document your own system sends in with `sendEvent()`. You do
 not have to register first — a source a check cites is auto-watched — but registering ahead of time
-is what makes the *first* check on a fact fast.
+is what makes the _first_ check on a fact fast.
 
-Naming an entity is what enqueues the discovery that works out *how* to acquire the pages behind it.
+Naming an entity is what enqueues the discovery that works out _how_ to acquire the pages behind it.
 A `kind: "url"` source registered directly does not get one, so `recompileSource(id)` is how you ask
 for one — and it is also the only way back once a source's acquisition plan breaks. It answers `202
 { source_id, job_id, created }`; `created: false` means an open job already covered it.
@@ -179,9 +189,11 @@ emits the delta webhook. Checks that land mid-re-evaluation honestly return `REV
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Seven tools over stdio: **`check`** (the one that does the work), `get_receipt` (the full signed
-document behind a verdict), `add_source` / `list_sources` / `remove_source`, `report_outcome`, and
-the deprecated `verify` pilot alias. See [packages/mcp](packages/mcp).
+Twenty-three tools run over stdio. They cover checks, receipts, contracts, bulk imports, bulletins,
+training review, watched sources, outcomes, and the deprecated `verify` alias.
+
+Eleven JSON resources expose contract issues, bulletin extraction status, and the prior read models.
+Explicit consent is available, but model promotion and bulletin requeue remain internal. See [packages/mcp](packages/mcp).
 
 MCP clients cancel a tool call well before 100s, so the server narrows `check`'s research budget to
 fit inside that envelope instead of inheriting the full default. A cold check over MCP therefore
@@ -196,48 +208,47 @@ returns `{"error":"tool_retired"}` with a message telling the agent to call `che
 
 ### MCP tools
 
-| 0.5 tool                        | 0.6                                                                                   |
-| ------------------------------- | ------------------------------------------------------------------------------------- |
-| `currentness_check`             | `check` — `{ action }` or `{ claims: ["…"] }`                                          |
-| `currentness_verify`            | `check` — branch on `decision === "ALLOW"` instead of `act`                            |
-| `currentness_extract_and_check` | `check` — pass the paragraph as `action`/`context`; Kaval compiles the facts itself     |
-| `currentness_scan_store`        | `check` — `{ claims: [...] }`, up to 20 per call                                       |
-| `currentness_monitor`           | `add_source` + a `fact_state` webhook subscription — deltas are pushed, not swept       |
-| `proof_audit`                   | `check` — the receipt **is** the proof; `get_receipt` fetches it in full                |
-| `proof_gate`                    | `check` — the warm path re-checks in ~50ms, so there is nothing to re-apply separately |
-| `report_outcome`                | `report_outcome` (unchanged; pass `receipt.id`)                                        |
-| `verify`                        | `verify`, now deprecated → move to `check`                                             |
+| 0.5 tool                        | 0.6                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------- |
+| `currentness_check`             | `check` — `{ action }` or `{ claims: ["…"] }`                                       |
+| `currentness_verify`            | `check` — branch on `decision === "ALLOW"` instead of `act`                         |
+| `currentness_extract_and_check` | `check` — pass the paragraph as `action`/`context`; Kaval compiles the facts itself |
+| `currentness_scan_store`        | `check` — `{ claims: [...] }`, up to 20 per call                                    |
+| `currentness_monitor`           | `add_source` + a `fact_state` webhook subscription — deltas are pushed, not swept   |
+| `proof_audit`                   | `check` — the receipt **is** the proof; `get_receipt` fetches it in full            |
+| `proof_gate`                    | `check` — the warm path re-checks from stored state; nothing to re-apply separately |
+| `report_outcome`                | `report_outcome` (unchanged; pass `receipt.id`)                                     |
+| `verify`                        | `verify`, now deprecated → move to `check`                                          |
 
 ### Node / Python methods
 
-| 0.5                                                | 0.6                                                       |
-| -------------------------------------------------- | --------------------------------------------------------- |
-| `audit()`, `gate()`, `gateAction()`/`gate_action()` | `check()`                                                 |
-| `check(belief)` / `check(belief=…)`                 | `check({ action })` / `check(action=…)`                   |
-| `verifyBelief()` / `legacy_verify_belief()`         | `check({ action, context })`                              |
-| `extractAndCheck()` / `extract_and_check()`         | `check({ action: theText })`                              |
-| `scanStore()` / `scan_store()`                      | `check({ claims: [...] })`                                |
-| `monitor()`                                         | `addSource()` + `subscribeFactStateDeltas()`              |
-| `kaval()` / `kavalBatch()` / `kaval_batch()`        | `check({ claims: [{subject, predicate, object, scope}] })` |
-| `verify()`                                          | `verify()`, deprecated → `check()`                        |
+| 0.5                                                 | 0.6                                                                        |
+| --------------------------------------------------- | -------------------------------------------------------------------------- |
+| `audit()`, `gate()`, `gateAction()`/`gate_action()` | `check()`                                                                  |
+| `check(belief)` / `check(belief=…)`                 | `check({ action })` / `check(action=…)`                                    |
+| `verifyBelief()` / `legacy_verify_belief()`         | `check({ action, context })`                                               |
+| `extractAndCheck()` / `extract_and_check()`         | `check({ action: theText })`                                               |
+| `scanStore()` / `scan_store()`                      | `check({ claims: [...] })`                                                 |
+| `monitor()`                                         | `addSource()` + `subscribeFactStateDeltas()`                               |
+| `kaval()` / `kavalBatch()` / `kaval_batch()`        | `check({ claims: [{subject, predicate, object, scope}] })`                 |
+| `verify()`                                          | `verify()`, deprecated → `check()`                                         |
 | —                                                   | new: `getReceipt`, `listSources`, `recompileSource`, `sendEvent`, webhooks |
-| `ProofNotFoundError` / `KavalProofNotFoundError`    | removed with `/v1/gate`                                    |
+| `ProofNotFoundError` / `KavalProofNotFoundError`    | removed with `/v1/gate`                                                    |
 
 ### Verdict mapping
 
-| 0.5 belief status                                   | 0.6                                        |
-| --------------------------------------------------- | ------------------------------------------ |
-| `current` + `act: true`                             | `decision: "ALLOW"`, every fact `holds`     |
-| `stale` / `contradicted`                            | fact `changed` → `REVIEW` or `BLOCK` by materiality |
-| `unsupported` / `insufficient` / `conflicting`      | fact `unknown` → `REVIEW` (`BLOCK` if critical) |
+| 0.5 belief status                              | 0.6                                                 |
+| ---------------------------------------------- | --------------------------------------------------- |
+| `current` + `act: true`                        | `decision: "ALLOW"`, every fact `holds`             |
+| `stale` / `contradicted`                       | fact `changed` → `REVIEW` or `BLOCK` by materiality |
+| `unsupported` / `insufficient` / `conflicting` | fact `unknown` → `REVIEW` (`BLOCK` if critical)     |
 
 ## Idempotency
 
-`verify()` (the deprecated pilot alias) and webhook creation are the only client operations that
-carry an `Idempotency-Key`. A check is a read of current state — the server does not replay it, so
-retrying one is free and no key is spent. `verify()` keeps the bounded single retry for ambiguous
-transport outcomes; `createWebhook()` generates a key when you do not supply one, because the API
-requires one.
+Contract mutations, fact imports, deprecated `verify()`, and webhook creation carry an
+`Idempotency-Key`. The client generates a key when you omit one.
+
+A check reads current state. The server does not replay it, so a retry recomputes the result.
 
 ## API origin env vars
 
