@@ -1,9 +1,16 @@
 """HTTP client for the kaval REST surface. Mirrors the TS SDK contract.
 
-One call does the work: :meth:`KavalClient.check`. Register what Kaval should watch with
-:meth:`KavalClient.add_source`, push your own documents with :meth:`KavalClient.send_event`, and
-subscribe to ``fact_state.delta`` webhooks with :meth:`KavalClient.subscribe_fact_state_deltas` so
-you are told when a fact flips instead of polling for it.
+The primary loop for payer-policy monitoring: register a source with :meth:`KavalClient.add_source`,
+bind an ``ExtractionSchema`` to it (:meth:`KavalClient.create_extraction_schema` +
+:meth:`KavalClient.update_source`), and subscribe to ``policy_update.*`` webhooks with
+:meth:`KavalClient.subscribe_policy_updates` so structured records and monthly packages are pushed
+to you as documents land.
+
+:meth:`KavalClient.check` is the other half of the product: before an agent acts, send the action
+and get ALLOW, REVIEW, or BLOCK with a signed receipt. Push your own documents with
+:meth:`KavalClient.send_event`, and subscribe to ``fact_state.delta`` webhooks with
+:meth:`KavalClient.subscribe_fact_state_deltas` so you are told when a fact flips instead of
+polling for it.
 """
 
 from __future__ import annotations
@@ -29,17 +36,25 @@ import httpx
 
 from .models import (
     FACT_STATE_DELTA_EVENT_TYPE,
+    POLICY_UPDATE_EVENT_TYPES,
     ActionReversibility,
     AddSourceResult,
     CheckMode,
     CheckReceipt,
     CheckResult,
     ClaimInput,
+    CreateExtractionSchemaInput,
+    CreatePolicyUpdateInput,
     CreateWebhookResult,
     EvidenceRef,
+    ExtractionRun,
+    ExtractionSchema,
     Materiality,
+    PolicyUpdatePackage,
     RecompileSourceResult,
     SourceEventResult,
+    SourceVersionContent,
+    SourceVersionSections,
     VerifyResult,
     WatchedSource,
     WatchedSourceKind,
@@ -976,6 +991,205 @@ class KavalClient:
             ),
         )
 
+    def update_source(
+        self,
+        source_id: str,
+        *,
+        extraction_schema_id: Optional[str],
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> WatchedSource:
+        """Bind (or, with ``extraction_schema_id=None``, unbind) the extraction schema a source
+        runs.
+
+        Every document that lands on this source afterward is extracted against the bound schema
+        and delivered as a ``policy_update.document`` webhook. Requires ``policy-update:manage``.
+        """
+        payload = self._request(
+            "PATCH",
+            f"/v1/sources/{_path_segment(source_id, name='source_id')}",
+            {"extraction_schema_id": extraction_schema_id},
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(WatchedSource, payload["source"])
+
+    def get_source_version_content(
+        self,
+        source_version_id: str,
+        *,
+        format: Optional[Literal["sections"]] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> SourceVersionContent | SourceVersionSections:
+        """The canonical text Kaval extracted from one source version.
+
+        The same text a ``policy_update.document`` webhook and any bound extraction run were
+        computed from. Pass ``format="sections"`` to get it pre-split into heading-bounded
+        sections instead of one string.
+        """
+        return cast(
+            "SourceVersionContent | SourceVersionSections",
+            self._request(
+                "GET",
+                f"/v1/source-versions/"
+                f"{_path_segment(source_version_id, name='source_version_id')}/content",
+                params={"format": format} if format is not None else None,
+                timeout=timeout,
+                cancellation_token=cancellation_token,
+            ),
+        )
+
+    # ------------------------------------------------------------------ policy updates
+
+    def create_extraction_schema(
+        self,
+        *,
+        name: str,
+        json_schema: dict[str, Any],
+        idempotency_key: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> ExtractionSchema:
+        """Register a JSON Schema Kaval extracts structured records against.
+
+        Bind the returned schema's ``id`` to a source with :meth:`update_source`, or pass it
+        directly to :meth:`create_policy_update` for a one-off payer + period run. Requires
+        ``policy-update:manage``.
+        """
+        body: CreateExtractionSchemaInput = {"name": name, "json_schema": json_schema}
+        payload = self._billable_post(
+            "/v1/extraction-schemas",
+            cast("dict[str, Any]", body),
+            idempotency_key=idempotency_key,
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(ExtractionSchema, payload["extraction_schema"])
+
+    def get_extraction_schema(
+        self,
+        schema_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> ExtractionSchema:
+        payload = self._request(
+            "GET",
+            f"/v1/extraction-schemas/{_path_segment(schema_id, name='schema_id')}",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(ExtractionSchema, payload["extraction_schema"])
+
+    def list_extraction_schemas(
+        self,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> list[ExtractionSchema]:
+        payload = self._request(
+            "GET",
+            "/v1/extraction-schemas",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast("list[ExtractionSchema]", payload["extraction_schemas"])
+
+    def create_policy_update(
+        self,
+        *,
+        payer_id: str,
+        period: str,
+        extraction_schema_id: str,
+        idempotency_key: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> ExtractionRun:
+        """Request a payer + period extraction run against a bound schema.
+
+        The one-off counterpart to letting a source's bound schema run automatically as documents
+        land. Requires ``policy-update:manage``. Answers 202 with the run in ``processing``; poll
+        :meth:`get_policy_update` or wait for its ``policy_update.document`` webhook.
+        """
+        body: CreatePolicyUpdateInput = {
+            "payer_id": payer_id,
+            "period": period,
+            "extraction_schema_id": extraction_schema_id,
+        }
+        payload = self._billable_post(
+            "/v1/policy-updates",
+            cast("dict[str, Any]", body),
+            idempotency_key=idempotency_key,
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(ExtractionRun, payload["extraction_run"])
+
+    def get_policy_update(
+        self,
+        run_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> ExtractionRun:
+        payload = self._request(
+            "GET",
+            f"/v1/policy-updates/{_path_segment(run_id, name='run_id')}",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(ExtractionRun, payload["extraction_run"])
+
+    def list_policy_updates(
+        self,
+        *,
+        payer_id: Optional[str] = None,
+        period: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> list[ExtractionRun]:
+        payload = self._request(
+            "GET",
+            "/v1/policy-updates",
+            params=_clean({"payer_id": payer_id, "period": period}),
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast("list[ExtractionRun]", payload["extraction_runs"])
+
+    def get_policy_update_package(
+        self,
+        package_id: str,
+        *,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> PolicyUpdatePackage:
+        payload = self._request(
+            "GET",
+            f"/v1/policy-update-packages/{_path_segment(package_id, name='package_id')}",
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast(PolicyUpdatePackage, payload["package"])
+
+    def list_policy_update_packages(
+        self,
+        *,
+        payer_id: Optional[str] = None,
+        period: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> list[PolicyUpdatePackage]:
+        payload = self._request(
+            "GET",
+            "/v1/policy-update-packages",
+            params=_clean({"payer_id": payer_id, "period": period}),
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+        return cast("list[PolicyUpdatePackage]", payload["packages"])
+
     # ------------------------------------------------------------------ events
 
     def send_event(
@@ -1047,6 +1261,37 @@ class KavalClient:
             subscription_kind="fact_state",
             callback_url=callback_url,
             event_types=[FACT_STATE_DELTA_EVENT_TYPE],
+            description=description,
+            external_scope_ids=external_scope_ids,
+            enabled=enabled,
+            idempotency_key=idempotency_key,
+            timeout=timeout,
+            cancellation_token=cancellation_token,
+        )
+
+    def subscribe_policy_updates(
+        self,
+        callback_url: str,
+        *,
+        description: Optional[str] = None,
+        external_scope_ids: Optional[list[str]] = None,
+        enabled: Optional[bool] = None,
+        idempotency_key: Optional[str] = None,
+        timeout: RequestTimeout = None,
+        cancellation_token: Optional[KavalCancellationToken] = None,
+    ) -> CreateWebhookResult:
+        """Subscribe to ``policy_update.document`` and ``policy_update.monthly_package``.
+
+        Structured records and monthly PDF rollups pushed as they land, instead of polling
+        :meth:`list_policy_updates` for the same information. ``external_scope_ids`` filters
+        deliveries to the payer/scope keys you care about. The returned ``webhook_verification``
+        is the only time the signing secret is shown; store it and verify every inbound delivery
+        with it.
+        """
+        return self.create_webhook(
+            subscription_kind="policy_update",
+            callback_url=callback_url,
+            event_types=list(POLICY_UPDATE_EVENT_TYPES),
             description=description,
             external_scope_ids=external_scope_ids,
             enabled=enabled,

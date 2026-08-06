@@ -221,6 +221,8 @@ describe("portfolio client", () => {
       "revalidation:submit",
       "webhook:manage",
       "source:manage",
+      "policy-update:read",
+      "policy-update:manage",
     ]);
     expect(new Set(API_KEY_SCOPES).size).toBe(API_KEY_SCOPES.length);
     expect(CONTRACT_EXTRACTION_ISSUE_CODES).toContain(

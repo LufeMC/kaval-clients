@@ -1,11 +1,19 @@
 # @usekaval/kaval
 
-Before an AI agent acts, send Kaval the action. Kaval identifies the facts that action depends on,
-checks them against the sources it watches, and answers `ALLOW`, `REVIEW`, or `BLOCK` with a signed
-receipt.
+The primary loop: **watch a source → extract structured records against a schema → get pushed a
+`policy_update.*` webhook as documents land.** Register what Kaval should watch with `addSource()`,
+bind an `ExtractionSchema` to it, and subscribe once — no polling, no re-reading a bulletin feed to
+find out what changed.
 
-Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
-facts those rules depend on are still true.
+```
+addSource()  →  createExtractionSchema() + updateSource()  →  subscribePolicyUpdates()
+   (watch)              (what to extract)                       (get pushed the result)
+```
+
+Before an AI agent acts, it can also send Kaval the action directly: `check()` identifies the facts
+that action depends on, checks them against the sources Kaval watches, and answers `ALLOW`,
+`REVIEW`, or `BLOCK` with a signed receipt. Policy engines decide whether an action is permitted
+under the rules; Kaval verifies whether the facts those rules depend on are still true.
 
 ```bash
 npm install @usekaval/kaval
@@ -196,6 +204,11 @@ Use `listBulletins()` for structured bulletin records. Each page can contain 100
 
 Use `listBulletinExtractionAttempts()` to read extraction status and failures. Use
 `getBulletinExtractionAttempt()` to read one source version. These methods cannot requeue work.
+
+> **Soft-deprecated.** Bulletins are the free-text predecessor of [Policy updates](#policy-updates):
+> bind an `ExtractionSchema` to a source instead and read `listPolicyUpdates()` /
+> `policy_update.document` webhooks for the same information, structured. The bulletin methods keep
+> working.
 
 Use `listTrainingJobs()` for read-only training status. The SDK does not expose model promotion.
 
@@ -392,6 +405,79 @@ for it. `recompileSource(id)` re-runs that derivation — it is the recovery pat
 and the way a directly-registered `kind: "url"` source gets a plan at all. It answers `202` with a
 `job_id` because discovery runs on the worker, not in your request.
 
+## Policy updates
+
+Register a JSON Schema and bind it to a source; every document that lands on that source afterward
+is extracted against it and delivered as a `policy_update.document` webhook, with per-payer monthly
+rollups delivered as `policy_update.monthly_package`. On each document event, `extraction_run.period`
+is the publication / newsletter month (`YYYY-MM`); sections and `extraction.record_evidence` may
+include normalized `page` / `bbox` for PDF highlighting; `result.payer_name` is the human brand
+beside the stable `payer_id` slug.
+
+```ts
+const schema = await kaval.createExtractionSchema({
+  name: "prior-auth-changes",
+  json_schema: {
+    type: "object",
+    properties: {
+      cpt_code: { type: "string" },
+      requires_prior_auth: { type: "boolean" },
+    },
+    required: ["cpt_code", "requires_prior_auth"],
+  },
+});
+
+await kaval.updateSource({ id: source.id, extraction_schema_id: schema.id });
+// extraction_schema_id: null unbinds it, leaving the source watched but unextracted.
+```
+
+Prefer a one-off run over waiting for the next document? `createPolicyUpdate()` requests a payer +
+period extraction run directly against a bound schema:
+
+```ts
+const run = await kaval.createPolicyUpdate({
+  payer_id: "aetna",
+  period: "2026-08",
+  extraction_schema_id: schema.id,
+});
+// 202, run.status: "processing" — poll getPolicyUpdate(run.id) or wait for the webhook.
+
+await kaval.listPolicyUpdates({ payer_id: "aetna", period: "2026-08" });
+await kaval.getPolicyUpdate(run.id);
+await kaval.listExtractionSchemas();
+await kaval.getExtractionSchema(schema.id);
+```
+
+Each payer + period's runs roll up into one monthly PDF + manifest:
+
+```ts
+await kaval.listPolicyUpdatePackages({ payer_id: "aetna", period: "2026-08" });
+await kaval.getPolicyUpdatePackage(pkg.id);
+```
+
+Read the canonical text (or heading-bounded sections) a source version was extracted from directly,
+independent of any bound schema:
+
+```ts
+const { content } = await kaval.getSourceVersionContent(sourceVersionId);
+const { sections } = await kaval.getSourceVersionContent(sourceVersionId, {
+  format: "sections",
+});
+```
+
+Subscribe once, the same way as `fact_state.delta`:
+
+```ts
+const { subscription, webhook_verification } =
+  await kaval.subscribePolicyUpdates({
+    callback_url: "https://your-app.example.com/hooks/kaval",
+    external_scope_ids: ["payer:aetna"], // optional scope filter
+  });
+```
+
+`createExtractionSchema()` and `createPolicyUpdate()` require an API key with `policy-update:manage`;
+the read methods above accept `policy-update:read` or `verification:execute`.
+
 ## Close the loop: `fact_state.delta` webhooks
 
 Watching only helps you if you hear about it. Subscribe once, at deploy time:
@@ -571,7 +657,8 @@ ordinary API errors, rate limits, or terminal 5xx responses. If both bounded att
 ambiguous, the thrown error exposes `error.idempotencyKey` — pass it back explicitly after your own
 delay to resume the same operation instead of billing a new one.
 
-`createWebhook()` (and `subscribeFactStateDeltas()`) send a key because the API requires one; they
+`createWebhook()` (and `subscribeFactStateDeltas()` / `subscribePolicyUpdates()`),
+`createExtractionSchema()`, and `createPolicyUpdate()` send a key because the API requires one; they
 generate it when you do not supply it.
 
 `check()` deliberately sends none: it is a read of current state, so a retry recomputes rather than
@@ -606,10 +693,12 @@ Status mapping: `current` + `act: true` → `decision: "ALLOW"` with every fact 
 ## API
 
 `check` · `getReceipt` · `addSource` · `listSources` · `getSource` · `pauseSource` · `resumeSource` ·
-`recompileSource` · `deleteSource` · `sendEvent` · `subscribeFactStateDeltas` · `createWebhook` ·
-`listWebhooks` · `setWebhookEnabled` · `deleteWebhook` · `listWebhookDeliveries` ·
-`rotateWebhookSigningKey` · `replayWebhookDelivery` · `reportOutcome` · `verify` (deprecated) ·
-`health`.
+`recompileSource` · `deleteSource` · `updateSource` · `getSourceVersionContent` · `sendEvent` ·
+`createExtractionSchema` · `getExtractionSchema` · `listExtractionSchemas` · `createPolicyUpdate` ·
+`getPolicyUpdate` · `listPolicyUpdates` · `getPolicyUpdatePackage` · `listPolicyUpdatePackages` ·
+`subscribePolicyUpdates` · `subscribeFactStateDeltas` · `createWebhook` · `listWebhooks` ·
+`setWebhookEnabled` · `deleteWebhook` · `listWebhookDeliveries` · `rotateWebhookSigningKey` ·
+`replayWebhookDelivery` · `reportOutcome` · `verify` (deprecated) · `health`.
 
 Construct with `{ apiKey, baseUrl?, fetch?, timeoutMs? }` — `baseUrl` defaults to
 `https://api.usekaval.com`. Works in Node 18+, browsers, and edge runtimes (uses the global `fetch`).

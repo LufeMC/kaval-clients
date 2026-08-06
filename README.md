@@ -1,8 +1,11 @@
 # Kaval clients
 
-Open-source client libraries for [Kaval](https://usekaval.com). **Before an agent acts, send Kaval
-the action. Kaval identifies the facts that action depends on, checks them against the sources it
-watches, and answers `ALLOW`, `REVIEW`, or `BLOCK` with a signed receipt.**
+Open-source client libraries for [Kaval](https://usekaval.com). **Register the payers and pages you
+care about once. Kaval watches them, extracts structured records against a schema you define, and
+delivers each policy update — plus a monthly PDF + manifest rollup — as a webhook the moment it
+lands, instead of you polling or re-researching it.** `check()` is the second half: before an agent
+acts on one of those facts, send Kaval the action and it answers `ALLOW`, `REVIEW`, or `BLOCK` with a
+signed receipt.
 
 **Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
 facts those rules depend on are still true.**
@@ -20,12 +23,81 @@ The 0.7.2 portfolio methods are available in the Node SDK and MCP server.
 
 The Python SDK does not yet expose contracts, fact imports, bulletins, or training review.
 
+## Sources → Policy updates → Webhooks
+
+The primary loop needs no LLM call and no polling loop of your own:
+
+```ts
+import { Kaval } from "@usekaval/kaval";
+
+const kaval = new Kaval({ apiKey: process.env.KAVAL_API_KEY });
+
+// 1. Watch a payer.
+const { source } = await kaval.addSource({
+  kind: "entity",
+  name: "Aetna",
+  intent: "payer policy bulletins",
+});
+
+// 2. Register the shape you want extracted, and bind it to the source.
+const schema = await kaval.createExtractionSchema({
+  name: "prior-auth-bulletin",
+  json_schema: {
+    type: "object",
+    properties: { cpt_code: { type: "string" }, requires_prior_auth: { type: "boolean" } },
+    required: ["cpt_code", "requires_prior_auth"],
+  },
+});
+await kaval.updateSource({ id: source.id, extraction_schema_id: schema.id });
+
+// 3. Get pushed a policy_update.document webhook every time a new bulletin lands, already
+//    extracted against the schema — or poll listPolicyUpdates() for the same records.
+const { webhook_verification } = await kaval.subscribePolicyUpdates({
+  callback_url: "https://your-app.example.com/hooks/kaval",
+});
+```
+
+```py
+import os
+
+from kaval import KavalClient
+
+kaval = KavalClient(api_key=os.environ["KAVAL_API_KEY"])
+
+source = kaval.add_source(kind="entity", name="Aetna", intent="payer policy bulletins")
+schema = kaval.create_extraction_schema(
+    name="prior-auth-bulletin",
+    json_schema={
+        "type": "object",
+        "properties": {"cpt_code": {"type": "string"}, "requires_prior_auth": {"type": "boolean"}},
+        "required": ["cpt_code", "requires_prior_auth"],
+    },
+)
+kaval.update_source(id=source["id"], extraction_schema_id=schema["id"])
+kaval.subscribe_policy_updates(callback_url="https://your-app.example.com/hooks/kaval")
+```
+
+No schema, or want a one-off pull instead of waiting for the next document? `createPolicyUpdate({
+payer_id, period, extraction_schema_id })` requests a single payer + period run on demand;
+`getPolicyUpdate()` / `listPolicyUpdates()` report its lifecycle
+(`processing` → `retry` → `succeeded` / `review_required` / `failed`), and
+`listPolicyUpdatePackages()` lists the monthly PDF + manifest rollup each payer/period is packaged
+into. This is the schema-bound successor to the free-text bulletin methods (`listBulletins()`,
+`getBulletin()`), which are soft-deprecated but keep working.
+
+`check()` is what you call next, right before an agent acts on a fact this loop delivered — it is
+covered in the next section.
+
 > **0.6 is a breaking release.** Nine MCP tools collapsed to seven, and the whole verification
 > surface collapsed to one call. Every removed endpoint now answers a structured
 > `410 {"error":"tool_retired","replacement":"/v1/check"}`, and the clients translate that into an
 > error that names `check` by name. See [Migrating from 0.5](#migrating-from-05).
 
-## One call
+## Optional: verify before an agent acts
+
+`check()` is not required to keep facts current — the webhook loop above does that — but it is the
+call to make right before an agent relies on one, because it re-derives the verdict from current
+state and hands back a signed receipt:
 
 ```ts
 import { Kaval } from "@usekaval/kaval";
@@ -189,8 +261,9 @@ emits the delta webhook. Checks that land mid-re-evaluation honestly return `REV
 KAVAL_API_KEY=kv_live_… npx -y @usekaval/mcp
 ```
 
-Twenty-three tools run over stdio. They cover checks, receipts, contracts, bulk imports, bulletins,
-training review, watched sources, outcomes, and the deprecated `verify` alias.
+Thirty-one tools run over stdio. They cover checks, receipts, contracts, bulk imports, policy
+updates (extraction schemas, runs, monthly packages), the soft-deprecated bulletin tools, training
+review, watched sources, outcomes, and the deprecated `verify` alias.
 
 Eleven JSON resources expose contract issues, bulletin extraction status, and the prior read models.
 Explicit consent is available, but model promotion and bulletin requeue remain internal. See [packages/mcp](packages/mcp).
@@ -245,8 +318,9 @@ returns `{"error":"tool_retired"}` with a message telling the agent to call `che
 
 ## Idempotency
 
-Contract mutations, fact imports, deprecated `verify()`, and webhook creation carry an
-`Idempotency-Key`. The client generates a key when you omit one.
+Contract mutations, fact imports, extraction schema creation, policy-update run creation, deprecated
+`verify()`, and webhook creation carry an `Idempotency-Key`. The client generates a key when you omit
+one.
 
 A check reads current state. The server does not replay it, so a retry recomputes the result.
 

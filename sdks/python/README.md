@@ -1,13 +1,20 @@
 # kaval (Python SDK)
 
-Before an AI agent acts, Kaval verifies the facts the action depends on and returns `ALLOW`,
-`REVIEW`, or `BLOCK` with a signed receipt.
+The primary loop: **watch a source → extract structured records against a schema → get pushed a
+`policy_update.*` webhook as documents land.** Register what Kaval should watch with
+`add_source()`, bind an `ExtractionSchema` to it, and subscribe once — no polling.
 
-One call does the work: **`check()`**. Everything else configures what Kaval watches, so that a
-check stays a warm database read instead of a research run: register sources with
-`add_source()`, push your own documents with `send_event()`, and subscribe to `fact_state.delta`
-webhooks with `subscribe_fact_state_deltas()` so you are _told_ when a fact flips instead of
-polling for it.
+```
+add_source()  →  create_extraction_schema() + update_source()  →  subscribe_policy_updates()
+   (watch)               (what to extract)                            (get pushed the result)
+```
+
+Before an AI agent acts, it can also send Kaval the action directly: **`check()`** identifies the
+facts that action depends on, checks them against the sources Kaval watches, and returns `ALLOW`,
+`REVIEW`, or `BLOCK` with a signed receipt. Everything else configures what Kaval watches, so that a
+check stays a warm database read instead of a research run: push your own documents with
+`send_event()`, and subscribe to `fact_state.delta` webhooks with `subscribe_fact_state_deltas()`
+so you are _told_ when a fact flips instead of polling for it.
 
 Version 0.7.2 does not expose contracts, fact imports, structured bulletins, or training review.
 
@@ -118,6 +125,76 @@ polled with a plain conditional GET; this is what asks discovery to work out wha
 publishes it, and the only recovery once a working plan breaks against a redesigned site. It
 answers `202 {source_id, job_id, created}` — the job is queued, not finished, and `created` is
 `False` when an open job for that source absorbed the request.
+
+## Policy updates
+
+Register a JSON Schema and bind it to a source; every document that lands on that source afterward
+is extracted against it and delivered as a `policy_update.document` webhook, with per-payer monthly
+rollups delivered as `policy_update.monthly_package`. On each document event, `extraction_run.period`
+is the publication / newsletter month (`YYYY-MM`); sections and `extraction.record_evidence` may
+include normalized `page` / `bbox` for PDF highlighting; `result["payer_name"]` is the human brand
+beside the stable `payer_id` slug.
+
+```python
+schema = kaval.create_extraction_schema(
+    name="prior-auth-changes",
+    json_schema={
+        "type": "object",
+        "properties": {
+            "cpt_code": {"type": "string"},
+            "requires_prior_auth": {"type": "boolean"},
+        },
+        "required": ["cpt_code", "requires_prior_auth"],
+    },
+)
+
+kaval.update_source(source["id"], extraction_schema_id=schema["id"])
+# extraction_schema_id=None unbinds it, leaving the source watched but unextracted.
+```
+
+Prefer a one-off run over waiting for the next document? `create_policy_update()` requests a payer
++ period extraction run directly against a bound schema:
+
+```python
+run = kaval.create_policy_update(
+    payer_id="aetna", period="2026-08", extraction_schema_id=schema["id"]
+)
+# 202, run["status"] == "processing" — poll get_policy_update(run["id"]) or wait for the webhook.
+
+kaval.list_policy_updates(payer_id="aetna", period="2026-08")
+kaval.get_policy_update(run["id"])
+kaval.list_extraction_schemas()
+kaval.get_extraction_schema(schema["id"])
+```
+
+Each payer + period's runs roll up into one monthly PDF + manifest:
+
+```python
+kaval.list_policy_update_packages(payer_id="aetna", period="2026-08")
+kaval.get_policy_update_package(pkg["id"])
+```
+
+Read the canonical text (or heading-bounded sections) a source version was extracted from,
+independent of any bound schema:
+
+```python
+content = kaval.get_source_version_content(source_version_id)["content"]
+sections = kaval.get_source_version_content(source_version_id, format="sections")["sections"]
+```
+
+Subscribe once, the same way as `fact_state.delta`:
+
+```python
+subscription = kaval.subscribe_policy_updates(
+    "https://your-app.com/hooks/kaval",
+    external_scope_ids=["payer:aetna"],   # optional scope filter
+)
+secret = subscription["webhook_verification"]["secret"]   # shown once — store it now
+```
+
+`create_extraction_schema()` and `create_policy_update()` require an API key with
+`policy-update:manage`; the read methods above accept `policy-update:read` or
+`verification:execute`.
 
 ## Get told when a fact flips
 
@@ -365,8 +442,9 @@ retry after an ambiguous `httpx.TransportError`, or when the API says the same o
 in progress/finalizing; that retry reuses the exact key. Ordinary API errors, rate limits, and
 terminal 5xx responses are never retried. Pass `idempotency_key=` when an outer job system needs
 one logical operation to stay stable, and reuse a key only after an ambiguous/no-response failure.
-`create_webhook()` also sends an `Idempotency-Key` because the server requires one, but it is not
-billable and is never auto-retried.
+`create_webhook()` (and `subscribe_fact_state_deltas()` / `subscribe_policy_updates()`),
+`create_extraction_schema()`, and `create_policy_update()` also send an `Idempotency-Key` because
+the server requires one, but they are not billable and are never auto-retried.
 
 **Default timeout: 150 seconds** (connect + read), overridable at construction or per call:
 
@@ -387,10 +465,13 @@ you genuinely want a faster, bounded verdict. `timeout=None` per call means "inh
 ## API
 
 `check` · `get_receipt` · `add_source` · `list_sources` · `get_source` · `pause_source` ·
-`resume_source` · `recompile_source` · `delete_source` · `send_event` ·
-`subscribe_fact_state_deltas` · `create_webhook` · `list_webhooks` · `set_webhook_enabled` ·
-`delete_webhook` · `replay_webhook_delivery` · `report_outcome` · `verify` (deprecated) ·
-`health`. Construct with
+`resume_source` · `recompile_source` · `delete_source` · `update_source` ·
+`get_source_version_content` · `send_event` · `create_extraction_schema` ·
+`get_extraction_schema` · `list_extraction_schemas` · `create_policy_update` ·
+`get_policy_update` · `list_policy_updates` · `get_policy_update_package` ·
+`list_policy_update_packages` · `subscribe_policy_updates` · `subscribe_fact_state_deltas` ·
+`create_webhook` · `list_webhooks` · `set_webhook_enabled` · `delete_webhook` ·
+`replay_webhook_delivery` · `report_outcome` · `verify` (deprecated) · `health`. Construct with
 `KavalClient(base_url=?, api_key=?, timeout=?)` — `base_url` defaults to
 `https://api.usekaval.com`. The Node/TypeScript client mirrors this surface:
 `npm install @usekaval/kaval`.

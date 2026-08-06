@@ -23,6 +23,8 @@ export const API_KEY_SCOPES = [
   "revalidation:submit",
   "webhook:manage",
   "source:manage",
+  "policy-update:read",
+  "policy-update:manage",
 ] as const;
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 

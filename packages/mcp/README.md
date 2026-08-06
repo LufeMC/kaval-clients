@@ -53,17 +53,25 @@ It speaks MCP over stdio. Point any MCP client at it.
 | `review_contract_claim`             | Approve, correct, or reject one candidate with immutable version control.                                                                                                |
 | `import_facts`                      | Queue up to 400 reviewed facts for warm checks.                                                                                                                          |
 | `get_fact_import`                   | Get one bulk import and every item result.                                                                                                                               |
-| `list_bulletins`                    | Filter structured bulletins by payer, policy, code, date, or status.                                                                                                     |
-| `get_bulletin`                      | Get one structured bulletin with field evidence.                                                                                                                         |
-| `list_bulletin_extraction_attempts` | List customer-readable bulletin extraction status and failures.                                                                                                          |
-| `get_bulletin_extraction_attempt`   | Get one bulletin extraction attempt by source-version id.                                                                                                                |
+| `list_bulletins`                    | **Soft-deprecated** — filter structured bulletins by payer, policy, code, date, or status. Prefer `list_policy_updates` for new integrations.                            |
+| `get_bulletin`                      | **Soft-deprecated** — get one structured bulletin with field evidence. Prefer `get_policy_update`.                                                                       |
+| `list_bulletin_extraction_attempts` | **Soft-deprecated** — list customer-readable bulletin extraction status and failures. Prefer `list_policy_updates`.                                                       |
+| `get_bulletin_extraction_attempt`   | **Soft-deprecated** — get one bulletin extraction attempt by source-version id. Prefer `get_policy_update`.                                                              |
 | `list_training_jobs`                | List read-only training and evaluation status.                                                                                                                           |
 | `get_training_job`                  | Get one read-only training job.                                                                                                                                          |
 | `list_training_feedback`            | List reviewed feedback and its effective training-use state.                                                                                                             |
 | `record_training_feedback_consent`  | Record an explicit training-use decision for one reviewed feedback item.                                                                                                 |
+| `create_extraction_schema`          | Register a JSON Schema Kaval extracts structured records against. Requires `policy-update:manage`.                                                                       |
+| `list_extraction_schemas`           | List the extraction schemas registered in this workspace.                                                                                                                |
+| `create_policy_update`              | Request a one-off payer + period extraction run against a bound schema. Requires `policy-update:manage`.                                                                 |
+| `get_policy_update`                 | Get one extraction run ('policy update') by id — status, schema, and result once it succeeds.                                                                            |
+| `list_policy_updates`               | List extraction runs, optionally filtered by payer and/or publication-month `YYYY-MM` period.                                                                            |
+| `list_policy_update_packages`       | List the monthly PDF + manifest rollups extraction runs are packaged into.                                                                                               |
 | `add_source`                        | Tell Kaval what to watch — a URL, a named authority to resolve, or a document you will push in.                                                                          |
 | `list_sources`                      | What Kaval currently watches for this workspace, including sources it auto-registered after a check cited them.                                                          |
 | `remove_source`                     | Stop watching a source and forget it. The only thing that frees registry capacity, which auto-registered sources also consume.                                           |
+| `update_source`                     | Bind (or unbind) an extraction schema on a watched source, so every document that lands on it is extracted automatically. Requires `policy-update:manage`.               |
+| `get_source_version_content`        | Fetch the captured content of one fetched source version, as raw text or pre-split `sections`.                                                                           |
 | `report_outcome`                    | Report what actually happened after a prior check (by `receipt.id`), so Kaval can calibrate.                                                                             |
 | `verify`                            | **Deprecated** pilot alias: one conclusion + explicit `evidence_refs` → a signed ProofPacket receipt. Use `check`.                                                       |
 
@@ -165,19 +173,39 @@ pausing does not. An agent that registers per task and never removes will eventu
 registry, after which new citations are dropped silently and checks that used to be warm go back to
 researching. Remove what a task registered when the task is done.
 
+## Policy updates
+
+`create_extraction_schema` registers a JSON Schema; bind its `id` to a watched source with
+`update_source({ id, extraction_schema_id })` and every document that lands on that source afterward
+is extracted against the schema automatically — no polling. For a one-off run against a payer +
+period instead of waiting for the next document, call `create_policy_update` directly. Either way,
+`get_policy_update` / `list_policy_updates` report the run's lifecycle
+(`processing` → `retry` → `succeeded` / `review_required` / `failed`), and
+`list_policy_update_packages` lists the monthly PDF + manifest rollups each payer/period is packaged
+into. `get_source_version_content` fetches the canonical text (or `format: "sections"`) an extraction
+run was computed from.
+
+This is the schema-bound successor to the free-text bulletin tools (`list_bulletins`, `get_bulletin`,
+`list_bulletin_extraction_attempts`, `get_bulletin_extraction_attempt`), which are soft-deprecated but
+keep working.
+
 ## Delta webhooks are not an agent tool
 
 Watched sources are only half the mechanism: when a source changes, Kaval re-evaluates the dependent
-facts and pushes a `fact_state.delta` webhook naming what flipped. **That subscription is
-deliberately not exposed as an MCP tool.** It is one-time deployment configuration — it mints a
-standing outbound callback bound to an https endpoint and a signing secret that must be stored, which
-is a deploy-time decision for a human or a service, not an in-loop choice for an agent that owns
-neither the endpoint nor the secret.
+facts and pushes a `fact_state.delta` webhook naming what flipped; a source with a bound extraction
+schema also pushes `policy_update.document` (and, monthly, `policy_update.monthly_package`) with the
+extracted records, optional section `page`/`bbox`, and `record_evidence` for PDF highlighting.
+`extraction_run.period` is the publication / newsletter month. **Those subscriptions are
+deliberately not exposed as MCP tools.** They are
+one-time deployment configuration — each mints a standing outbound callback bound to an https
+endpoint and a signing secret that must be stored, which is a deploy-time decision for a human or a
+service, not an in-loop choice for an agent that owns neither the endpoint nor the secret.
 
-Configure it once from the SDK (`kaval.subscribeFactStateDeltas({ callback_url })` in Node,
-`kaval.subscribe_fact_state_deltas(callback_url=…)` in Python), from `POST /v1/webhooks` with
-`subscription_kind: "fact_state"`, or from the dashboard. The agent then just calls `check`, and it
-is already fast and already current.
+Configure them once from the SDK (`kaval.subscribeFactStateDeltas({ callback_url })` /
+`kaval.subscribePolicyUpdates({ callback_url })` in Node, `kaval.subscribe_fact_state_deltas(…)` /
+`kaval.subscribe_policy_updates(…)` in Python), from `POST /v1/webhooks` with
+`subscription_kind: "fact_state"` or `"policy_update"`, or from the dashboard. The agent then just
+calls `check` (or reads `list_policy_updates`), and it is already fast and already current.
 
 ## Migrating from 0.5
 
@@ -203,8 +231,9 @@ the check tool …","status":410}`.
 
 ## Idempotency
 
-Contract uploads, contract creation, claim reviews, fact imports, and `verify` carry operation keys.
-The server creates a key when you omit one. Reuse the returned key after an ambiguous failure.
+Contract uploads, contract creation, claim reviews, fact imports, `create_extraction_schema`,
+`create_policy_update`, and `verify` carry operation keys. The server creates a key when you omit
+one. Reuse the returned key after an ambiguous failure.
 
 `check` deliberately carries none: it is a read of current state, so a retry recomputes rather than
 replays and cannot double-bill.

@@ -911,6 +911,9 @@ class WatchedSource(TypedDict):
     next_poll_at: str | None
     last_success_at: str | None
     content_sha256: str | None
+    #: The ``ExtractionSchema`` id bound with ``update_source()``, or ``None`` if this source runs
+    #: unbound.
+    extraction_schema_id: NotRequired[str | None]
     created_at: IsoTimestamp
 
 
@@ -944,6 +947,210 @@ class RecompileSourceResult(TypedDict):
     #: False when a job was already open for this source: the recompile was folded into that one
     #: rather than duplicated.
     created: bool
+
+
+# ------------------------------- policy updates ------------------------------
+#
+# The Luminai loop: bind an ``ExtractionSchema`` to a watched source (or a whole payer), let Kaval
+# extract structured records from what it reads, and get ``policy_update.*`` webhooks as documents
+# land — instead of polling ``list_bulletins()`` for the same information.
+
+
+class ExtractionSchema(TypedDict):
+    """A customer-defined JSON Schema Kaval extracts structured records against."""
+
+    id: str
+    workspace_id: str
+    name: str
+    json_schema: dict[str, Any]
+    schema_sha256: str
+    created_at: IsoTimestamp
+
+
+class CreateExtractionSchemaInput(TypedDict):
+    name: str
+    json_schema: dict[str, Any]
+
+
+ExtractionRunStatus: TypeAlias = Literal[
+    "processing", "retry", "succeeded", "review_required", "failed"
+]
+ExtractionRunScope: TypeAlias = Literal["document", "payer_period"]
+
+
+class ExtractionRun(TypedDict):
+    """One extraction attempt.
+
+    Either against a single document (``scope: "document"``, the basis of a
+    ``policy_update.document`` webhook) or a payer + period rollup (``scope: "payer_period"``,
+    created by :meth:`KavalClient.create_policy_update`). This IS "a policy update": the API calls
+    it ``extraction_run`` on the wire because the same row backs both scopes.
+
+    ``period`` is the publication / newsletter month (``YYYY-MM``), not the effective month of an
+    individual PA change. ``result`` may include ``records``, ``record_evidence``,
+    ``document_period``, ``period_basis``, and ``payer_name``.
+    """
+
+    id: str
+    workspace_id: str
+    scope: ExtractionRunScope
+    source_version_id: NotRequired[str]
+    #: Stable payer slug (e.g. ``aetna``). Prefer ``result["payer_name"]`` for display.
+    payer_id: NotRequired[str]
+    #: Publication / newsletter month ``YYYY-MM``.
+    period: NotRequired[str]
+    extraction_schema_id: str | None
+    status: ExtractionRunStatus
+    model: NotRequired[str]
+    prompt_sha256: NotRequired[str]
+    sections: NotRequired[dict[str, Any]]
+    result: NotRequired[dict[str, Any]]
+    raw_output: NotRequired[str]
+    error_code: NotRequired[str]
+    attempt_count: int
+    created_at: IsoTimestamp
+    updated_at: IsoTimestamp
+    finished_at: NotRequired[IsoTimestamp]
+
+
+class CreatePolicyUpdateInput(TypedDict):
+    """Request a payer + period extraction run. Requires ``policy-update:manage``."""
+
+    payer_id: str
+    #: Publication / newsletter month ``YYYY-MM``.
+    period: str
+    extraction_schema_id: str
+
+
+PolicyUpdatePackageStatus: TypeAlias = Literal["ready", "partial"]
+
+
+class PolicyUpdatePackage(TypedDict):
+    """The monthly rollup of every payer/period extraction into one PDF + manifest."""
+
+    id: str
+    workspace_id: str
+    payer_id: str
+    #: Publication / newsletter month ``YYYY-MM``.
+    period: str
+    status: PolicyUpdatePackageStatus
+    pdf_href: str
+    pdf_sha256: NotRequired[str]
+    manifest: dict[str, Any]
+    built_at: IsoTimestamp
+
+
+class SourceVersionContent(TypedDict):
+    """``GET /v1/source-versions/:id/content`` without ``?format=sections``."""
+
+    content: str
+
+
+class PolicyUpdateBbox(TypedDict):
+    """Normalized [0, 1] bounding box on a PDF page (from Parse layout at ingest)."""
+
+    left: float
+    top: float
+    width: float
+    height: float
+
+
+class PolicyUpdateDocumentSection(TypedDict):
+    """One heading-bounded slice of a source version's canonical markdown."""
+
+    index: int
+    heading: str
+    start_offset: int
+    end_offset: int
+    text: NotRequired[str]
+    #: 1-indexed page when Parse layout was stored for this version.
+    page: NotRequired[int]
+    #: Normalized [0, 1] bbox on ``page`` when available.
+    bbox: NotRequired[PolicyUpdateBbox]
+
+
+class PolicyUpdateRecordEvidence(TypedDict):
+    """Locates one extracted record in the source PDF via its section + layout."""
+
+    section_index: int
+    page: int
+    bbox: PolicyUpdateBbox
+    block_ids: NotRequired[list[str]]
+
+
+class PolicyUpdateExtraction(TypedDict):
+    """Schema-bound payload nested under ``policy_update.document`` ``data.extraction``."""
+
+    records: list[Any]
+    run_href: str
+    #: Parallel to ``records``; empty list when a record has no locatable section.
+    record_evidence: NotRequired[list[list[PolicyUpdateRecordEvidence]]]
+
+
+class SourceVersionSections(TypedDict):
+    """``GET /v1/source-versions/:id/content?format=sections``."""
+
+    sections: list[PolicyUpdateDocumentSection]
+
+
+#: The only two events a ``policy_update`` subscription accepts.
+POLICY_UPDATE_DOCUMENT_EVENT_TYPE = "policy_update.document"
+POLICY_UPDATE_MONTHLY_PACKAGE_EVENT_TYPE = "policy_update.monthly_package"
+POLICY_UPDATE_EVENT_TYPES = (
+    POLICY_UPDATE_DOCUMENT_EVENT_TYPE,
+    POLICY_UPDATE_MONTHLY_PACKAGE_EVENT_TYPE,
+)
+
+
+class PolicyUpdateDocumentEventData(TypedDict):
+    workspace_id: str
+    payer_id: str
+    source_version_id: str
+    #: Durable Kaval source-version PDF URL — not a short-lived parser studio link.
+    pdf_href: str
+    content_href: str
+    sections: list[PolicyUpdateDocumentSection]
+    extraction_run: ExtractionRun
+    #: Present when a schema was bound; absent for content-only delivery.
+    extraction: NotRequired[PolicyUpdateExtraction]
+
+
+class PolicyUpdateDocumentEvent(TypedDict):
+    """The body of an inbound ``policy_update.document`` webhook."""
+
+    specversion: Literal["1.0"]
+    id: str
+    type: Literal["policy_update.document"]
+    source: str
+    subject: str
+    time: IsoTimestamp
+    correlation_id: str
+    sequence: int
+    data: PolicyUpdateDocumentEventData
+
+
+class PolicyUpdateMonthlyPackageEventData(TypedDict):
+    workspace_id: str
+    package: PolicyUpdatePackage
+
+
+class PolicyUpdateMonthlyPackageEvent(TypedDict):
+    """The body of an inbound ``policy_update.monthly_package`` webhook."""
+
+    specversion: Literal["1.0"]
+    id: str
+    type: Literal["policy_update.monthly_package"]
+    source: str
+    subject: str
+    time: IsoTimestamp
+    correlation_id: str
+    sequence: int
+    data: PolicyUpdateMonthlyPackageEventData
+
+
+PolicyUpdateWebhookEvent: TypeAlias = (
+    PolicyUpdateDocumentEvent | PolicyUpdateMonthlyPackageEvent
+)
 
 
 # ----------------------------------- events ---------------------------------
@@ -983,6 +1190,7 @@ WebhookSubscriptionKind: TypeAlias = Literal[
     "belief_integrity",
     "monitor",
     "fact_state",
+    "policy_update",
 ]
 
 #: The only event a ``fact_state`` subscription accepts.

@@ -6,14 +6,35 @@ All packages in this repo version in lockstep (`scripts/bump.mjs`).
 
 ### Added
 
+- **Policy-update provenance fields.** `PolicyUpdateDocumentSection` now optionally carries
+  normalized `page` / `bbox` from Parse layout. `policy_update.document` `extraction` may include
+  `record_evidence` (parallel to `records`). Documented that `extraction_run.period` is the
+  publication / newsletter month (`YYYY-MM`), not PA effective month; `result` may include
+  `document_period`, `period_basis`, and `payer_name`. `pdf_href` remains Kaval's durable
+  source-version document URL.
+- **Policy updates.** The schema-bound successor to free-text bulletins: register a JSON Schema
+  with `createExtractionSchema()` / `create_extraction_schema()`, bind it to a watched source with
+  `updateSource()` / `update_source()`, and get every document that lands on it extracted
+  automatically and delivered as a `policy_update.document` webhook — or request a one-off payer +
+  period run with `createPolicyUpdate()` / `create_policy_update()`. Monthly PDF + manifest rollups
+  arrive as `policy_update.monthly_package`. `getSourceVersionContent()` /
+  `get_source_version_content()` reads the canonical text (or pre-split `sections`) an extraction
+  ran against. New scopes `policy-update:read` and `policy-update:manage`; new webhook
+  `subscription_kind: "policy_update"` via `subscribePolicyUpdates()` / `subscribe_policy_updates()`.
+  Shipped in the Node SDK, the Python SDK, and eight new MCP tools (`create_extraction_schema`,
+  `list_extraction_schemas`, `create_policy_update`, `get_policy_update`, `list_policy_updates`,
+  `list_policy_update_packages`, `update_source`, `get_source_version_content`). The free-text
+  bulletin methods and tools are soft-deprecated but keep working.
 - **MCP portfolio surface.** Sixteen tools cover contracts, bulk imports, bulletins, extraction
   failures, training status, feedback review, and consent. Eleven JSON resources expose read models.
   Training execution, model promotion, and bulletin requeue remain internal.
 - **Node portfolio surface.** The SDK adds typed contract, claim-review, fact-import, bulletin, and
   training methods. It also exposes extraction issues, bulletin attempts, pagination, and
   `training:manage`. It validates consent and frozen limits before it sends a request.
-- **Python scope disclosure.** The Python SDK does not yet expose the new portfolio methods.
-  Python retains checks, watched sources, webhooks, outcomes, and the deprecated verify alias.
+- **Python policy-updates surface.** Python now exposes extraction schemas, policy-update runs and
+  packages, `update_source`, `get_source_version_content`, and `subscribe_policy_updates`, alongside
+  checks, watched sources, webhooks, outcomes, and the deprecated verify alias. The broader
+  portfolio methods (contracts, fact imports, training) remain Node/MCP-only for now.
 - **Decision rule 2.0.0 verification.** The offline verifier re-derives the signed `ALLOW` gate.
   It rejects altered, expired, incomplete, or incorrectly bound calibration fields.
 
