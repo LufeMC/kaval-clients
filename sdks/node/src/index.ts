@@ -4,9 +4,11 @@
  * the Kaval API. Mirrors the Python SDK (`pip install kaval`). Uses the global `fetch`
  * (Node 18+, browsers, edge).
  *
- * One call does the work: `check()`. Register what Kaval should watch with `addSource()`, push your
- * own documents with `sendEvent()`, and subscribe to `fact_state.delta` webhooks with
- * `subscribeFactStateDeltas()` so you are told when a fact flips instead of polling for it.
+ * The primary loop for payer-policy monitoring: register a source with `addSource()`, bind an
+ * `ExtractionSchema` to it (`createExtractionSchema()` + `updateSource()`), and subscribe to
+ * `policy_update.*` webhooks with `subscribePolicyUpdates()` so structured records and monthly
+ * packages are pushed to you as documents land. `check()` is the other half of the product: before
+ * an agent acts, send the action and get ALLOW, REVIEW, or BLOCK with a signed receipt.
  */
 
 import type {
@@ -34,15 +36,84 @@ import type {
   VerifyRequest,
   VerifyResponse,
 } from "./proof.js";
+import type {
+  CreateExtractionSchemaInput,
+  CreatePolicyUpdateInput,
+  ExtractionRun,
+  ExtractionSchema,
+  PolicyUpdateListOptions,
+  PolicyUpdatePackage,
+  PolicyUpdatePackageListOptions,
+  SourceVersionContent,
+  SourceVersionSections,
+  UpdateSourceInput,
+} from "./policy-updates.js";
+import { POLICY_UPDATE_EVENT_TYPES } from "./policy-updates.js";
+import type {
+  BulletinExtractionAttemptDetailResponse,
+  BulletinExtractionAttemptListOptions,
+  BulletinExtractionAttemptPage,
+  BulletinExtractionAttemptResource,
+  BulletinListOptions,
+  BulletinPage,
+  BulletinRecord,
+  ContractClaimPage,
+  ContractClaimReviewInput,
+  ContractClaimReviewResource,
+  ContractCreateInput,
+  ContractExtractionIssueListOptions,
+  ContractExtractionIssuePage,
+  ContractResource,
+  ContractUploadInput,
+  ContractUploadResource,
+  FactImportInput,
+  FactImportResource,
+  TrainingFeedbackConsent,
+  TrainingFeedbackConsentInput,
+  TrainingFeedbackListOptions,
+  TrainingFeedbackReviewList,
+  TrainingJob,
+  TrainingJobPage,
+  TrainingJobStatus,
+} from "./portfolio.js";
+import {
+  API_KEY_SCOPES,
+  BULLETIN_EXTRACTION_ATTEMPT_STATUSES,
+  CONTRACT_EXTRACTION_ISSUE_CODES,
+  CONTRACT_EXTRACTION_REVIEW_STATES,
+  MAX_CONTRACT_PDF_BYTES,
+  MAX_FACT_IMPORT_ITEMS,
+  MAX_FACT_IMPORT_SOURCE_REFERENCES,
+  MAX_INLINE_CONTRACT_BYTES,
+  MAX_PORTFOLIO_PAGE_SIZE,
+} from "./portfolio.js";
 
 export type * from "./proof.js";
 export type * from "./check.js";
+export type * from "./portfolio.js";
+export type * from "./policy-updates.js";
 export {
   DEFAULT_CHECK_MAX_WAIT_MS,
   FACT_STATE_DELTA_EVENT_TYPE,
   MAX_CHECK_MAX_WAIT_MS,
   MIN_CHECK_MAX_WAIT_MS,
 } from "./check.js";
+export {
+  API_KEY_SCOPES,
+  BULLETIN_EXTRACTION_ATTEMPT_STATUSES,
+  CONTRACT_EXTRACTION_ISSUE_CODES,
+  CONTRACT_EXTRACTION_REVIEW_STATES,
+  MAX_CONTRACT_PDF_BYTES,
+  MAX_FACT_IMPORT_ITEMS,
+  MAX_FACT_IMPORT_SOURCE_REFERENCES,
+  MAX_INLINE_CONTRACT_BYTES,
+  MAX_PORTFOLIO_PAGE_SIZE,
+} from "./portfolio.js";
+export {
+  POLICY_UPDATE_DOCUMENT_EVENT_TYPE,
+  POLICY_UPDATE_EVENT_TYPES,
+  POLICY_UPDATE_MONTHLY_PACKAGE_EVENT_TYPE,
+} from "./policy-updates.js";
 
 export type OutcomeKind =
   | "current_later_contradicted"
@@ -115,8 +186,8 @@ export interface KavalOptions {
 
 /** Transport options for one API operation. */
 export interface RequestOptions {
-  /** Billable operations only. Kaval generates a UUID by default; supply the same key when
-   * coordinating a retry outside this client after an ambiguous/no-response failure. */
+  /** Mutations that require idempotency only. Kaval generates a UUID by default. Reuse the key
+   * when you coordinate a retry after an ambiguous or no-response failure. */
   idempotencyKey?: string;
   /** Cancels the operation and every bounded retry. */
   signal?: AbortSignal;
@@ -263,6 +334,112 @@ function encodeId(id: string): string {
   return encodeURIComponent(id.trim());
 }
 
+function assertPortfolioPageLimit(limit: number | undefined): void {
+  if (
+    limit !== undefined &&
+    (!Number.isInteger(limit) || limit < 1 || limit > MAX_PORTFOLIO_PAGE_SIZE)
+  ) {
+    throw new RangeError(
+      `limit must be an integer from 1 through ${MAX_PORTFOLIO_PAGE_SIZE}`,
+    );
+  }
+}
+
+function assertContractUploadInput(input: ContractUploadInput): void {
+  if (
+    input.content_type !== "application/pdf" ||
+    !Number.isInteger(input.size_bytes) ||
+    input.size_bytes < 1 ||
+    input.size_bytes > MAX_CONTRACT_PDF_BYTES ||
+    !/^[0-9a-f]{64}$/u.test(input.sha256)
+  ) {
+    throw new TypeError("the contract upload metadata is invalid");
+  }
+}
+
+function assertContractCreateInput(input: ContractCreateInput): void {
+  if (
+    input.effective_from !== null &&
+    input.effective_to !== null &&
+    input.effective_to < input.effective_from
+  ) {
+    throw new RangeError("effective_to must not be before effective_from");
+  }
+  if (
+    input.source.kind === "canonical_text" &&
+    new TextEncoder().encode(input.source.content).byteLength >
+      MAX_INLINE_CONTRACT_BYTES
+  ) {
+    throw new RangeError(
+      `canonical contract text must not exceed ${MAX_INLINE_CONTRACT_BYTES} UTF-8 bytes`,
+    );
+  }
+}
+
+function assertContractReviewInput(input: ContractClaimReviewInput): void {
+  if (
+    (input.decision === "correct") !==
+    (input.corrected_claim !== undefined)
+  ) {
+    throw new TypeError(
+      "corrected_claim is required only for a correct decision",
+    );
+  }
+}
+
+function assertFactImportInput(input: FactImportInput): void {
+  if (
+    !Array.isArray(input.items) ||
+    input.items.length < 1 ||
+    input.items.length > MAX_FACT_IMPORT_ITEMS
+  ) {
+    throw new RangeError(
+      `fact imports must contain 1 through ${MAX_FACT_IMPORT_ITEMS} items`,
+    );
+  }
+  const itemIds = new Set<string>();
+  for (const item of input.items) {
+    if (itemIds.has(item.item_id)) {
+      throw new TypeError("fact import item_id values must be unique");
+    }
+    itemIds.add(item.item_id);
+    if (item.source_ids.length > MAX_FACT_IMPORT_SOURCE_REFERENCES) {
+      throw new RangeError(
+        `source_ids must contain at most ${MAX_FACT_IMPORT_SOURCE_REFERENCES} entries`,
+      );
+    }
+    if (new Set(item.source_ids).size !== item.source_ids.length) {
+      throw new TypeError("fact import source_ids values must be unique");
+    }
+  }
+}
+
+function assertTrainingFeedbackConsentInput(
+  input: TrainingFeedbackConsentInput,
+): void {
+  if (input.schema_version !== "training-feedback-consent-request/1.0.0") {
+    throw new TypeError(
+      "schema_version must be training-feedback-consent-request/1.0.0",
+    );
+  }
+  if (
+    (input.training_use !== "approved" && input.training_use !== "withheld") ||
+    typeof input.consent_to_training !== "boolean"
+  ) {
+    throw new TypeError("training_use and consent_to_training are invalid");
+  }
+  if ((input.training_use === "approved") !== input.consent_to_training) {
+    throw new TypeError("approved training use requires explicit consent");
+  }
+  if (
+    input.reason !== undefined &&
+    input.reason !== null &&
+    (input.reason.trim().length < 1 || input.reason.trim().length > 1_000)
+  ) {
+    throw new RangeError("reason must contain 1 through 1000 characters");
+  }
+}
+
 /**
  * The Kaval client.
  *
@@ -365,24 +542,32 @@ export class Kaval {
     options: RequestOptions = {},
     extraHeaders: Record<string, string> = {},
   ): Promise<T> {
+    const operationKey = extraHeaders["idempotency-key"];
     const request = requestSignal(
       options.signal,
       options.timeoutMs === undefined ? this.timeoutMs : options.timeoutMs,
     );
     try {
-      const res = await this.f(`${this.base}${path}`, {
-        method,
-        headers: { ...this.headers, ...extraHeaders },
-        signal: request.signal,
-        // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
+      let res: Response;
+      try {
+        res = await this.f(`${this.base}${path}`, {
+          method,
+          headers: { ...this.headers, ...extraHeaders },
+          signal: request.signal,
+          // JSON.stringify omits `undefined` keys, so optional params drop out automatically.
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+      } catch (error) {
+        throw operationKey === undefined
+          ? error
+          : attachIdempotencyKey(error, operationKey);
+      }
       const payload: unknown = await res.json().catch(() => null);
       if (!res.ok) {
         if (res.status === 410 && isRetiredPayload(payload)) {
           throw new KavalRetiredError(payload, path);
         }
-        throw new KavalError(res.status, payload);
+        throw new KavalError(res.status, payload, operationKey);
       }
       return payload as T;
     } finally {
@@ -430,6 +615,302 @@ export class Kaval {
       options,
     );
     return receipt;
+  }
+
+  /* -------------------------- contract portfolio --------------------------- */
+
+  /** Create a private PDF upload target. Upload the bytes before contract creation. */
+  createContractUpload(
+    input: ContractUploadInput,
+    options?: RequestOptions,
+  ): Promise<ContractUploadResource> {
+    assertContractUploadInput(input);
+    return this.request("POST", "/v1/contract-uploads", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  /** Queue one contract for extraction and review. */
+  createContract(
+    input: ContractCreateInput,
+    options?: RequestOptions,
+  ): Promise<ContractResource> {
+    assertContractCreateInput(input);
+    return this.request("POST", "/v1/contracts", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  getContract(
+    contractId: string,
+    options?: RequestOptions,
+  ): Promise<ContractResource> {
+    return this.request(
+      "GET",
+      `/v1/contracts/${encodeId(contractId)}`,
+      undefined,
+      options,
+    );
+  }
+
+  listContractClaims(
+    contractId: string,
+    options?: RequestOptions & {
+      status?: "proposed" | "approved" | "corrected" | "rejected";
+      activationState?: "inactive" | "active" | "conflict" | "superseded";
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<ContractClaimPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.status !== undefined) query.set("status", options.status);
+    if (options?.activationState !== undefined)
+      query.set("activation_state", options.activationState);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/contracts/${encodeId(contractId)}/claims${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** List deterministic extraction failures that require customer review. */
+  listContractExtractionIssues(
+    contractId: string,
+    options?: RequestOptions & ContractExtractionIssueListOptions,
+  ): Promise<ContractExtractionIssuePage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.issueCode !== undefined)
+      query.set("issue_code", options.issueCode);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/contracts/${encodeId(contractId)}/extraction-issues${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  reviewContractClaim(
+    contractId: string,
+    claimId: string,
+    input: ContractClaimReviewInput,
+    options?: RequestOptions,
+  ): Promise<ContractClaimReviewResource> {
+    assertContractReviewInput(input);
+    return this.request(
+      "POST",
+      `/v1/contracts/${encodeId(contractId)}/claims/${encodeId(claimId)}/reviews`,
+      input,
+      options,
+      {
+        "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+      },
+    );
+  }
+
+  /** Queue at most 400 facts. The server processes them in groups of 20. */
+  createFactImport(
+    input: FactImportInput,
+    options?: RequestOptions,
+  ): Promise<FactImportResource> {
+    assertFactImportInput(input);
+    return this.request("POST", "/v1/fact-imports", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+  }
+
+  getFactImport(
+    importId: string,
+    options?: RequestOptions,
+  ): Promise<FactImportResource> {
+    return this.request(
+      "GET",
+      `/v1/fact-imports/${encodeId(importId)}`,
+      undefined,
+      options,
+    );
+  }
+
+  /**
+   * Soft-deprecated: bulletins are the free-text predecessor of the policy-update pipeline. Prefer
+   * binding an `ExtractionSchema` to the source (`createExtractionSchema()` + `updateSource()`)
+   * and reading `getPolicyUpdate()` / `policy_update.document` webhooks for structured records.
+   * This method keeps working.
+   */
+  async getBulletin(
+    bulletinId: string,
+    options?: RequestOptions,
+  ): Promise<BulletinRecord> {
+    const { bulletin } = await this.request<{ bulletin: BulletinRecord }>(
+      "GET",
+      `/v1/bulletins/${encodeId(bulletinId)}`,
+      undefined,
+      options,
+    );
+    return bulletin;
+  }
+
+  /**
+   * Soft-deprecated: prefer `listPolicyUpdates()` / `listPolicyUpdatePackages()` against a bound
+   * `ExtractionSchema`, or subscribe to `policy_update.*` webhooks with `subscribePolicyUpdates()`.
+   * This method keeps working.
+   */
+  listBulletins(
+    options?: RequestOptions & BulletinListOptions,
+  ): Promise<BulletinPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.sourceId !== undefined)
+      query.set("source_id", options.sourceId);
+    if (options?.payerId !== undefined) query.set("payer_id", options.payerId);
+    if (options?.policyNumber !== undefined)
+      query.set("policy_number", options.policyNumber);
+    if (options?.code !== undefined) query.set("code", options.code);
+    if (options?.recordStatus !== undefined)
+      query.set("record_status", options.recordStatus);
+    if (options?.publishedFrom !== undefined)
+      query.set("published_from", options.publishedFrom);
+    if (options?.publishedTo !== undefined)
+      query.set("published_to", options.publishedTo);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/bulletins${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /**
+   * List the customer-readable extraction lifecycle for structured bulletins.
+   *
+   * Soft-deprecated: this reports on the free-text bulletin pipeline. For schema-bound
+   * extraction, `getPolicyUpdate()` / `listPolicyUpdates()` report the same lifecycle
+   * (`processing` → `succeeded` / `review_required` / `failed`) against structured records.
+   */
+  listBulletinExtractionAttempts(
+    options?: RequestOptions & BulletinExtractionAttemptListOptions,
+  ): Promise<BulletinExtractionAttemptPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.sourceId !== undefined)
+      query.set("source_id", options.sourceId);
+    if (options?.status !== undefined) query.set("status", options.status);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/bulletins/extraction-attempts${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** Get one bulletin extraction attempt by its source-version identifier. */
+  async getBulletinExtractionAttempt(
+    sourceVersionId: string,
+    options?: RequestOptions,
+  ): Promise<BulletinExtractionAttemptResource> {
+    const response =
+      await this.request<BulletinExtractionAttemptDetailResponse>(
+        "GET",
+        `/v1/bulletins/extraction-attempts/${encodeId(sourceVersionId)}`,
+        undefined,
+        options,
+      );
+    return response.data;
+  }
+
+  async getTrainingJob(
+    jobId: string,
+    options?: RequestOptions,
+  ): Promise<TrainingJob> {
+    const response = await this.request<TrainingJob | { job: TrainingJob }>(
+      "GET",
+      `/v1/training-jobs/${encodeId(jobId)}`,
+      undefined,
+      options,
+    );
+    return "job" in response ? response.job : response;
+  }
+
+  listTrainingJobs(
+    options?: RequestOptions & {
+      status?: TrainingJobStatus;
+      demoOnly?: boolean;
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<TrainingJobPage> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.status !== undefined) query.set("status", options.status);
+    if (options?.demoOnly !== undefined)
+      query.set("demo_only", String(options.demoOnly));
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request<
+      | TrainingJobPage
+      | { training_jobs: TrainingJob[]; next_cursor: string | null }
+    >(
+      "GET",
+      `/v1/training-jobs${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    ).then((response) =>
+      "training_jobs" in response
+        ? { jobs: response.training_jobs, next_cursor: response.next_cursor }
+        : response,
+    );
+  }
+
+  /** List feedback that requires an explicit training-use decision. */
+  listTrainingFeedback(
+    options?: RequestOptions & TrainingFeedbackListOptions,
+  ): Promise<TrainingFeedbackReviewList> {
+    assertPortfolioPageLimit(options?.limit);
+    const query = new URLSearchParams();
+    if (options?.effectiveTrainingUse !== undefined)
+      query.set("effective_training_use", options.effectiveTrainingUse);
+    if (options?.cursor !== undefined) query.set("cursor", options.cursor);
+    if (options?.limit !== undefined) query.set("limit", String(options.limit));
+    const search = query.toString();
+    return this.request(
+      "GET",
+      `/v1/training-feedback${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    );
+  }
+
+  /** Record the operator's explicit training-use decision for one feedback item. */
+  recordTrainingFeedbackConsent(
+    feedbackId: string,
+    input: TrainingFeedbackConsentInput,
+    options?: RequestOptions,
+  ): Promise<TrainingFeedbackConsent> {
+    assertTrainingFeedbackConsentInput(input);
+    return this.request(
+      "POST",
+      `/v1/training-feedback/${encodeId(feedbackId)}/consent`,
+      input,
+      options,
+      {
+        "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+      },
+    );
   }
 
   /* --------------------------------- sources --------------------------------- */
@@ -583,6 +1064,42 @@ export class Kaval {
     return source;
   }
 
+  /**
+   * Bind (or, with `extraction_schema_id: null`, unbind) the extraction schema a source runs.
+   * Every document that lands on this source afterward is extracted against the bound schema and
+   * delivered as a `policy_update.document` webhook. Requires `policy-update:manage`.
+   */
+  async updateSource(
+    input: UpdateSourceInput,
+    options?: RequestOptions,
+  ): Promise<WatchedSource> {
+    const { source } = await this.request<{ source: WatchedSource }>(
+      "PATCH",
+      `/v1/sources/${encodeId(input.id)}`,
+      { extraction_schema_id: input.extraction_schema_id },
+      options,
+    );
+    return source;
+  }
+
+  /**
+   * The canonical text Kaval extracted from one source version — the same text a
+   * `policy_update.document` webhook and any bound extraction run were computed from. Pass
+   * `format: "sections"` to get it pre-split into heading-bounded sections instead of one string.
+   */
+  getSourceVersionContent(
+    sourceVersionId: string,
+    options?: RequestOptions & { format?: "sections" },
+  ): Promise<SourceVersionContent | SourceVersionSections> {
+    const query = options?.format === "sections" ? "?format=sections" : "";
+    return this.request(
+      "GET",
+      `/v1/source-versions/${encodeId(sourceVersionId)}/content${query}`,
+      undefined,
+      options,
+    );
+  }
+
   /* ---------------------------------- events --------------------------------- */
 
   /**
@@ -596,6 +1113,124 @@ export class Kaval {
     options?: RequestOptions,
   ): Promise<SourceEventResult> {
     return this.request("POST", "/v1/events", input, options);
+  }
+
+  /* ------------------------------ policy updates ------------------------------ */
+
+  /**
+   * Register a JSON Schema Kaval extracts structured records against. Bind the returned schema's
+   * `id` to a source with `updateSource()`, or pass it directly to `createPolicyUpdate()` for a
+   * one-off payer + period run. Requires `policy-update:manage`.
+   */
+  async createExtractionSchema(
+    input: CreateExtractionSchemaInput,
+    options?: RequestOptions,
+  ): Promise<ExtractionSchema> {
+    const { extraction_schema } = await this.request<{
+      extraction_schema: ExtractionSchema;
+    }>("POST", "/v1/extraction-schemas", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+    return extraction_schema;
+  }
+
+  async getExtractionSchema(
+    schemaId: string,
+    options?: RequestOptions,
+  ): Promise<ExtractionSchema> {
+    const { extraction_schema } = await this.request<{
+      extraction_schema: ExtractionSchema;
+    }>(
+      "GET",
+      `/v1/extraction-schemas/${encodeId(schemaId)}`,
+      undefined,
+      options,
+    );
+    return extraction_schema;
+  }
+
+  async listExtractionSchemas(
+    options?: RequestOptions,
+  ): Promise<ExtractionSchema[]> {
+    const { extraction_schemas } = await this.request<{
+      extraction_schemas: ExtractionSchema[];
+    }>("GET", "/v1/extraction-schemas", undefined, options);
+    return extraction_schemas;
+  }
+
+  /**
+   * Request a payer + period extraction run against a bound schema — the one-off counterpart to
+   * letting a source's bound schema run automatically as documents land. Requires
+   * `policy-update:manage`. Answers `202` with the run in `processing`; poll `getPolicyUpdate()`
+   * or wait for its `policy_update.document` webhook.
+   */
+  async createPolicyUpdate(
+    input: CreatePolicyUpdateInput,
+    options?: RequestOptions,
+  ): Promise<ExtractionRun> {
+    const { extraction_run } = await this.request<{
+      extraction_run: ExtractionRun;
+    }>("POST", "/v1/policy-updates", input, options, {
+      "idempotency-key": options?.idempotencyKey ?? generatedIdempotencyKey(),
+    });
+    return extraction_run;
+  }
+
+  async getPolicyUpdate(
+    runId: string,
+    options?: RequestOptions,
+  ): Promise<ExtractionRun> {
+    const { extraction_run } = await this.request<{
+      extraction_run: ExtractionRun;
+    }>("GET", `/v1/policy-updates/${encodeId(runId)}`, undefined, options);
+    return extraction_run;
+  }
+
+  listPolicyUpdates(
+    options?: RequestOptions & PolicyUpdateListOptions,
+  ): Promise<ExtractionRun[]> {
+    const query = new URLSearchParams();
+    if (options?.payer_id !== undefined)
+      query.set("payer_id", options.payer_id);
+    if (options?.period !== undefined) query.set("period", options.period);
+    const search = query.toString();
+    return this.request<{ extraction_runs: ExtractionRun[] }>(
+      "GET",
+      `/v1/policy-updates${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    ).then((response) => response.extraction_runs);
+  }
+
+  async getPolicyUpdatePackage(
+    packageId: string,
+    options?: RequestOptions,
+  ): Promise<PolicyUpdatePackage> {
+    const { package: pkg } = await this.request<{
+      package: PolicyUpdatePackage;
+    }>(
+      "GET",
+      `/v1/policy-update-packages/${encodeId(packageId)}`,
+      undefined,
+      options,
+    );
+    return pkg;
+  }
+
+  listPolicyUpdatePackages(
+    options?: RequestOptions & PolicyUpdatePackageListOptions,
+  ): Promise<PolicyUpdatePackage[]> {
+    const query = new URLSearchParams();
+    if (options?.payer_id !== undefined)
+      query.set("payer_id", options.payer_id);
+    if (options?.period !== undefined) query.set("period", options.period);
+    const search = query.toString();
+    return this.request<{ packages: PolicyUpdatePackage[] }>(
+      "GET",
+      `/v1/policy-update-packages${search === "" ? "" : `?${search}`}`,
+      undefined,
+      options,
+    ).then((response) => response.packages);
   }
 
   /* --------------------------------- webhooks -------------------------------- */
@@ -619,6 +1254,30 @@ export class Kaval {
         ...input,
         subscription_kind: "fact_state",
         event_types: [FACT_STATE_DELTA_EVENT_TYPE],
+      },
+      options,
+    );
+  }
+
+  /**
+   * Subscribe to `policy_update.document` and `policy_update.monthly_package` — structured records
+   * and monthly PDF rollups pushed as they land, instead of polling `listPolicyUpdates()` or
+   * `listBulletins()` for the same information. `external_scope_ids` filters deliveries to the
+   * payer/scope keys you care about. The returned `webhook_verification` is the only time the
+   * signing secret is shown; store it and verify every inbound delivery with it.
+   */
+  subscribePolicyUpdates(
+    input: { callback_url: string } & Omit<
+      CreateWebhookInput,
+      "subscription_kind" | "event_types" | "callback_url"
+    >,
+    options?: RequestOptions,
+  ): Promise<CreateWebhookResult> {
+    return this.createWebhook(
+      {
+        ...input,
+        subscription_kind: "policy_update",
+        event_types: [...POLICY_UPDATE_EVENT_TYPES],
       },
       options,
     );

@@ -20,12 +20,21 @@ const arg = (name, fallback) => {
   const i = argv.indexOf(name);
   return i === -1 ? fallback : argv[i + 1];
 };
-const BASE = arg("--base-url", process.env.KAVAL_BASE_URL ?? "https://api.usekaval.com");
+const BASE = arg(
+  "--base-url",
+  process.env.KAVAL_BASE_URL ?? "https://api.usekaval.com",
+);
 const KEY = process.env.KAVAL_API_KEY;
 if (!KEY) {
-  console.error("KAVAL_API_KEY is required — an ISSUED kv_live_ key, not the demo key.");
-  console.error("A demo or static key authenticates but carries no principal, so every durable");
-  console.error("route answers 403 *_owner_required and this would fail for the wrong reason.");
+  console.error(
+    "KAVAL_API_KEY is required — an ISSUED kv_live_ key, not the demo key.",
+  );
+  console.error(
+    "A demo or static key authenticates but carries no principal, so every durable",
+  );
+  console.error(
+    "route answers 403 *_owner_required and this would fail for the wrong reason.",
+  );
   process.exit(2);
 }
 
@@ -34,27 +43,53 @@ const results = [];
 const record = (surface, name, ok, detail) => {
   results.push({ surface, name, ok, detail });
   const mark = ok ? `${C.g}PASS${C.x}` : `${C.r}FAIL${C.x}`;
-  console.log(`  ${mark}  ${String(name).padEnd(46)} ${C.d}${detail ?? ""}${C.x}`);
+  console.log(
+    `  ${mark}  ${String(name).padEnd(46)} ${C.d}${detail ?? ""}${C.x}`,
+  );
 };
 const run = (cmd, args, opts = {}) =>
-  execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts });
+  execFileSync(cmd, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...opts,
+  });
 
 const work = mkdtempSync(join(tmpdir(), "kaval-verify-"));
 let exitCode = 0;
 
 try {
-  console.log(`\n  ${C.b}Verifying the PUBLISHED clients against ${BASE}${C.x}\n`);
+  console.log(
+    `\n  ${C.b}Verifying the PUBLISHED clients against ${BASE}${C.x}\n`,
+  );
 
   /* ---------------------------------- install ---------------------------------- */
-  writeFileSync(join(work, "package.json"), JSON.stringify({ name: "v", private: true, type: "module" }));
-  run("npm", ["install", "--silent", "--no-audit", "--no-fund", "@usekaval/kaval@latest", "@usekaval/mcp@latest"], { cwd: work });
+  writeFileSync(
+    join(work, "package.json"),
+    JSON.stringify({ name: "v", private: true, type: "module" }),
+  );
+  run(
+    "npm",
+    [
+      "install",
+      "--silent",
+      "--no-audit",
+      "--no-fund",
+      "@usekaval/kaval@latest",
+      "@usekaval/mcp@latest",
+    ],
+    { cwd: work },
+  );
   // Read from disk, not through the exports map: a package is under no obligation to export
   // ./package.json, and @usekaval/mcp does not.
   const installed = (name) =>
-    JSON.parse(readFileSync(join(work, "node_modules", name, "package.json"), "utf8")).version;
+    JSON.parse(
+      readFileSync(join(work, "node_modules", name, "package.json"), "utf8"),
+    ).version;
   const nodeVer = installed("@usekaval/kaval");
   const mcpVer = installed("@usekaval/mcp");
-  console.log(`  ${C.d}installed @usekaval/kaval@${nodeVer}, @usekaval/mcp@${mcpVer}${C.x}\n`);
+  console.log(
+    `  ${C.d}installed @usekaval/kaval@${nodeVer}, @usekaval/mcp@${mcpVer}${C.x}\n`,
+  );
 
   /* -------------------------------- 1. NODE SDK -------------------------------- */
   console.log(`  ${C.b}Node SDK${C.x}`);
@@ -77,27 +112,96 @@ if (chk.receipt?.id) {
 }
 out.verifyExport = typeof verifyReceipt;
 out.recompileExport = typeof k.recompileSource;
+out.listTrainingFeedbackExport = typeof k.listTrainingFeedback;
+out.recordTrainingFeedbackConsentExport = typeof k.recordTrainingFeedbackConsent;
 console.log(JSON.stringify(out));
 `,
   );
   let node;
   try {
-    node = JSON.parse(run("node", [driver], { cwd: work, env: { ...process.env, KAVAL_API_KEY: KEY } }).trim().split("\n").pop());
+    node = JSON.parse(
+      run("node", [driver], {
+        cwd: work,
+        env: { ...process.env, KAVAL_API_KEY: KEY },
+      })
+        .trim()
+        .split("\n")
+        .pop(),
+    );
   } catch (e) {
     node = null;
-    record("node", "driver ran", false, String(e.stderr ?? e.message).slice(0, 200));
+    record(
+      "node",
+      "driver ran",
+      false,
+      String(e.stderr ?? e.message).slice(0, 200),
+    );
     exitCode = 1;
   }
   if (node) {
-    record("node", "health()", node.health?.ok === true, `version ${node.health?.version?.slice(0, 12) ?? "?"}`);
-    record("node", "check() reaches the server", ["ALLOW", "REVIEW", "BLOCK"].includes(node.check?.decision), `${node.check?.decision} · ${node.check?.facts} facts`);
-    record("node", "default timeout survives a cold check", node.timeoutDefault >= 100000, `${node.timeoutDefault}ms (server budget 100000ms)`);
-    record("node", "getReceipt() returns the signed doc", !!node.receipt?.id, node.receipt?.id ?? "no receipt");
+    record(
+      "node",
+      "health()",
+      node.health?.ok === true,
+      `version ${node.health?.version?.slice(0, 12) ?? "?"}`,
+    );
+    record(
+      "node",
+      "check() reaches the server",
+      ["ALLOW", "REVIEW", "BLOCK"].includes(node.check?.decision),
+      `${node.check?.decision} · ${node.check?.facts} facts`,
+    );
+    record(
+      "node",
+      "default timeout survives a cold check",
+      node.timeoutDefault >= 100000,
+      `${node.timeoutDefault}ms (server budget 100000ms)`,
+    );
+    record(
+      "node",
+      "getReceipt() returns the signed doc",
+      !!node.receipt?.id,
+      node.receipt?.id ?? "no receipt",
+    );
     const bk = node.receipt?.basisKeys ?? [];
-    record("node", "receipt basis labels its digest", bk.length === 0 || bk.includes("version_sha256_of"), bk.length === 0 ? "no basis on this verdict — nothing to label" : bk.join(","));
-    record("node", "reportOutcome() (404'd for every receipt before)", node.reportOutcome === "recorded", node.reportOutcome ?? "not attempted");
-    record("node", "@usekaval/kaval/verify subpath exports", node.verifyExport === "function", `verifyReceipt is ${node.verifyExport}`);
-    record("node", "recompileSource() exists", node.recompileExport === "function", `${node.recompileExport}`);
+    record(
+      "node",
+      "receipt basis labels its digest",
+      bk.length === 0 || bk.includes("version_sha256_of"),
+      bk.length === 0
+        ? "no basis on this verdict — nothing to label"
+        : bk.join(","),
+    );
+    record(
+      "node",
+      "reportOutcome() (404'd for every receipt before)",
+      node.reportOutcome === "recorded",
+      node.reportOutcome ?? "not attempted",
+    );
+    record(
+      "node",
+      "@usekaval/kaval/verify subpath exports",
+      node.verifyExport === "function",
+      `verifyReceipt is ${node.verifyExport}`,
+    );
+    record(
+      "node",
+      "recompileSource() exists",
+      node.recompileExport === "function",
+      `${node.recompileExport}`,
+    );
+    record(
+      "node",
+      "listTrainingFeedback() exists",
+      node.listTrainingFeedbackExport === "function",
+      `${node.listTrainingFeedbackExport}`,
+    );
+    record(
+      "node",
+      "recordTrainingFeedbackConsent() exists",
+      node.recordTrainingFeedbackConsentExport === "function",
+      `${node.recordTrainingFeedbackConsentExport}`,
+    );
   }
 
   /* ---------------------------------- 2. MCP ----------------------------------- */
@@ -125,19 +229,60 @@ setTimeout(() => {
   );
   let mcp;
   try {
-    mcp = JSON.parse(run("node", [mcpDriver], { cwd: work, env: { ...process.env, KAVAL_API_KEY: KEY } }).trim().split("\n").pop());
+    mcp = JSON.parse(
+      run("node", [mcpDriver], {
+        cwd: work,
+        env: { ...process.env, KAVAL_API_KEY: KEY },
+      })
+        .trim()
+        .split("\n")
+        .pop(),
+    );
   } catch (e) {
     mcp = null;
-    record("mcp", "server starts and lists tools", false, String(e.stderr ?? e.message).slice(0, 200));
+    record(
+      "mcp",
+      "server starts and lists tools",
+      false,
+      String(e.stderr ?? e.message).slice(0, 200),
+    );
     exitCode = 1;
   }
   if (mcp) {
-    const want = ["check", "verify", "add_source", "list_sources", "report_outcome", "get_receipt", "remove_source"];
+    const want = [
+      "check",
+      "verify",
+      "add_source",
+      "list_sources",
+      "report_outcome",
+      "get_receipt",
+      "remove_source",
+      "list_contract_extraction_issues",
+      "list_bulletin_extraction_attempts",
+      "get_bulletin_extraction_attempt",
+      "list_training_feedback",
+      "record_training_feedback_consent",
+    ];
     const missing = want.filter((t) => !mcp.tools.includes(t));
-    record("mcp", "exposes the full tool surface", missing.length === 0, missing.length ? `missing ${missing.join(",")}` : mcp.tools.join(","));
-    record("mcp", "get_receipt is reachable by an agent", mcp.tools.includes("get_receipt"), "was absent before 0.6.0");
+    record(
+      "mcp",
+      "exposes the full tool surface",
+      missing.length === 0,
+      missing.length ? `missing ${missing.join(",")}` : mcp.tools.join(","),
+    );
+    record(
+      "mcp",
+      "get_receipt is reachable by an agent",
+      mcp.tools.includes("get_receipt"),
+      "was absent before 0.6.0",
+    );
     const mx = mcp.maxWait?.maximum;
-    record("mcp", "max_wait_ms ceiling is not 15000", mx === undefined || mx > 15000, `maximum=${mx ?? "unbounded"}`);
+    record(
+      "mcp",
+      "max_wait_ms ceiling is not 15000",
+      mx === undefined || mx > 15000,
+      `maximum=${mx ?? "unbounded"}`,
+    );
   }
 
   /* -------------------------------- 3. PYTHON ---------------------------------- */
@@ -147,7 +292,14 @@ setTimeout(() => {
   try {
     run("python3", ["-m", "venv", venv]);
     py = join(venv, "bin", "python");
-    run(py, ["-m", "pip", "install", "-q", "--disable-pip-version-check", "kaval"]);
+    run(py, [
+      "-m",
+      "pip",
+      "install",
+      "-q",
+      "--disable-pip-version-check",
+      "kaval",
+    ]);
     const pyDriver = join(work, "drive.py");
     writeFileSync(
       pyDriver,
@@ -172,24 +324,65 @@ except Exception as e:
 print(json.dumps(out))
 `,
     );
-    const pyOut = JSON.parse(run(py, [pyDriver], { cwd: work, env: { ...process.env, KAVAL_API_KEY: KEY } }).trim().split("\n").pop());
-    record("python", "installs from PyPI and imports", true, `kaval ${pyOut.version}`);
+    const pyOut = JSON.parse(
+      run(py, [pyDriver], {
+        cwd: work,
+        env: { ...process.env, KAVAL_API_KEY: KEY },
+      })
+        .trim()
+        .split("\n")
+        .pop(),
+    );
+    record(
+      "python",
+      "installs from PyPI and imports",
+      true,
+      `kaval ${pyOut.version}`,
+    );
     record("python", "health()", pyOut.health?.ok === true, "");
-    record("python", "check() reaches the server", ["ALLOW", "REVIEW", "BLOCK"].includes(pyOut.check?.decision), `${pyOut.check?.decision} · ${pyOut.check?.facts} facts`);
-    record("python", "recompile_source() exists", pyOut.has_recompile === true, "");
-    record("python", "verify('string') raises cleanly", /TypeError|ValueError/.test(pyOut.verify_guard ?? ""), `${pyOut.verify_guard} (AttributeError would be the bug)`);
-    record("python", "does NOT export a bogus `Kaval` name", pyOut.exports_Kaval === false, "docs must say KavalClient");
+    record(
+      "python",
+      "check() reaches the server",
+      ["ALLOW", "REVIEW", "BLOCK"].includes(pyOut.check?.decision),
+      `${pyOut.check?.decision} · ${pyOut.check?.facts} facts`,
+    );
+    record(
+      "python",
+      "recompile_source() exists",
+      pyOut.has_recompile === true,
+      "",
+    );
+    record(
+      "python",
+      "verify('string') raises cleanly",
+      /TypeError|ValueError/.test(pyOut.verify_guard ?? ""),
+      `${pyOut.verify_guard} (AttributeError would be the bug)`,
+    );
+    record(
+      "python",
+      "does NOT export a bogus `Kaval` name",
+      pyOut.exports_Kaval === false,
+      "docs must say KavalClient",
+    );
   } catch (e) {
-    record("python", "installs from PyPI and drives the API", false, String(e.stderr ?? e.message).slice(0, 240));
+    record(
+      "python",
+      "installs from PyPI and drives the API",
+      false,
+      String(e.stderr ?? e.message).slice(0, 240),
+    );
     exitCode = 1;
   }
 
   /* --------------------------------- summary ----------------------------------- */
   const failed = results.filter((r) => !r.ok);
-  console.log(`\n  ${failed.length === 0 ? C.g : C.r}${results.length - failed.length}/${results.length} checks passed${C.x}`);
+  console.log(
+    `\n  ${failed.length === 0 ? C.g : C.r}${results.length - failed.length}/${results.length} checks passed${C.x}`,
+  );
   if (failed.length) {
     exitCode = 1;
-    for (const f of failed) console.log(`    ${C.r}·${C.x} [${f.surface}] ${f.name} — ${f.detail}`);
+    for (const f of failed)
+      console.log(`    ${C.r}·${C.x} [${f.surface}] ${f.name} — ${f.detail}`);
   }
 } finally {
   rmSync(work, { recursive: true, force: true });

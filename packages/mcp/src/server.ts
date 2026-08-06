@@ -1,8 +1,18 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  McpServer,
+  ResourceTemplate,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  BULLETIN_EXTRACTION_ATTEMPT_STATUSES,
+  CONTRACT_EXTRACTION_ISSUE_CODES,
   DEFAULT_CHECK_MAX_WAIT_MS,
   KavalError,
   KavalRetiredError,
+  MAX_CONTRACT_PDF_BYTES,
+  MAX_FACT_IMPORT_ITEMS,
+  MAX_FACT_IMPORT_SOURCE_REFERENCES,
+  MAX_INLINE_CONTRACT_BYTES,
+  MAX_PORTFOLIO_PAGE_SIZE,
   MIN_CHECK_MAX_WAIT_MS,
   type Kaval,
 } from "@usekaval/kaval";
@@ -34,7 +44,7 @@ const idempotencyKeyInput = z
   .string()
   .min(8)
   .max(200)
-  .regex(/^[\x21-\x7e]+$/)
+  .regex(/^[\x20-\x7e]+$/)
   .optional()
   .describe(
     "reuse the operation key returned by an ambiguous prior attempt; omit for a new operation",
@@ -97,15 +107,17 @@ const evidenceRefsInput = z
 
 /** A caller-decomposed fact. Structured claims skip compilation entirely — no model call. */
 /** Mirrors the server's `EntityRef`: a named entity, optionally with an id and a type. */
-const entityRefInput = z.object({
-  name: z.string().min(1),
-  id: z.string().min(1).optional(),
-  type: z.string().min(1).optional(),
-});
+const entityRefInput = z
+  .object({
+    name: z.string().trim().min(1).max(1_000),
+    id: z.string().trim().min(1).max(1_000).optional(),
+    type: z.string().trim().min(1).max(256).optional(),
+  })
+  .strict();
 
 /** Mirrors the server's `FactScope`: scalar values, not strings only. */
 const scopeValueInput = z.union([
-  z.string(),
+  z.string().max(2_000),
   z.number().finite(),
   z.boolean(),
   z.null(),
@@ -125,7 +137,7 @@ const structuredClaimInput = z
       ])
       .optional(),
     scope: z
-      .record(scopeValueInput)
+      .record(z.string().trim().min(1).max(256), scopeValueInput)
       .optional()
       .describe(
         "what the claim is scoped to, e.g. { jurisdiction: 'US', plan: 'HMO' }",
@@ -148,6 +160,111 @@ const watchedSourceKindInput = z.enum([
   "discovered",
 ]);
 
+const uuidInput = z.string().uuid();
+const stableIdInput = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(
+    /^[A-Za-z0-9](?:[A-Za-z0-9._~:@/+-]*[A-Za-z0-9._~:@+-])?$/u,
+    "must be a stable external identifier with no whitespace",
+  );
+const isoDateInput = z.string().date();
+const sha256Input = z.string().regex(/^[0-9a-f]{64}$/u);
+const httpsUrlInput = httpUrlInput.refine(
+  (value) => value.length <= 2_048 && new URL(value).protocol === "https:",
+  "must be an HTTPS URL",
+);
+const contractDocumentTypeInput = z.enum([
+  "base_agreement",
+  "amendment",
+  "attachment",
+  "fee_schedule",
+  "other",
+]);
+const contractAuthorityInput = z.enum(["signed", "unsigned", "unknown"]);
+const contractReviewStateInput = z.enum([
+  "proposed",
+  "approved",
+  "corrected",
+  "rejected",
+]);
+const contractActivationStateInput = z.enum([
+  "inactive",
+  "active",
+  "conflict",
+  "superseded",
+]);
+const contractExtractionIssueCodeInput = z.enum(
+  CONTRACT_EXTRACTION_ISSUE_CODES,
+);
+const contractSourceInput = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("upload"), upload_id: uuidInput }).strict(),
+  z
+    .object({ kind: z.literal("content_url"), content_url: httpsUrlInput })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("canonical_text"),
+      content: z
+        .string()
+        .min(1)
+        .refine(
+          (value) =>
+            new TextEncoder().encode(value).byteLength <=
+            MAX_INLINE_CONTRACT_BYTES,
+          `must not exceed ${MAX_INLINE_CONTRACT_BYTES} UTF-8 bytes`,
+        ),
+    })
+    .strict(),
+]);
+const contractMetadataInput = {
+  external_id: stableIdInput,
+  title: z.string().trim().min(1).max(512),
+  document_type: contractDocumentTypeInput,
+  authority_status: contractAuthorityInput,
+  contract_family_key: stableIdInput,
+  effective_from: isoDateInput.nullable(),
+  effective_to: isoDateInput.nullable(),
+  supersedes_contract_id: uuidInput.nullable(),
+} as const;
+const factImportItemInput = z
+  .object({
+    item_id: stableIdInput,
+    claim: structuredClaimInput,
+    contract_claim_id: uuidInput.optional(),
+    source_ids: z.array(uuidInput).max(MAX_FACT_IMPORT_SOURCE_REFERENCES),
+  })
+  .strict();
+const bulletinStatusInput = z.enum(["candidate", "review", "confirmed"]);
+const bulletinExtractionAttemptStatusInput = z.enum(
+  BULLETIN_EXTRACTION_ATTEMPT_STATUSES,
+);
+const trainingStatusInput = z.enum([
+  "queued",
+  "running",
+  "awaiting_promotion",
+  "promoted",
+  "rejected",
+  "failed",
+  "cancelled",
+  "insufficient_data",
+]);
+const trainingUseInput = z.enum(["approved", "withheld"]);
+
+const payerIdInput = z.string().trim().min(1).max(256);
+/** `YYYY-MM`, the granularity every policy-update run and package is keyed by. */
+const periodInput = z
+  .string()
+  .regex(/^\d{4}-(0[1-9]|1[0-2])$/u, "must be a YYYY-MM period");
+/** A JSON Schema document — validated structurally server-side; MCP only bounds its size. */
+const jsonSchemaInput = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (value) => JSON.stringify(value).length <= 65_536,
+    "must not exceed 64 KiB serialized",
+  );
+
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
@@ -157,6 +274,55 @@ function toolError(payload: unknown) {
     content: [{ type: "text" as const, text: JSON.stringify(payload) }],
     isError: true,
   };
+}
+
+async function resourceJson(
+  uri: URL,
+  read: () => Promise<unknown>,
+): Promise<{
+  contents: Array<{ uri: string; mimeType: "application/json"; text: string }>;
+}> {
+  let value: unknown;
+  try {
+    value = await read();
+  } catch (error) {
+    console.error("[kaval-mcp] resource error:", error);
+    if (error instanceof KavalError) {
+      const detail = apiError(error.payload);
+      value = {
+        error: detail.code ?? "request_failed",
+        ...(detail.message ? { message: detail.message } : {}),
+        status: error.status,
+      };
+    } else if (error instanceof TypeError) {
+      value = {
+        error: "network_unreachable",
+        message: "could not reach the Kaval API",
+      };
+    } else {
+      value = { error: "internal error" };
+    }
+  }
+  return {
+    contents: [
+      {
+        uri: uri.href,
+        mimeType: "application/json",
+        text: JSON.stringify(value),
+      },
+    ],
+  };
+}
+
+function templateId(
+  value: string | string[] | undefined,
+  name: string,
+): string {
+  const id = Array.isArray(value) ? value[0] : value;
+  if (id === undefined || !uuidInput.safeParse(id).success) {
+    throw new TypeError(`${name} must be a UUID`);
+  }
+  return id;
 }
 
 interface TransportOptions {
@@ -200,6 +366,81 @@ interface WireClient {
   verify(
     input: Record<string, unknown>,
     options?: TransportOptions,
+  ): Promise<unknown>;
+  createContractUpload(
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  createContract(
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  getContract(contractId: string, options?: TransportOptions): Promise<unknown>;
+  listContractClaims(
+    contractId: string,
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  listContractExtractionIssues(
+    contractId: string,
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  reviewContractClaim(
+    contractId: string,
+    claimId: string,
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  createFactImport(
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  getFactImport(importId: string, options?: TransportOptions): Promise<unknown>;
+  listBulletins(
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  getBulletin(bulletinId: string, options?: TransportOptions): Promise<unknown>;
+  listBulletinExtractionAttempts(
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  getBulletinExtractionAttempt(
+    sourceVersionId: string,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  listTrainingJobs(
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  getTrainingJob(jobId: string, options?: TransportOptions): Promise<unknown>;
+  listTrainingFeedback(
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  recordTrainingFeedbackConsent(
+    feedbackId: string,
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  createExtractionSchema(
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  listExtractionSchemas(options?: TransportOptions): Promise<unknown>;
+  createPolicyUpdate(
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  getPolicyUpdate(runId: string, options?: TransportOptions): Promise<unknown>;
+  listPolicyUpdates(
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  listPolicyUpdatePackages(
+    options?: TransportOptions & Record<string, unknown>,
+  ): Promise<unknown>;
+  updateSource(
+    input: Record<string, unknown>,
+    options?: TransportOptions,
+  ): Promise<unknown>;
+  getSourceVersionContent(
+    sourceVersionId: string,
+    options?: TransportOptions & Record<string, unknown>,
   ): Promise<unknown>;
 }
 
@@ -305,19 +546,19 @@ async function safe(fn: () => Promise<unknown>, signal?: AbortSignal) {
  * identifies the facts that action depends on, checks them against the sources it watches, and
  * returns ALLOW, REVIEW, or BLOCK with a signed receipt. `get_receipt` fetches the full signed
  * document behind that receipt id, which is what an agent shows when it blocks. `add_source` /
- * `list_sources` / `remove_source` control what Kaval watches; `report_outcome` closes the
- * calibration loop. `verify` is a deprecated alias kept for pilot integrations. Tool names use
- * underscores for client portability.
+ * `list_sources` / `remove_source` control what Kaval watches. Portfolio tools handle contracts,
+ * bulk imports, structured bulletins, training status, feedback review, and explicit consent.
+ * `report_outcome` closes the calibration loop. `verify` is a deprecated pilot alias.
  */
 export function createMcpServer(client: Kaval): McpServer {
-  const server = new McpServer({ name: "kaval", version: "0.7.1" });
+  const server = new McpServer({ name: "kaval", version: "0.7.2" });
   const api = client as unknown as WireClient;
 
   server.registerTool(
     "check",
     {
       description:
-        "Verify the facts an action depends on BEFORE acting on it. Describe the action you are about to take (and any context you are relying on), or pass the specific claims, and Kaval re-checks each fact against the sources it watches — returning decision ALLOW, REVIEW, or BLOCK with a signed receipt. ALLOW: every material fact still holds on fresh evidence — proceed. REVIEW: something is unknown, mid-re-evaluation, or changed at low/medium materiality — REVIEW IS NEVER PERMISSION TO ACT; surface it to a human or re-research. BLOCK: a high/critical fact has changed, or a critical fact is unknown — do not proceed. Each returned fact carries its status (holds | changed | unknown) and the sources it rests on, so you can see exactly WHICH belief moved. A fact already backed by a watched source is answered from stored state in ~50ms with no model call and no fetch, so calling it on every consequential action is cheap; a fact Kaval has not seen before has to be researched first and takes seconds. Use this instead of re-researching a fact you already believe.",
+        "Verify the facts an action depends on BEFORE acting on it. Describe the action you are about to take (and any context you are relying on), or pass the specific claims, and Kaval re-checks each fact against the sources it watches — returning decision ALLOW, REVIEW, or BLOCK with a signed receipt. ALLOW: every material fact still holds on fresh evidence — proceed. REVIEW: something is unknown, mid-re-evaluation, or changed at low/medium materiality — REVIEW IS NEVER PERMISSION TO ACT; surface it to a human or re-research. BLOCK: a high/critical fact has changed, or a critical fact is unknown — do not proceed. Each returned fact carries its status (holds | changed | unknown) and the sources it rests on, so you can see exactly WHICH belief moved. A fact already backed by a watched source is answered from stored state with no model call and no fetch at all, so calling it on every consequential action is cheap; a fact Kaval has not seen before has to be researched first and takes seconds. Use this instead of re-researching a fact you already believe.",
       inputSchema: {
         action: z
           .string()
@@ -417,6 +658,574 @@ export function createMcpServer(client: Kaval): McpServer {
       // reliably than a bare object, so put it back.
       safe(
         async () => ({ receipt: await api.getReceipt(receipt_id, { signal }) }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "prepare_contract_upload",
+    {
+      description:
+        "Create a private PDF upload target. Upload the exact bytes to upload_url before you call ingest_contract with the returned upload id.",
+      inputSchema: {
+        filename: z.string().min(1).max(255),
+        content_type: z.literal("application/pdf").default("application/pdf"),
+        size_bytes: z.number().int().min(1).max(MAX_CONTRACT_PDF_BYTES),
+        sha256: sha256Input.describe(
+          "lowercase SHA-256 digest of the exact PDF bytes",
+        ),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...input }, { signal }) =>
+      safe(
+        () =>
+          api.createContractUpload(
+            input,
+            transportOptions(idempotency_key, signal),
+          ),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "ingest_contract",
+    {
+      description:
+        "Queue a contract for extraction. Use canonical text, an approved HTTPS content URL, or an upload id from prepare_contract_upload.",
+      inputSchema: {
+        ...contractMetadataInput,
+        source: contractSourceInput,
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...input }, { signal }) => {
+      if (
+        input.effective_from !== null &&
+        input.effective_to !== null &&
+        input.effective_to < input.effective_from
+      ) {
+        return toolError({
+          error: "bad_request",
+          message: "effective_to must not be before effective_from",
+        });
+      }
+      return safe(
+        () =>
+          api.createContract(input, transportOptions(idempotency_key, signal)),
+        signal,
+      );
+    },
+  );
+
+  server.registerTool(
+    "get_contract",
+    {
+      description:
+        "Get contract processing status, candidate counts, and extraction issue state. Poll until the contract is ready for review or has failed.",
+      inputSchema: { contract_id: uuidInput },
+    },
+    async ({ contract_id }, { signal }) =>
+      safe(() => api.getContract(contract_id, { signal }), signal),
+  );
+
+  server.registerTool(
+    "list_contract_claims",
+    {
+      description:
+        "List extracted claim candidates with exact evidence spans. A reviewer must approve, correct, or reject each candidate before activation.",
+      inputSchema: {
+        contract_id: uuidInput,
+        status: contractReviewStateInput.optional(),
+        activation_state: contractActivationStateInput.optional(),
+        cursor: z.string().min(1).max(1_000).optional(),
+        limit: z.number().int().min(1).max(MAX_PORTFOLIO_PAGE_SIZE).optional(),
+      },
+    },
+    async ({ contract_id, activation_state, ...options }, { signal }) =>
+      safe(
+        () =>
+          api.listContractClaims(contract_id, {
+            signal,
+            ...options,
+            ...(activation_state === undefined
+              ? {}
+              : { activationState: activation_state }),
+          }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "list_contract_extraction_issues",
+    {
+      description:
+        "List deterministic contract extraction failures for customer review. Each issue identifies the rejected candidate and evidence-line range without exposing contract text.",
+      inputSchema: z
+        .object({
+          contract_id: uuidInput,
+          issue_code: contractExtractionIssueCodeInput.optional(),
+          cursor: z.string().min(1).max(1_000).optional(),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_PORTFOLIO_PAGE_SIZE)
+            .optional(),
+        })
+        .strict(),
+    },
+    async ({ contract_id, issue_code, ...options }, { signal }) =>
+      safe(
+        () =>
+          api.listContractExtractionIssues(contract_id, {
+            signal,
+            ...options,
+            ...(issue_code === undefined ? {} : { issueCode: issue_code }),
+          }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "review_contract_claim",
+    {
+      description:
+        "Record an immutable human review. Use correct only with corrected_claim. The expected version prevents a stale review from overwriting newer work.",
+      inputSchema: {
+        contract_id: uuidInput,
+        claim_id: uuidInput,
+        review_id: stableIdInput,
+        decision: z.enum(["approve", "correct", "reject"]),
+        expected_candidate_version: z.number().int().positive(),
+        reason: z.string().trim().min(1).max(4_000).optional(),
+        corrected_claim: structuredClaimInput.optional(),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async (
+      { contract_id, claim_id, idempotency_key, ...input },
+      { signal },
+    ) => {
+      if (
+        (input.decision === "correct") !==
+        (input.corrected_claim !== undefined)
+      ) {
+        return toolError({
+          error: "bad_request",
+          message: "corrected_claim is required only for a correct decision",
+        });
+      }
+      return safe(
+        () =>
+          api.reviewContractClaim(
+            contract_id,
+            claim_id,
+            input,
+            transportOptions(idempotency_key, signal),
+          ),
+        signal,
+      );
+    },
+  );
+
+  server.registerTool(
+    "import_facts",
+    {
+      description:
+        "Queue 1 through 400 reviewed facts for warm checks. This tool does not create watched sources. Each item gets a terminal result.",
+      inputSchema: {
+        external_batch_id: stableIdInput,
+        items: z.array(factImportItemInput).min(1).max(MAX_FACT_IMPORT_ITEMS),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, items, ...input }, { signal }) => {
+      const itemIds = items.map((item) => item.item_id);
+      if (new Set(itemIds).size !== itemIds.length) {
+        return toolError({
+          error: "duplicate_item_id",
+          message: "item_id values must be unique",
+        });
+      }
+      for (const item of items) {
+        if (new Set(item.source_ids).size !== item.source_ids.length) {
+          return toolError({
+            error: "bad_request",
+            message: `source_ids must be unique for item ${item.item_id}`,
+          });
+        }
+      }
+      return safe(
+        () =>
+          api.createFactImport(
+            { ...input, items },
+            transportOptions(idempotency_key, signal),
+          ),
+        signal,
+      );
+    },
+  );
+
+  server.registerTool(
+    "get_fact_import",
+    {
+      description:
+        "Get one bulk import and every item result. Poll until the batch reaches a terminal state.",
+      inputSchema: { import_id: uuidInput },
+    },
+    async ({ import_id }, { signal }) =>
+      safe(() => api.getFactImport(import_id, { signal }), signal),
+  );
+
+  server.registerTool(
+    "list_bulletins",
+    {
+      description:
+        "List structured payer bulletins. Filter by payer, policy, code, publisher date, or review status. Dates are publisher-stated dates only. Prefer create_extraction_schema + create_policy_update (or update_source's extraction_schema_id binding) for new integrations — this free-text pipeline still works but is not receiving new record types.",
+      inputSchema: {
+        source_id: uuidInput.optional(),
+        payer_id: z.string().trim().min(1).max(256).optional(),
+        policy_number: z.string().trim().min(1).max(256).optional(),
+        code: z.string().trim().min(1).max(256).optional(),
+        record_status: bulletinStatusInput.optional(),
+        published_from: isoDateInput.optional(),
+        published_to: isoDateInput.optional(),
+        cursor: z.string().min(1).max(1_000).optional(),
+        limit: z.number().int().min(1).max(MAX_PORTFOLIO_PAGE_SIZE).optional(),
+      },
+    },
+    async (
+      {
+        source_id,
+        payer_id,
+        policy_number,
+        record_status,
+        published_from,
+        published_to,
+        ...options
+      },
+      { signal },
+    ) => {
+      if (
+        published_from !== undefined &&
+        published_to !== undefined &&
+        published_from > published_to
+      ) {
+        return toolError({
+          error: "invalid_bulletin_filter",
+          message: "published_to must not be before published_from",
+        });
+      }
+      return safe(
+        () =>
+          api.listBulletins({
+            signal,
+            ...options,
+            ...(source_id === undefined ? {} : { sourceId: source_id }),
+            ...(payer_id === undefined ? {} : { payerId: payer_id }),
+            ...(policy_number === undefined
+              ? {}
+              : { policyNumber: policy_number }),
+            ...(record_status === undefined
+              ? {}
+              : { recordStatus: record_status }),
+            ...(published_from === undefined
+              ? {}
+              : { publishedFrom: published_from }),
+            ...(published_to === undefined
+              ? {}
+              : { publishedTo: published_to }),
+          }),
+        signal,
+      );
+    },
+  );
+
+  server.registerTool(
+    "get_bulletin",
+    {
+      description:
+        "Get one structured bulletin by source-version id. Each field includes its status and exact evidence when available. Prefer get_policy_update for new integrations — this free-text pipeline still works but is not receiving new record types.",
+      inputSchema: { source_version_id: uuidInput },
+    },
+    async ({ source_version_id }, { signal }) =>
+      safe(() => api.getBulletin(source_version_id, { signal }), signal),
+  );
+
+  server.registerTool(
+    "list_bulletin_extraction_attempts",
+    {
+      description:
+        "List customer-readable bulletin extraction status. Filter by source or lifecycle state. This tool cannot requeue work. Prefer list_policy_updates for new integrations — this free-text pipeline still works but is not receiving new record types.",
+      inputSchema: z
+        .object({
+          source_id: uuidInput.optional(),
+          status: bulletinExtractionAttemptStatusInput.optional(),
+          cursor: z.string().min(1).max(1_000).optional(),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_PORTFOLIO_PAGE_SIZE)
+            .optional(),
+        })
+        .strict(),
+    },
+    async ({ source_id, ...options }, { signal }) =>
+      safe(
+        () =>
+          api.listBulletinExtractionAttempts({
+            signal,
+            ...options,
+            ...(source_id === undefined ? {} : { sourceId: source_id }),
+          }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "get_bulletin_extraction_attempt",
+    {
+      description:
+        "Get one customer-readable bulletin extraction attempt by source-version id. This tool cannot requeue work. Prefer get_policy_update for new integrations — this free-text pipeline still works but is not receiving new record types.",
+      inputSchema: z.object({ source_version_id: uuidInput }).strict(),
+    },
+    async ({ source_version_id }, { signal }) =>
+      safe(
+        () => api.getBulletinExtractionAttempt(source_version_id, { signal }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "list_training_jobs",
+    {
+      description:
+        "List training and evaluation job status. This read-only tool does not start, approve, or promote a model.",
+      inputSchema: {
+        status: trainingStatusInput.optional(),
+        demo_only: z.boolean().optional(),
+        cursor: z.string().min(1).max(1_000).optional(),
+        limit: z.number().int().min(1).max(MAX_PORTFOLIO_PAGE_SIZE).optional(),
+      },
+    },
+    async ({ demo_only, ...options }, { signal }) =>
+      safe(
+        () =>
+          api.listTrainingJobs({
+            signal,
+            ...options,
+            ...(demo_only === undefined ? {} : { demoOnly: demo_only }),
+          }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "get_training_job",
+    {
+      description:
+        "Get one training job status. Production promotion remains an internal operation and is not available through MCP.",
+      inputSchema: { job_id: uuidInput },
+    },
+    async ({ job_id }, { signal }) =>
+      safe(() => api.getTrainingJob(job_id, { signal }), signal),
+  );
+
+  server.registerTool(
+    "list_training_feedback",
+    {
+      description:
+        "List reviewed feedback and its effective training-use state. This read requires training:manage and does not approve data for training.",
+      inputSchema: z
+        .object({
+          effective_training_use: trainingUseInput.optional(),
+          cursor: z.string().min(1).max(1_000).optional(),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_PORTFOLIO_PAGE_SIZE)
+            .optional(),
+        })
+        .strict(),
+    },
+    async ({ effective_training_use, ...options }, { signal }) =>
+      safe(
+        () =>
+          api.listTrainingFeedback({
+            signal,
+            ...options,
+            ...(effective_training_use === undefined
+              ? {}
+              : { effectiveTrainingUse: effective_training_use }),
+          }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "record_training_feedback_consent",
+    {
+      description:
+        "Record an explicit, auditable training-use decision for one reviewed feedback item. This mutation requires training:manage. Approval requires consent_to_training=true.",
+      inputSchema: z
+        .object({
+          feedback_id: uuidInput,
+          training_use: trainingUseInput,
+          consent_to_training: z.boolean(),
+          reason: z.string().trim().min(1).max(1_000).nullable().optional(),
+          idempotency_key: idempotencyKeyInput,
+        })
+        .strict(),
+    },
+    async (
+      {
+        feedback_id,
+        training_use,
+        consent_to_training,
+        reason,
+        idempotency_key,
+      },
+      { signal },
+    ) => {
+      if ((training_use === "approved") !== consent_to_training) {
+        return toolError({
+          error: "invalid_training_consent",
+          message: "approved training use requires explicit consent",
+        });
+      }
+      return safe(
+        () =>
+          api.recordTrainingFeedbackConsent(
+            feedback_id,
+            {
+              schema_version: "training-feedback-consent-request/1.0.0",
+              training_use,
+              consent_to_training,
+              ...(reason === undefined ? {} : { reason }),
+            },
+            transportOptions(idempotency_key, signal),
+          ),
+        signal,
+      );
+    },
+  );
+
+  server.registerTool(
+    "create_extraction_schema",
+    {
+      description:
+        "Register a JSON Schema Kaval extracts structured records against. Bind the returned schema's id to a source with update_source so every document that lands on it afterward is extracted automatically and delivered as a policy_update.document webhook, or pass it directly to create_policy_update for a one-off payer + period run. This is the schema-bound successor to list_bulletins' free-text extraction. Requires policy-update:manage.",
+      inputSchema: {
+        name: z.string().trim().min(1).max(512),
+        json_schema: jsonSchemaInput.describe(
+          "the JSON Schema records must satisfy, e.g. {type:'object', properties:{cpt_code:{type:'string'}}, required:['cpt_code']}",
+        ),
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...input }, { signal }) =>
+      safe(
+        () =>
+          api.createExtractionSchema(
+            input,
+            transportOptions(idempotency_key, signal),
+          ),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "list_extraction_schemas",
+    {
+      description:
+        "List the extraction schemas registered in this workspace, newest first.",
+      inputSchema: {},
+    },
+    async (_args, { signal }) =>
+      safe(
+        async () => ({
+          extraction_schemas: await api.listExtractionSchemas({ signal }),
+        }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "create_policy_update",
+    {
+      description:
+        "Request a one-off payer + period extraction run against a bound extraction schema, instead of waiting for the next document to land on a watched source. Requires policy-update:manage. Answers with the run in status 'processing' — poll get_policy_update or wait for its policy_update.document webhook.",
+      inputSchema: {
+        payer_id: payerIdInput.describe(
+          "the payer this run extracts records for",
+        ),
+        period: periodInput.describe("the YYYY-MM period to extract"),
+        extraction_schema_id: uuidInput,
+        idempotency_key: idempotencyKeyInput,
+      },
+    },
+    async ({ idempotency_key, ...input }, { signal }) =>
+      safe(
+        () =>
+          api.createPolicyUpdate(
+            input,
+            transportOptions(idempotency_key, signal),
+          ),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "get_policy_update",
+    {
+      description:
+        "Get one extraction run ('policy update') by id — its status (processing | retry | succeeded | review_required | failed), the schema it ran against, and its extracted result once it succeeds.",
+      inputSchema: { run_id: uuidInput },
+    },
+    async ({ run_id }, { signal }) =>
+      safe(() => api.getPolicyUpdate(run_id, { signal }), signal),
+  );
+
+  server.registerTool(
+    "list_policy_updates",
+    {
+      description:
+        "List extraction runs ('policy updates'), optionally filtered by payer and/or YYYY-MM period.",
+      inputSchema: {
+        payer_id: payerIdInput.optional(),
+        period: periodInput.optional(),
+      },
+    },
+    async (args, { signal }) =>
+      safe(
+        async () => ({
+          policy_updates: await api.listPolicyUpdates({ signal, ...args }),
+        }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
+    "list_policy_update_packages",
+    {
+      description:
+        "List the monthly PDF + manifest rollups every payer/period's extraction runs are packaged into, optionally filtered by payer and/or YYYY-MM period.",
+      inputSchema: {
+        payer_id: payerIdInput.optional(),
+        period: periodInput.optional(),
+      },
+    },
+    async (args, { signal }) =>
+      safe(
+        async () => ({
+          policy_update_packages: await api.listPolicyUpdatePackages({
+            signal,
+            ...args,
+          }),
+        }),
         signal,
       ),
   );
@@ -535,6 +1344,50 @@ export function createMcpServer(client: Kaval): McpServer {
   );
 
   server.registerTool(
+    "update_source",
+    {
+      description:
+        "Bind (or unbind) an extraction schema on a watched source, by the `id` add_source or list_sources returned. Once bound, every document that lands on the source is run through create_extraction_schema's schema automatically and delivered as a policy_update.document webhook — no more polling create_policy_update per period. Pass extraction_schema_id: null to unbind. Requires policy-update:manage.",
+      inputSchema: {
+        id: z
+          .string()
+          .uuid()
+          .describe(
+            "the watched-source id returned by add_source (`source.id`) or list_sources",
+          ),
+        extraction_schema_id: uuidInput
+          .nullable()
+          .describe(
+            "the extraction schema to bind, or null to unbind and stop automatic extraction",
+          ),
+      },
+    },
+    async ({ id, ...input }, { signal }) =>
+      safe(() => api.updateSource({ id, ...input }, { signal }), signal),
+  );
+
+  server.registerTool(
+    "get_source_version_content",
+    {
+      description:
+        "Fetch the captured content of one fetched version of a watched source, by the `source_version_id` a policy_update.document webhook or an extraction run names. Defaults to the raw canonical text; pass format:'sections' to get it pre-split into the same sections the sectionizer feeds extraction runs.",
+      inputSchema: {
+        source_version_id: uuidInput,
+        format: z.enum(["sections"]).optional(),
+      },
+    },
+    async ({ source_version_id, format }, { signal }) =>
+      safe(
+        () =>
+          api.getSourceVersionContent(source_version_id, {
+            signal,
+            ...(format === undefined ? {} : { format }),
+          }),
+        signal,
+      ),
+  );
+
+  server.registerTool(
     "report_outcome",
     {
       description:
@@ -576,7 +1429,7 @@ export function createMcpServer(client: Kaval): McpServer {
     "verify",
     {
       description:
-        "DEPRECATED — prefer the `check` tool. Verifies one load-bearing conclusion against evidence references you supply and returns a signed ProofPacket receipt (status valid | invalidated | could_not_verify, receipt.decision ALLOW | REVIEW | BLOCK). Kept only for existing pilot integrations that pass explicit evidence_refs; it will be removed. New calls should use `check`, which needs no evidence list, is answered from watched state in milliseconds, and keeps monitoring the facts afterwards.",
+        "DEPRECATED — prefer the `check` tool. Verifies one load-bearing conclusion against evidence references you supply and returns a signed ProofPacket receipt (status valid | invalidated | could_not_verify, receipt.decision ALLOW | REVIEW | BLOCK). Kept only for existing pilot integrations that pass explicit evidence_refs; it will be removed. New calls should use `check`, which needs no evidence list, is answered from watched state with no model call and no fetch, and keeps monitoring the facts afterwards.",
       inputSchema: {
         conclusion: z
           .string()
@@ -603,6 +1456,192 @@ export function createMcpServer(client: Kaval): McpServer {
       safe(
         () => api.verify(args, transportOptions(idempotency_key, signal)),
         signal,
+      ),
+  );
+
+  server.registerResource(
+    "contract",
+    new ResourceTemplate("kaval://contracts/{contract_id}", {
+      list: undefined,
+    }),
+    {
+      title: "Contract status",
+      description: "One contract and its current extraction status.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.getContract(templateId(variables.contract_id, "contract_id"), {
+          signal,
+        }),
+      ),
+  );
+
+  server.registerResource(
+    "contract-claims",
+    new ResourceTemplate("kaval://contracts/{contract_id}/claims", {
+      list: undefined,
+    }),
+    {
+      title: "Contract claim candidates",
+      description:
+        "The first page of extracted claim candidates for one contract.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.listContractClaims(
+          templateId(variables.contract_id, "contract_id"),
+          { signal, limit: MAX_PORTFOLIO_PAGE_SIZE },
+        ),
+      ),
+  );
+
+  server.registerResource(
+    "contract-extraction-issues",
+    new ResourceTemplate("kaval://contracts/{contract_id}/extraction-issues", {
+      list: undefined,
+    }),
+    {
+      title: "Contract extraction issues",
+      description:
+        "The first page of deterministic extraction failures for one contract.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.listContractExtractionIssues(
+          templateId(variables.contract_id, "contract_id"),
+          { signal, limit: MAX_PORTFOLIO_PAGE_SIZE },
+        ),
+      ),
+  );
+
+  server.registerResource(
+    "structured-bulletins",
+    "kaval://bulletins",
+    {
+      title: "Structured bulletins",
+      description: "The newest structured payer bulletins in this workspace.",
+      mimeType: "application/json",
+    },
+    async (uri, { signal }) =>
+      resourceJson(uri, () => api.listBulletins({ signal, limit: 50 })),
+  );
+
+  server.registerResource(
+    "bulletin-extraction-attempts",
+    "kaval://bulletins/extraction-attempts",
+    {
+      title: "Bulletin extraction attempts",
+      description:
+        "The newest customer-readable bulletin extraction lifecycle records.",
+      mimeType: "application/json",
+    },
+    async (uri, { signal }) =>
+      resourceJson(uri, () =>
+        api.listBulletinExtractionAttempts({ signal, limit: 50 }),
+      ),
+  );
+
+  server.registerResource(
+    "structured-bulletin",
+    new ResourceTemplate("kaval://bulletins/{source_version_id}", {
+      list: undefined,
+    }),
+    {
+      title: "Structured bulletin",
+      description: "One structured payer bulletin with field evidence.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.getBulletin(
+          templateId(variables.source_version_id, "source_version_id"),
+          { signal },
+        ),
+      ),
+  );
+
+  server.registerResource(
+    "bulletin-extraction-attempt",
+    new ResourceTemplate(
+      "kaval://bulletins/extraction-attempts/{source_version_id}",
+      { list: undefined },
+    ),
+    {
+      title: "Bulletin extraction attempt",
+      description:
+        "One customer-readable bulletin extraction lifecycle record.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.getBulletinExtractionAttempt(
+          templateId(variables.source_version_id, "source_version_id"),
+          { signal },
+        ),
+      ),
+  );
+
+  server.registerResource(
+    "fact-import",
+    new ResourceTemplate("kaval://fact-imports/{import_id}", {
+      list: undefined,
+    }),
+    {
+      title: "Bulk fact import",
+      description: "One bulk fact import and its item results.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.getFactImport(templateId(variables.import_id, "import_id"), {
+          signal,
+        }),
+      ),
+  );
+
+  server.registerResource(
+    "training-jobs",
+    "kaval://training-jobs",
+    {
+      title: "Training jobs",
+      description: "The newest read-only training and evaluation job statuses.",
+      mimeType: "application/json",
+    },
+    async (uri, { signal }) =>
+      resourceJson(uri, () => api.listTrainingJobs({ signal, limit: 50 })),
+  );
+
+  server.registerResource(
+    "training-feedback",
+    "kaval://training-feedback",
+    {
+      title: "Training feedback",
+      description:
+        "Reviewed feedback and each item's explicit training-use state.",
+      mimeType: "application/json",
+    },
+    async (uri, { signal }) =>
+      resourceJson(uri, () => api.listTrainingFeedback({ signal, limit: 50 })),
+  );
+
+  server.registerResource(
+    "training-job",
+    new ResourceTemplate("kaval://training-jobs/{job_id}", {
+      list: undefined,
+    }),
+    {
+      title: "Training job",
+      description: "One read-only training and evaluation job status.",
+      mimeType: "application/json",
+    },
+    async (uri, variables, { signal }) =>
+      resourceJson(uri, () =>
+        api.getTrainingJob(templateId(variables.job_id, "job_id"), {
+          signal,
+        }),
       ),
   );
 

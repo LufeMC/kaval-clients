@@ -65,6 +65,11 @@ describe("kaval-mcp bin (smoke)", () => {
           "list_sources",
           "remove_source",
           "report_outcome",
+          "list_contract_extraction_issues",
+          "list_bulletin_extraction_attempts",
+          "get_bulletin_extraction_attempt",
+          "list_training_feedback",
+          "record_training_feedback_consent",
           "verify",
         ]),
       );

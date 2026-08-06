@@ -94,6 +94,7 @@ describe("check-decision conformance vectors", () => {
     expect(CHECK_DECISION_RULE_VERSIONS).toEqual([
       "check-decision/1.0.0",
       "check-decision/1.1.0",
+      "check-decision/2.0.0",
     ]);
   });
 

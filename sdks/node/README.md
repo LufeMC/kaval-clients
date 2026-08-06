@@ -1,11 +1,19 @@
 # @usekaval/kaval
 
-Before an AI agent acts, send Kaval the action. Kaval identifies the facts that action depends on,
-checks them against the sources it watches, and answers `ALLOW`, `REVIEW`, or `BLOCK` with a signed
-receipt.
+The primary loop: **watch a source → extract structured records against a schema → get pushed a
+`policy_update.*` webhook as documents land.** Register what Kaval should watch with `addSource()`,
+bind an `ExtractionSchema` to it, and subscribe once — no polling, no re-reading a bulletin feed to
+find out what changed.
 
-Policy engines decide whether an action is permitted under the rules; Kaval verifies whether the
-facts those rules depend on are still true.
+```
+addSource()  →  createExtractionSchema() + updateSource()  →  subscribePolicyUpdates()
+   (watch)              (what to extract)                       (get pushed the result)
+```
+
+Before an AI agent acts, it can also send Kaval the action directly: `check()` identifies the facts
+that action depends on, checks them against the sources Kaval watches, and answers `ALLOW`,
+`REVIEW`, or `BLOCK` with a signed receipt. Policy engines decide whether an action is permitted
+under the rules; Kaval verifies whether the facts those rules depend on are still true.
 
 ```bash
 npm install @usekaval/kaval
@@ -31,11 +39,11 @@ const { Kaval } = await import("@usekaval/kaval");
 
 Three entry points, one zero-dependency package:
 
-| Import                              | What it is                                                            |
-| ----------------------------------- | --------------------------------------------------------------------- |
-| `@usekaval/kaval`                   | the API client — `check()` and everything that configures it           |
-| `@usekaval/kaval/verify`            | the offline verifier — receipts + webhook signatures, no network code  |
-| `@usekaval/kaval/verify/discovery`  | live HTTPS key discovery, kept separate so the network choice is loud  |
+| Import                             | What it is                                                            |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| `@usekaval/kaval`                  | the API client — `check()` and everything that configures it          |
+| `@usekaval/kaval/verify`           | the offline verifier — receipts + webhook signatures, no network code |
+| `@usekaval/kaval/verify/discovery` | live HTTPS key discovery, kept separate so the network choice is loud |
 
 It also installs one command, `kaval-receipt-verify`. See
 [`/verify`](#verify--the-offline-verifier).
@@ -82,12 +90,12 @@ const result = await kaval.check({
 ### What comes back
 
 ```ts
-result.decision;      // "ALLOW" | "REVIEW" | "BLOCK"
-result.reason_codes;  // ["ALL_FACTS_HOLD"] | ["FACT_CHANGED"] | …  (a closed set of 8)
-result.facts;         // [{ fingerprint, text, status, materiality, served_from_state,
-                      //    last_verified_at, sources: [{ locator, version_sha256, fetched_at }] }]
-result.receipt;       // { id, signature, signed_at }
-result.latency_ms;    // { compile, lookup, live, total }
+result.decision; // "ALLOW" | "REVIEW" | "BLOCK"
+result.reason_codes; // ["ALL_FACTS_HOLD"] | ["FACT_CHANGED"] | …  (a closed set of 8)
+result.facts; // [{ fingerprint, text, status, materiality, served_from_state,
+//    last_verified_at, sources: [{ locator, version_sha256, fetched_at }] }]
+result.receipt; // { id, signature, signed_at }
+result.latency_ms; // { compile, lookup, live, total }
 ```
 
 - **ALLOW** — every material fact still holds on a fresh basis. Safe to act.
@@ -95,36 +103,36 @@ result.latency_ms;    // { compile, lookup, live, total }
   Never permission to act.
 - **BLOCK** — a high/critical fact `changed`, or a critical fact is `unknown`.
 
-Per-fact `status` is `holds` | `changed` | `unknown`, so you can see exactly *which* belief moved
+Per-fact `status` is `holds` | `changed` | `unknown`, so you can see exactly _which_ belief moved
 rather than just that something did.
 
 ### Options
 
-| option          | meaning                                                                                     |
-| --------------- | -------------------------------------------------------------------------------------------- |
-| `action`        | what you are about to do, in plain language (required unless `claims` is given)               |
-| `context`       | what you already believe that bears on it — the retrieved chunk, the cached field             |
-| `claims`        | check these facts directly: plain sentences or `{subject, predicate, object, scope}` (max 20) |
-| `mode`          | `"standard"` (default, may research) or `"fast"` (stored state only)                          |
-| `max_wait_ms`   | live-research budget, default 100000, max 100000; 0 disables research (what `mode: "fast"` sets) |
-| `origin_urls`   | authoritative sources for this action (max 20), merged with what the workspace watches        |
-| `materiality`   | `low` \| `medium` \| `high` \| `critical`                                                     |
-| `as_of`         | RFC 3339 cutoff for what the action may rely on                                               |
+| option        | meaning                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| `action`      | what you are about to do, in plain language (required unless `claims` is given)                  |
+| `context`     | what you already believe that bears on it — the retrieved chunk, the cached field                |
+| `claims`      | check these facts directly: plain sentences or `{subject, predicate, object, scope}` (max 20)    |
+| `mode`        | `"standard"` (default, may research) or `"fast"` (stored state only)                             |
+| `max_wait_ms` | live-research budget, default 100000, max 100000; 0 disables research (what `mode: "fast"` sets) |
+| `origin_urls` | authoritative sources for this action (max 20), merged with what the workspace watches           |
+| `materiality` | `low` \| `medium` \| `high` \| `critical`                                                        |
+| `as_of`       | RFC 3339 cutoff for what the action may rely on                                                  |
 
 The default is "let the research finish": a cold check has to search, fetch and adjudicate several
 novel facts, and that routinely takes 50–100s. Lower `max_wait_ms` only when you would rather have a
 bounded `REVIEW` than an answer — a fact that misses the budget comes back `unknown`. Do not count
 on the detached remainder warming the next call: the next check recompiles the action and asks about
 different fingerprints. What makes a check warm is a **watched source** (below), and warm checks are
-a database read: ~50ms, zero model calls, zero fetches.
+a database read: zero model calls, zero fetches.
 
 The three numbers are exported, so you can bound your own inputs against the server's:
 
 ```ts
 import {
-  MIN_CHECK_MAX_WAIT_MS,     // 0      — disables research, same as mode: "fast"
+  MIN_CHECK_MAX_WAIT_MS, // 0      — disables research, same as mode: "fast"
   DEFAULT_CHECK_MAX_WAIT_MS, // 100000 — what the server applies when you omit it
-  MAX_CHECK_MAX_WAIT_MS,     // 100000 — equal to the default; you can only ask for less
+  MAX_CHECK_MAX_WAIT_MS, // 100000 — equal to the default; you can only ask for less
 } from "@usekaval/kaval";
 ```
 
@@ -143,6 +151,75 @@ Each fact carries its `basis`: the sources it was proved against. When a basis e
 extracted text, with `parser_name` / `parser_version` naming the extractor) or `"raw_bytes"` (the
 document as fetched). A PDF has both and they differ, so re-hash the artifact the label names. All
 three labels are inside the signed bytes, so a rewritten one fails verification.
+
+## Contract portfolio
+
+The portfolio methods ingest contracts, review extracted claims, and seed approved facts.
+
+```ts
+const contract = await kaval.createContract({
+  external_id: "agreement-2026-001",
+  title: "2026 payer agreement",
+  document_type: "base_agreement",
+  authority_status: "signed",
+  contract_family_key: "payer-hospital-001",
+  effective_from: "2026-01-01",
+  effective_to: null,
+  supersedes_contract_id: null,
+  source: {
+    kind: "canonical_text",
+    content: "Claims must be filed within 120 days.",
+  },
+});
+
+const status = await kaval.getContract(contract.id);
+if (status.extraction_review_state === "issues_present") {
+  const issues = await kaval.listContractExtractionIssues(contract.id, {
+    issueCode: "evidence_quote_not_exact",
+    limit: 100,
+  });
+  sendToContractReviewer(issues.data);
+}
+const candidates = await kaval.listContractClaims(contract.id, {
+  status: "proposed",
+  limit: 100,
+});
+
+await kaval.reviewContractClaim(contract.id, candidates.data[0].id, {
+  review_id: "review-2026-001",
+  decision: "approve",
+  expected_candidate_version: candidates.data[0].candidate_version,
+});
+```
+
+`ContractResource` includes `extraction_issue_count` and `extraction_review_state`.
+
+Use `createContractUpload()` before you ingest a private PDF. The API returns a private upload target.
+
+Use `createFactImport()` to queue approved facts. One import can contain 400 items.
+
+The worker processes each import in groups of 20. Each item gets a separate result.
+
+Use `listBulletins()` for structured bulletin records. Each page can contain 100 records.
+
+Use `listBulletinExtractionAttempts()` to read extraction status and failures. Use
+`getBulletinExtractionAttempt()` to read one source version. These methods cannot requeue work.
+
+> **Soft-deprecated.** Bulletins are the free-text predecessor of [Policy updates](#policy-updates):
+> bind an `ExtractionSchema` to a source instead and read `listPolicyUpdates()` /
+> `policy_update.document` webhooks for the same information, structured. The bulletin methods keep
+> working.
+
+Use `listTrainingJobs()` for read-only training status. The SDK does not expose model promotion.
+
+Use `listTrainingFeedback()` to review eligible feedback. It supports `effectiveTrainingUse`,
+`cursor`, and `limit` filters.
+
+Use `recordTrainingFeedbackConsent()` to approve or withhold one feedback item. Approval requires explicit consent.
+
+Both feedback methods require an API key with the explicit `training:manage` scope.
+
+The SDK exports all portfolio types, scope names, status names, issue codes, and frozen limits.
 
 ## `/verify` — the offline verifier
 
@@ -203,17 +280,19 @@ untrusted JSON **text**. Plain `JSON.parse` silently discards duplicate-member a
 evidence before any object-level verifier can see it.
 
 Exported: `verifyReceipt` · `verifyReceiptText` · `extractReceipt` · `verifyWebhookSignature` ·
-`decideCheck` · `deriveCheckDecision` · `checkDecisionInputFromReceipt` ·
+`decideCheck` · `deriveCheckDecision` · `deriveCheckDecisionV2` ·
+`parseCheckReceiptV2DecisionFields` · `checkDecisionInputFromReceipt` ·
 `parseJsonStrict` · `stableCanonicalJson` · `canonicalUnsignedReceiptJson` ·
 `canonicalUnsignedReceiptBytes` · `parseVerificationKey` · `verificationKeyFromDocument` ·
 `isRfc3339Timestamp` · `parseRfc3339Instant` · `rfc3339TimestampMilliseconds` ·
 `rfc3339TimestampNanoseconds` · `KAVAL_CANONICALIZATION` · `MAX_JSON_NUMBER_CHARACTERS` ·
+`CHECK_DECISION_RULE_V2_VERSION` · `CHECK_RECEIPT_V2_VERSION` ·
 `WEBHOOK_SIGNATURE_VERSION` · `WEBHOOK_SIGNED_CONTENT` · `DEFAULT_WEBHOOK_TOLERANCE_SECONDS`.
 
 Both documents Kaval signs verify here: a ProofPacket, whose signature block is
 `{algorithm, key_id, signature}`, and a `/v1/check` receipt, which adds `signed_at`. That block is a
 closed allowlist — those four members and nothing else — so an appended field fails closed instead of
-shadowing the algorithm or key a lax verifier reads. Nothing *inside* the block is covered by the
+shadowing the algorithm or key a lax verifier reads. Nothing _inside_ the block is covered by the
 signature (canonicalization strips the whole block before hashing), so `signed_at` is authenticated
 indirectly, by being required to equal the signed `checked_at`. A check receipt carries no `expiry`,
 so its freshness is honestly `unknown`.
@@ -295,13 +374,13 @@ const { source, resolved, authority } = await kaval.addSource({
   intent: "payer policy bulletins",
 });
 
-await kaval.listSources();               // includes sources auto-registered by a check
+await kaval.listSources(); // includes sources auto-registered by a check
 await kaval.listSources({ includeInactive: true });
-await kaval.pauseSource(source.id);      // stop polling without forgetting it
+await kaval.pauseSource(source.id); // stop polling without forgetting it
 await kaval.resumeSource(source.id);
 await kaval.deleteSource(source.id);
 await kaval.getSource(source.id);
-await kaval.recompileSource(source.id);  // re-derive how Kaval fetches and parses it
+await kaval.recompileSource(source.id); // re-derive how Kaval fetches and parses it
 ```
 
 `kind`: `url` (one page) · `entity` (a name to resolve) · `push` (a document you send in) ·
@@ -326,15 +405,89 @@ for it. `recompileSource(id)` re-runs that derivation — it is the recovery pat
 and the way a directly-registered `kind: "url"` source gets a plan at all. It answers `202` with a
 `job_id` because discovery runs on the worker, not in your request.
 
+## Policy updates
+
+Register a JSON Schema and bind it to a source; every document that lands on that source afterward
+is extracted against it and delivered as a `policy_update.document` webhook, with per-payer monthly
+rollups delivered as `policy_update.monthly_package`. On each document event, `extraction_run.period`
+is the publication / newsletter month (`YYYY-MM`); sections and `extraction.record_evidence` may
+include normalized `page` / `bbox` for PDF highlighting; `result.payer_name` is the human brand
+beside the stable `payer_id` slug.
+
+```ts
+const schema = await kaval.createExtractionSchema({
+  name: "prior-auth-changes",
+  json_schema: {
+    type: "object",
+    properties: {
+      cpt_code: { type: "string" },
+      requires_prior_auth: { type: "boolean" },
+    },
+    required: ["cpt_code", "requires_prior_auth"],
+  },
+});
+
+await kaval.updateSource({ id: source.id, extraction_schema_id: schema.id });
+// extraction_schema_id: null unbinds it, leaving the source watched but unextracted.
+```
+
+Prefer a one-off run over waiting for the next document? `createPolicyUpdate()` requests a payer +
+period extraction run directly against a bound schema:
+
+```ts
+const run = await kaval.createPolicyUpdate({
+  payer_id: "aetna",
+  period: "2026-08",
+  extraction_schema_id: schema.id,
+});
+// 202, run.status: "processing" — poll getPolicyUpdate(run.id) or wait for the webhook.
+
+await kaval.listPolicyUpdates({ payer_id: "aetna", period: "2026-08" });
+await kaval.getPolicyUpdate(run.id);
+await kaval.listExtractionSchemas();
+await kaval.getExtractionSchema(schema.id);
+```
+
+Each payer + period's runs roll up into one monthly PDF + manifest:
+
+```ts
+await kaval.listPolicyUpdatePackages({ payer_id: "aetna", period: "2026-08" });
+await kaval.getPolicyUpdatePackage(pkg.id);
+```
+
+Read the canonical text (or heading-bounded sections) a source version was extracted from directly,
+independent of any bound schema:
+
+```ts
+const { content } = await kaval.getSourceVersionContent(sourceVersionId);
+const { sections } = await kaval.getSourceVersionContent(sourceVersionId, {
+  format: "sections",
+});
+```
+
+Subscribe once, the same way as `fact_state.delta`:
+
+```ts
+const { subscription, webhook_verification } =
+  await kaval.subscribePolicyUpdates({
+    callback_url: "https://your-app.example.com/hooks/kaval",
+    external_scope_ids: ["payer:aetna"], // optional scope filter
+  });
+```
+
+`createExtractionSchema()` and `createPolicyUpdate()` require an API key with `policy-update:manage`;
+the read methods above accept `policy-update:read` or `verification:execute`.
+
 ## Close the loop: `fact_state.delta` webhooks
 
 Watching only helps you if you hear about it. Subscribe once, at deploy time:
 
 ```ts
-const { subscription, webhook_verification } = await kaval.subscribeFactStateDeltas({
-  callback_url: "https://your-app.example.com/hooks/kaval",
-  external_scope_ids: ["contract:acme-2026"], // optional scope filter
-});
+const { subscription, webhook_verification } =
+  await kaval.subscribeFactStateDeltas({
+    callback_url: "https://your-app.example.com/hooks/kaval",
+    external_scope_ids: ["contract:acme-2026"], // optional scope filter
+  });
 // webhook_verification.secret is shown EXACTLY ONCE — store it; it is how you
 // authenticate every inbound delivery (hmac-sha256 over the standard webhook headers).
 ```
@@ -365,41 +518,51 @@ const app = express();
 
 // express.raw, NOT express.json: the signature covers the exact bytes on the wire. A body that has
 // been parsed and re-serialised has a different MAC, and no genuine delivery would ever verify.
-app.post("/hooks/kaval", express.raw({ type: "application/json" }), (req, res) => {
-  const result = verifyWebhookSignature({
-    body: req.body,             // Buffer, untouched
-    headers: req.headers,
-    secrets,
-    toleranceSeconds: 300,      // default; the replay window either side of now
-  });
-  if (!result.valid) {
-    // 400, not 401 — a retry will not make an unsigned request signed. `result.reason` is one of
-    // missing_header · malformed_timestamp · unknown_key_id · unsupported_signature_version ·
-    // malformed_signature · signature_mismatch · timestamp_out_of_tolerance, and is safe to log.
-    return res.status(400).json({ error: result.reason });
-  }
+app.post(
+  "/hooks/kaval",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const result = verifyWebhookSignature({
+      body: req.body, // Buffer, untouched
+      headers: req.headers,
+      secrets,
+      toleranceSeconds: 300, // default; the replay window either side of now
+    });
+    if (!result.valid) {
+      // 400, not 401 — a retry will not make an unsigned request signed. `result.reason` is one of
+      // missing_header · malformed_timestamp · unknown_key_id · unsupported_signature_version ·
+      // malformed_signature · signature_mismatch · timestamp_out_of_tolerance, and is safe to log.
+      return res.status(400).json({ error: result.reason });
+    }
 
-  // Delivery is at-least-once by design: a retry after your 500 is a legitimate duplicate. Dedupe
-  // on result.webhookId (the event's own id) before doing anything with side effects.
-  if (seen.has(result.webhookId)) return res.status(200).end();
-  seen.add(result.webhookId);
+    // Delivery is at-least-once by design: a retry after your 500 is a legitimate duplicate. Dedupe
+    // on result.webhookId (the event's own id) before doing anything with side effects.
+    if (seen.has(result.webhookId)) return res.status(200).end();
+    seen.add(result.webhookId);
 
-  const event = JSON.parse(req.body.toString("utf8")) as FactStateDeltaEvent;
-  const { source, old_version_sha256, new_version_sha256, diff_summary, facts } = event.data;
+    const event = JSON.parse(req.body.toString("utf8")) as FactStateDeltaEvent;
+    const {
+      source,
+      old_version_sha256,
+      new_version_sha256,
+      diff_summary,
+      facts,
+    } = event.data;
 
-  for (const fact of facts) {
-    // "Aetna requires prior auth for CPT 12345" — holds → changed, at critical materiality.
-    console.log(
-      `${fact.materiality} ${fact.old_state} → ${fact.new_state}: ${fact.text}`,
-      `via ${source.locator} (${old_version_sha256?.slice(0, 12)} → ${new_version_sha256.slice(0, 12)})`,
-      fact.basis.map((ref) => ref.source_locator),
-    );
-  }
-  void diff_summary; // changed_sections + stats, if you want to show what moved in the document
+    for (const fact of facts) {
+      // "Aetna requires prior auth for CPT 12345" — holds → changed, at critical materiality.
+      console.log(
+        `${fact.materiality} ${fact.old_state} → ${fact.new_state}: ${fact.text}`,
+        `via ${source.locator} (${old_version_sha256?.slice(0, 12)} → ${new_version_sha256.slice(0, 12)})`,
+        fact.basis.map((ref) => ref.source_locator),
+      );
+    }
+    void diff_summary; // changed_sections + stats, if you want to show what moved in the document
 
-  // Answer 2xx quickly and do the work after; Kaval retries non-2xx with backoff, then dead-letters.
-  res.status(202).end();
-});
+    // Answer 2xx quickly and do the work after; Kaval retries non-2xx with backoff, then dead-letters.
+    res.status(202).end();
+  },
+);
 ```
 
 The verifier lives on the `/verify` subpath, so a receiver that never constructs a client pulls in no
@@ -414,10 +577,11 @@ await kaval.deleteWebhook(subscription.subscription_id);
 // The delivery log is the only place a delivery id is published — start here, then replay.
 const { items, next_before } = await kaval.listWebhookDeliveries(
   subscription.subscription_id,
-  { limit: 100 },                                // 1–200, default 50; page with `before`
+  { limit: 100 }, // 1–200, default 50; page with `before`
 );
 for (const delivery of items) {
-  if (delivery.state === "dead_letter") await kaval.replayWebhookDelivery(delivery.delivery_id);
+  if (delivery.state === "dead_letter")
+    await kaval.replayWebhookDelivery(delivery.delivery_id);
 }
 
 // Roll the signing key; the old generation keeps verifying until `overlap_until`, so you can
@@ -434,7 +598,7 @@ await kaval.rotateWebhookSigningKey(subscription.subscription_id, {
 const { changed, facts_pending_review } = await kaval.sendEvent({
   namespace: "contracts",
   document_id: "acme-2026-msa",
-  content: extractedText,          // or content_url
+  content: extractedText, // or content_url
   scope_keys: ["contract:acme-2026"],
 });
 ```
@@ -447,7 +611,10 @@ honestly return `REVIEW`.
 ## reportOutcome()
 
 ```ts
-await kaval.reportOutcome({ id: result.receipt.id, kind: "relied_and_correct" });
+await kaval.reportOutcome({
+  id: result.receipt.id,
+  kind: "relied_and_correct",
+});
 ```
 
 Kinds: `relied_and_correct` · `current_later_contradicted` · `stale_caught_real` ·
@@ -462,7 +629,8 @@ state in milliseconds, and keeps monitoring the facts afterwards.
 
 ```ts
 const { status, receipt } = await kaval.verify({
-  conclusion: "The 2024 International Building Code is the current IBC edition.",
+  conclusion:
+    "The 2024 International Building Code is the current IBC edition.",
   evidence_refs: ["https://codes.iccsafe.org/content/IBC2024V2.0"],
 });
 ```
@@ -474,11 +642,11 @@ wire-invalid shapes locally before spending a request.
 
 ## Errors
 
-| class                | when                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------- |
-| `KavalError`         | any non-2xx. Carries `status`, `payload`, and `idempotencyKey` where one was spent.       |
-| `KavalRetiredError`  | HTTP 410 `tool_retired` — you called a route that folded into `/v1/check`. Exposes `.replacement` and a message naming `check()`. |
-| `TypeError`          | locally-detected invalid input, thrown before any network call                            |
+| class               | when                                                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `KavalError`        | any non-2xx. Carries `status`, `payload`, and `idempotencyKey` where one was spent.                                               |
+| `KavalRetiredError` | HTTP 410 `tool_retired` — you called a route that folded into `/v1/check`. Exposes `.replacement` and a message naming `check()`. |
+| `TypeError`         | locally-detected invalid input, thrown before any network call                                                                    |
 
 ## Idempotency and retries
 
@@ -489,7 +657,8 @@ ordinary API errors, rate limits, or terminal 5xx responses. If both bounded att
 ambiguous, the thrown error exposes `error.idempotencyKey` — pass it back explicitly after your own
 delay to resume the same operation instead of billing a new one.
 
-`createWebhook()` (and `subscribeFactStateDeltas()`) send a key because the API requires one; they
+`createWebhook()` (and `subscribeFactStateDeltas()` / `subscribePolicyUpdates()`),
+`createExtractionSchema()`, and `createPolicyUpdate()` send a key because the API requires one; they
 generate it when you do not supply it.
 
 `check()` deliberately sends none: it is a read of current state, so a retry recomputes rather than
@@ -503,19 +672,19 @@ send a smaller `max_wait_ms` (or `mode: "fast"`) and get a real verdict instead 
 
 ## Migrating from 0.5
 
-| 0.5                                | 0.6                                                                          |
-| ---------------------------------- | ----------------------------------------------------------------------------- |
-| `audit()`                          | `check()` — the receipt **is** the proof                                      |
-| `gate()` / `gateAction()`          | `check()` — the warm path re-checks in ~50ms; there is nothing to re-apply     |
-| `check(belief)`                    | `check({ action })`                                                           |
-| `verifyBelief()`                   | `check({ action, context })` — branch on `decision === "ALLOW"`, not `act`     |
-| `extractAndCheck({ text })`        | `check({ action: text })` — Kaval compiles the facts itself                   |
-| `scanStore({ beliefs })`           | `check({ claims })` — up to 20 per call                                       |
-| `monitor({ beliefs, webhook })`    | `addSource()` + `subscribeFactStateDeltas()` — deltas are pushed, not swept    |
-| `kaval()` / `kavalBatch()`         | `check({ claims: [{ subject, predicate, object, scope }] })`                  |
-| `verify()`                         | `verify()`, deprecated → `check()`                                            |
-| `ProofNotFoundError`               | removed with `/v1/gate`                                                       |
-| —                                  | new: `getReceipt`, source registry, `sendEvent`, webhook subscriptions         |
+| 0.5                             | 0.6                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| `audit()`                       | `check()` — the receipt **is** the proof                                    |
+| `gate()` / `gateAction()`       | `check()` — the warm path re-checks from state; nothing to re-apply         |
+| `check(belief)`                 | `check({ action })`                                                         |
+| `verifyBelief()`                | `check({ action, context })` — branch on `decision === "ALLOW"`, not `act`  |
+| `extractAndCheck({ text })`     | `check({ action: text })` — Kaval compiles the facts itself                 |
+| `scanStore({ beliefs })`        | `check({ claims })` — up to 20 per call                                     |
+| `monitor({ beliefs, webhook })` | `addSource()` + `subscribeFactStateDeltas()` — deltas are pushed, not swept |
+| `kaval()` / `kavalBatch()`      | `check({ claims: [{ subject, predicate, object, scope }] })`                |
+| `verify()`                      | `verify()`, deprecated → `check()`                                          |
+| `ProofNotFoundError`            | removed with `/v1/gate`                                                     |
+| —                               | new: `getReceipt`, source registry, `sendEvent`, webhook subscriptions      |
 
 Status mapping: `current` + `act: true` → `decision: "ALLOW"` with every fact `holds`;
 `stale`/`contradicted` → a fact `changed` (`REVIEW` or `BLOCK` by materiality);
@@ -524,10 +693,12 @@ Status mapping: `current` + `act: true` → `decision: "ALLOW"` with every fact 
 ## API
 
 `check` · `getReceipt` · `addSource` · `listSources` · `getSource` · `pauseSource` · `resumeSource` ·
-`recompileSource` · `deleteSource` · `sendEvent` · `subscribeFactStateDeltas` · `createWebhook` ·
-`listWebhooks` · `setWebhookEnabled` · `deleteWebhook` · `listWebhookDeliveries` ·
-`rotateWebhookSigningKey` · `replayWebhookDelivery` · `reportOutcome` · `verify` (deprecated) ·
-`health`.
+`recompileSource` · `deleteSource` · `updateSource` · `getSourceVersionContent` · `sendEvent` ·
+`createExtractionSchema` · `getExtractionSchema` · `listExtractionSchemas` · `createPolicyUpdate` ·
+`getPolicyUpdate` · `listPolicyUpdates` · `getPolicyUpdatePackage` · `listPolicyUpdatePackages` ·
+`subscribePolicyUpdates` · `subscribeFactStateDeltas` · `createWebhook` · `listWebhooks` ·
+`setWebhookEnabled` · `deleteWebhook` · `listWebhookDeliveries` · `rotateWebhookSigningKey` ·
+`replayWebhookDelivery` · `reportOutcome` · `verify` (deprecated) · `health`.
 
 Construct with `{ apiKey, baseUrl?, fetch?, timeoutMs? }` — `baseUrl` defaults to
 `https://api.usekaval.com`. Works in Node 18+, browsers, and edge runtimes (uses the global `fetch`).

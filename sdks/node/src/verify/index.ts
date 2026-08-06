@@ -10,10 +10,9 @@
  * `test/verify/no-network.test.ts` holds the import graph to it.
  *
  * The fourth question is what makes a receipt an appeal packet rather than a signed assertion. The
- * decision table it runs is `./decision.js` — `check-decision/1.1.0`, the same table Kaval's issuer
- * executes, carried here so a holder never has to run Kaval's software to check Kaval's verdict.
- * `decision.ts` is a mirrored copy of the issuer's; `test/verify/mirror-pin.test.ts` pins the shared
- * conformance vectors that make the two answer identically.
+ * The decision tables live in `./decision.js`. The verifier supports rules 1.0.0, 1.1.0, and 2.0.0.
+ * Rule 2.0.0 also derives the signed `ALLOW` calibration gate. The issuer runs the same logic.
+ * Shared conformance vectors keep both implementations aligned.
  *
  * `verifyWebhookSignature` is here for the same reason: authenticating an inbound `fact_state.delta`
  * is a pure HMAC over bytes you were handed, and a receiver that had to reach the network to decide
@@ -33,19 +32,41 @@ export {
   stableCanonicalJson,
 } from "./canonicalize.js";
 export {
+  CHECK_ACTION_CLASSIFICATION_STATUSES,
+  CHECK_ALLOW_GATE_EVALUATION_STATUSES,
+  CHECK_ALLOW_GATE_MODES,
+  CHECK_ALLOW_GATE_REASON_CODES,
+  CHECK_ALLOW_GATE_STATUSES,
   CHECK_DECISION_RULE_VERSION,
+  CHECK_DECISION_RULE_LATEST_VERSION,
+  CHECK_DECISION_RULE_V2_VERSION,
   CHECK_DECISION_RULE_VERSIONS,
+  CHECK_DECISION_V2_REASON_CODES,
   CHECK_FACT_METHODS,
   CHECK_FACT_STATES,
   CHECK_FRESHNESS_FAILURES,
   CHECK_MATERIALITIES,
   CHECK_REASON_CODES,
+  CHECK_RECEIPT_V2_VERSION,
   CHECK_VERDICTS,
   ReceiptNotSelfDerivableError,
   checkDecisionInputFromReceipt,
   decideCheck,
   deriveCheckDecision,
+  deriveCheckDecisionV2,
+  parseCheckReceiptV2DecisionFields,
+  type CheckActionClassification,
+  type CheckActionClassificationStatus,
+  type CheckAllowCalibrationBinding,
+  type CheckAllowGateEvaluationStatus,
+  type CheckAllowGateMode,
+  type CheckAllowGateReasonCode,
+  type CheckAllowGateReceiptFields,
+  type CheckAllowGateStatus,
+  type CheckAllowPolicyBinding,
   type CheckDecision,
+  type CheckDecisionV2,
+  type CheckDecisionV2ReasonCode,
   type CheckDecisionFact,
   type CheckDecisionOptions,
   type CheckDecisionRuleVersion,
@@ -54,7 +75,9 @@ export {
   type CheckFreshnessFailure,
   type CheckMateriality,
   type CheckReasonCode,
+  type CheckReceiptV2DecisionFields,
   type CheckVerdict,
+  type DerivedCheckDecision,
 } from "./decision.js";
 export {
   parseVerificationKey,

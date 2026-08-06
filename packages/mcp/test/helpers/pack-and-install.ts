@@ -25,7 +25,14 @@ export type PackedInstall = {
   kavalEntry: string;
   mcpServerEntry: string;
   mcpBin: string;
+  receiptVerifyBin: string;
   kavalRealPath: string;
+  mcpRealPath: string;
+  kavalVersion: string;
+  mcpVersion: string;
+  mcpKavalDependency: string;
+  kavalTarEntries: string[];
+  mcpTarEntries: string[];
   cleanup: () => void;
 };
 
@@ -58,15 +65,28 @@ export async function installPackedTarballs(): Promise<PackedInstall> {
       );
     }
 
-    const packedMcp = JSON.parse(
-      (
-        await execFileAsync("tar", [
+    const [kavalManifest, mcpManifest, kavalContents, mcpContents] =
+      await Promise.all([
+        execFileAsync("tar", [
+          "-xOf",
+          join(packDir, kavalTar),
+          "package/package.json",
+        ]),
+        execFileAsync("tar", [
           "-xOf",
           join(packDir, mcpTar),
           "package/package.json",
-        ])
-      ).stdout,
-    ) as { dependencies?: Record<string, string> };
+        ]),
+        execFileAsync("tar", ["-tzf", join(packDir, kavalTar)]),
+        execFileAsync("tar", ["-tzf", join(packDir, mcpTar)]),
+      ]);
+    const packedKaval = JSON.parse(kavalManifest.stdout) as {
+      version: string;
+    };
+    const packedMcp = JSON.parse(mcpManifest.stdout) as {
+      version: string;
+      dependencies?: Record<string, string>;
+    };
     for (const spec of Object.values(packedMcp.dependencies ?? {})) {
       if (spec.startsWith("workspace:")) {
         throw new Error(
@@ -110,7 +130,14 @@ export async function installPackedTarballs(): Promise<PackedInstall> {
       kavalEntry: pathToFileURL(join(kavalPath, "dist/index.js")).href,
       mcpServerEntry: pathToFileURL(join(mcpPath, "dist/server.js")).href,
       mcpBin: join(mcpPath, "dist/bin.js"),
+      receiptVerifyBin: join(kavalPath, "dist/verify/cli.js"),
       kavalRealPath: realpathSync(kavalPath),
+      mcpRealPath: realpathSync(mcpPath),
+      kavalVersion: packedKaval.version,
+      mcpVersion: packedMcp.version,
+      mcpKavalDependency: packedMcp.dependencies?.["@usekaval/kaval"] ?? "",
+      kavalTarEntries: kavalContents.stdout.trim().split("\n").sort(),
+      mcpTarEntries: mcpContents.stdout.trim().split("\n").sort(),
       cleanup: () => {
         rmSync(root, { recursive: true, force: true });
         rmSync(packDir, { recursive: true, force: true });

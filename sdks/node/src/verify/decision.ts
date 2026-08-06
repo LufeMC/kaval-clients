@@ -1,3 +1,5 @@
+import { parseRfc3339Instant } from "./rfc3339.js";
+
 /**
  * `check-decision/1.1.0` — THE PUBLISHED DECISION TABLE, EXECUTABLE.
  *
@@ -42,9 +44,16 @@
 
 /** Published with every new receipt so its verdict stays re-derivable from the fact list. */
 export const CHECK_DECISION_RULE_VERSION = "check-decision/1.1.0";
+/** Frozen but not yet activated by the issuer. Rule 2 adds the signed `ALLOW` calibration gate. */
+export const CHECK_DECISION_RULE_V2_VERSION = "check-decision/2.0.0" as const;
+/** Latest rule this verifier can execute. The issuer activates it in a separate integration step. */
+export const CHECK_DECISION_RULE_LATEST_VERSION =
+  CHECK_DECISION_RULE_V2_VERSION;
+export const CHECK_RECEIPT_V2_VERSION = "check-receipt/2.0.0" as const;
 export const CHECK_DECISION_RULE_VERSIONS = [
   "check-decision/1.0.0",
   CHECK_DECISION_RULE_VERSION,
+  CHECK_DECISION_RULE_V2_VERSION,
 ] as const;
 export type CheckDecisionRuleVersion =
   (typeof CHECK_DECISION_RULE_VERSIONS)[number];
@@ -61,6 +70,49 @@ export const CHECK_REASON_CODES = [
   "COMPILATION_UNCERTAIN",
 ] as const;
 export type CheckReasonCode = (typeof CHECK_REASON_CODES)[number];
+
+/** Why rule 2 did not permit a candidate `ALLOW` to remain `ALLOW`. */
+export const CHECK_ALLOW_GATE_REASON_CODES = [
+  "ALLOW_ACTION_UNCLASSIFIED",
+  "ALLOW_POLICY_UNBOUND",
+  "ALLOW_CALIBRATION_UNBOUND",
+  "ALLOW_CALIBRATION_INSUFFICIENT",
+  "ALLOW_CALIBRATION_EXPIRED",
+  "ALLOW_GATE_UNAVAILABLE",
+] as const;
+export type CheckAllowGateReasonCode =
+  (typeof CHECK_ALLOW_GATE_REASON_CODES)[number];
+
+export const CHECK_DECISION_V2_REASON_CODES = [
+  ...CHECK_REASON_CODES,
+  ...CHECK_ALLOW_GATE_REASON_CODES,
+] as const;
+export type CheckDecisionV2ReasonCode =
+  (typeof CHECK_DECISION_V2_REASON_CODES)[number];
+
+export const CHECK_ALLOW_GATE_STATUSES = [
+  "not_applicable",
+  "passed",
+  "downgraded",
+] as const;
+export type CheckAllowGateStatus = (typeof CHECK_ALLOW_GATE_STATUSES)[number];
+
+export const CHECK_ALLOW_GATE_MODES = ["production", "demo"] as const;
+export type CheckAllowGateMode = (typeof CHECK_ALLOW_GATE_MODES)[number];
+
+export const CHECK_ALLOW_GATE_EVALUATION_STATUSES = [
+  "available",
+  "unavailable",
+] as const;
+export type CheckAllowGateEvaluationStatus =
+  (typeof CHECK_ALLOW_GATE_EVALUATION_STATUSES)[number];
+
+export const CHECK_ACTION_CLASSIFICATION_STATUSES = [
+  "classified",
+  "unclassified",
+] as const;
+export type CheckActionClassificationStatus =
+  (typeof CHECK_ACTION_CLASSIFICATION_STATUSES)[number];
 
 export const CHECK_VERDICTS = ["ALLOW", "REVIEW", "BLOCK"] as const;
 export type CheckVerdict = (typeof CHECK_VERDICTS)[number];
@@ -120,6 +172,71 @@ export interface CheckDecision {
   reason_codes: CheckReasonCode[];
   decision_rule_version: string;
 }
+
+export interface CheckActionClassification {
+  status: CheckActionClassificationStatus;
+  action_class: string | null;
+  classifier_version: string;
+}
+
+export interface CheckAllowPolicyBinding {
+  id: string;
+  version: string;
+  action_class: string;
+  minimum_sample_size: number;
+  maximum_false_allow_upper_bound_bps: number;
+  valid_from: string;
+  valid_until: string | null;
+  demo_only: boolean;
+}
+
+export interface CheckAllowCalibrationBinding {
+  id: string;
+  policy_id: string;
+  policy_version: string;
+  action_class: string;
+  sample_size: number;
+  false_allow_upper_bound_bps: number;
+  evaluated_at: string;
+  expires_at: string;
+  demo_only: boolean;
+}
+
+export interface CheckAllowGateReceiptFields {
+  mode: CheckAllowGateMode;
+  evaluation_status: CheckAllowGateEvaluationStatus;
+  status: CheckAllowGateStatus;
+  reason_codes: CheckAllowGateReasonCode[];
+}
+
+/** The strict rule-2 fields carried by a `check-receipt/2.0.0` artifact. */
+export interface CheckReceiptV2DecisionFields {
+  receipt_version: typeof CHECK_RECEIPT_V2_VERSION;
+  decision_rule_version: typeof CHECK_DECISION_RULE_V2_VERSION;
+  checked_at: string;
+  candidate_decision: CheckVerdict;
+  decision: CheckVerdict;
+  reason_codes: CheckDecisionV2ReasonCode[];
+  action_classification: CheckActionClassification;
+  policy_binding: CheckAllowPolicyBinding | null;
+  calibration_binding: CheckAllowCalibrationBinding | null;
+  gate: CheckAllowGateReceiptFields;
+}
+
+/** The complete result that an offline rule-2 verifier derives. */
+export interface CheckDecisionV2 {
+  verdict: CheckVerdict;
+  reason_codes: CheckDecisionV2ReasonCode[];
+  decision_rule_version: typeof CHECK_DECISION_RULE_V2_VERSION;
+  candidate_decision: CheckVerdict;
+  candidate_reason_codes: CheckReasonCode[];
+  gate: {
+    status: CheckAllowGateStatus;
+    reason_codes: CheckAllowGateReasonCode[];
+  };
+}
+
+export type DerivedCheckDecision = CheckDecision | CheckDecisionV2;
 
 function isBlockingMateriality(materiality: CheckMateriality): boolean {
   return materiality === "high" || materiality === "critical";
@@ -250,6 +367,443 @@ function memberOf<T extends string>(
   return (
     typeof value === "string" && (values as readonly string[]).includes(value)
   );
+}
+
+function exactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  label: string,
+): void {
+  const expectedSet = new Set(expected);
+  const unknown = Object.keys(value).filter((key) => !expectedSet.has(key));
+  const missing = expected.filter((key) => !Object.hasOwn(value, key));
+  if (unknown.length > 0 || missing.length > 0) {
+    const parts = [
+      ...(missing.length === 0 ? [] : [`missing ${missing.join(", ")}`]),
+      ...(unknown.length === 0 ? [] : [`unknown ${unknown.join(", ")}`]),
+    ];
+    throw new ReceiptNotSelfDerivableError(
+      `${label} has an invalid field set: ${parts.join("; ")}`,
+    );
+  }
+}
+
+function boundedText(value: unknown, label: string, maximum: number): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maximum
+  ) {
+    throw new ReceiptNotSelfDerivableError(`${label} is not valid text`);
+  }
+  return value;
+}
+
+function boundedInteger(
+  value: unknown,
+  label: string,
+  maximum: number,
+): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < 0 ||
+    (value as number) > maximum
+  ) {
+    throw new ReceiptNotSelfDerivableError(
+      `${label} is not a valid nonnegative integer`,
+    );
+  }
+  return value as number;
+}
+
+function instant(
+  value: unknown,
+  label: string,
+): { text: string; nanoseconds: bigint } {
+  const parsed = parseRfc3339Instant(value);
+  if (parsed === null) {
+    throw new ReceiptNotSelfDerivableError(
+      `${label} is not an RFC 3339 instant`,
+    );
+  }
+  return { text: value as string, nanoseconds: parsed.epoch_nanoseconds };
+}
+
+function stringCodes<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): T[] {
+  if (
+    !Array.isArray(value) ||
+    !value.every((entry) => memberOf(allowed, entry))
+  ) {
+    throw new ReceiptNotSelfDerivableError(
+      `${label} contains a code this contract does not define`,
+    );
+  }
+  if (new Set(value).size !== value.length) {
+    throw new ReceiptNotSelfDerivableError(
+      `${label} contains a duplicate code`,
+    );
+  }
+  return [...value] as T[];
+}
+
+function parseActionClassification(value: unknown): CheckActionClassification {
+  const classification = objectOrNull(value);
+  if (classification === null) {
+    throw new ReceiptNotSelfDerivableError(
+      "action classification is not a JSON object",
+    );
+  }
+  exactKeys(
+    classification,
+    ["status", "action_class", "classifier_version"],
+    "action classification",
+  );
+  const status = classification["status"];
+  if (!memberOf(CHECK_ACTION_CLASSIFICATION_STATUSES, status)) {
+    throw new ReceiptNotSelfDerivableError(
+      "action classification has an unknown status",
+    );
+  }
+  const actionClass = classification["action_class"];
+  if (
+    (status === "classified" &&
+      (typeof actionClass !== "string" ||
+        actionClass.length === 0 ||
+        actionClass.length > 256)) ||
+    (status === "unclassified" && actionClass !== null)
+  ) {
+    throw new ReceiptNotSelfDerivableError(
+      "action classification status does not match its action class",
+    );
+  }
+  return {
+    status,
+    action_class: actionClass as string | null,
+    classifier_version: boundedText(
+      classification["classifier_version"],
+      "action classifier version",
+      128,
+    ),
+  };
+}
+
+function parsePolicyBinding(value: unknown): CheckAllowPolicyBinding | null {
+  if (value === null) return null;
+  const binding = objectOrNull(value);
+  if (binding === null) {
+    throw new ReceiptNotSelfDerivableError(
+      "policy binding is not a JSON object or null",
+    );
+  }
+  exactKeys(
+    binding,
+    [
+      "id",
+      "version",
+      "action_class",
+      "minimum_sample_size",
+      "maximum_false_allow_upper_bound_bps",
+      "valid_from",
+      "valid_until",
+      "demo_only",
+    ],
+    "policy binding",
+  );
+  const validFrom = instant(binding["valid_from"], "policy valid_from").text;
+  const validUntilValue = binding["valid_until"];
+  const validUntil =
+    validUntilValue === null
+      ? null
+      : instant(validUntilValue, "policy valid_until").text;
+  if (
+    validUntil !== null &&
+    instant(validUntil, "policy valid_until").nanoseconds <=
+      instant(validFrom, "policy valid_from").nanoseconds
+  ) {
+    throw new ReceiptNotSelfDerivableError(
+      "policy validity interval is empty or reversed",
+    );
+  }
+  if (typeof binding["demo_only"] !== "boolean") {
+    throw new ReceiptNotSelfDerivableError("policy demo_only is not boolean");
+  }
+  return {
+    id: boundedText(binding["id"], "policy id", 256),
+    version: boundedText(binding["version"], "policy version", 128),
+    action_class: boundedText(
+      binding["action_class"],
+      "policy action class",
+      256,
+    ),
+    minimum_sample_size: boundedInteger(
+      binding["minimum_sample_size"],
+      "policy minimum sample size",
+      Number.MAX_SAFE_INTEGER,
+    ),
+    maximum_false_allow_upper_bound_bps: boundedInteger(
+      binding["maximum_false_allow_upper_bound_bps"],
+      "policy maximum false-allow upper bound",
+      10_000,
+    ),
+    valid_from: validFrom,
+    valid_until: validUntil,
+    demo_only: binding["demo_only"],
+  };
+}
+
+function parseCalibrationBinding(
+  value: unknown,
+): CheckAllowCalibrationBinding | null {
+  if (value === null) return null;
+  const binding = objectOrNull(value);
+  if (binding === null) {
+    throw new ReceiptNotSelfDerivableError(
+      "calibration binding is not a JSON object or null",
+    );
+  }
+  exactKeys(
+    binding,
+    [
+      "id",
+      "policy_id",
+      "policy_version",
+      "action_class",
+      "sample_size",
+      "false_allow_upper_bound_bps",
+      "evaluated_at",
+      "expires_at",
+      "demo_only",
+    ],
+    "calibration binding",
+  );
+  if (typeof binding["demo_only"] !== "boolean") {
+    throw new ReceiptNotSelfDerivableError(
+      "calibration demo_only is not boolean",
+    );
+  }
+  const evaluatedAt = instant(
+    binding["evaluated_at"],
+    "calibration evaluated_at",
+  ).text;
+  const expiresAt = instant(
+    binding["expires_at"],
+    "calibration expires_at",
+  ).text;
+  if (
+    instant(expiresAt, "calibration expires_at").nanoseconds <=
+    instant(evaluatedAt, "calibration evaluated_at").nanoseconds
+  ) {
+    throw new ReceiptNotSelfDerivableError(
+      "calibration validity interval is empty or reversed",
+    );
+  }
+  return {
+    id: boundedText(binding["id"], "calibration id", 256),
+    policy_id: boundedText(binding["policy_id"], "calibration policy id", 256),
+    policy_version: boundedText(
+      binding["policy_version"],
+      "calibration policy version",
+      128,
+    ),
+    action_class: boundedText(
+      binding["action_class"],
+      "calibration action class",
+      256,
+    ),
+    sample_size: boundedInteger(
+      binding["sample_size"],
+      "calibration sample size",
+      Number.MAX_SAFE_INTEGER,
+    ),
+    false_allow_upper_bound_bps: boundedInteger(
+      binding["false_allow_upper_bound_bps"],
+      "calibration false-allow upper bound",
+      10_000,
+    ),
+    evaluated_at: evaluatedAt,
+    expires_at: expiresAt,
+    demo_only: binding["demo_only"],
+  };
+}
+
+function parseAllowGate(value: unknown): CheckAllowGateReceiptFields {
+  const gate = objectOrNull(value);
+  if (gate === null)
+    throw new ReceiptNotSelfDerivableError("allow gate is not a JSON object");
+  exactKeys(
+    gate,
+    ["mode", "evaluation_status", "status", "reason_codes"],
+    "allow gate",
+  );
+  const mode = gate["mode"];
+  const evaluationStatus = gate["evaluation_status"];
+  const status = gate["status"];
+  if (!memberOf(CHECK_ALLOW_GATE_MODES, mode)) {
+    throw new ReceiptNotSelfDerivableError("allow gate has an unknown mode");
+  }
+  if (!memberOf(CHECK_ALLOW_GATE_EVALUATION_STATUSES, evaluationStatus)) {
+    throw new ReceiptNotSelfDerivableError(
+      "allow gate has an unknown evaluation status",
+    );
+  }
+  if (!memberOf(CHECK_ALLOW_GATE_STATUSES, status)) {
+    throw new ReceiptNotSelfDerivableError("allow gate has an unknown status");
+  }
+  return {
+    mode,
+    evaluation_status: evaluationStatus,
+    status,
+    reason_codes: stringCodes(
+      gate["reason_codes"],
+      CHECK_ALLOW_GATE_REASON_CODES,
+      "allow gate reason codes",
+    ),
+  };
+}
+
+/** Parse the closed rule-2 decision fragment without trusting application types. */
+export function parseCheckReceiptV2DecisionFields(
+  receipt: unknown,
+): CheckReceiptV2DecisionFields {
+  const document = objectOrNull(receipt);
+  if (document === null)
+    throw new ReceiptNotSelfDerivableError("it is not a JSON object");
+  if (document["receipt_version"] !== CHECK_RECEIPT_V2_VERSION) {
+    throw new ReceiptNotSelfDerivableError(
+      `it does not name receipt version ${CHECK_RECEIPT_V2_VERSION}`,
+    );
+  }
+  if (document["decision_rule_version"] !== CHECK_DECISION_RULE_V2_VERSION) {
+    throw new ReceiptNotSelfDerivableError(
+      `it does not name decision rule ${CHECK_DECISION_RULE_V2_VERSION}`,
+    );
+  }
+  const candidateDecision = document["candidate_decision"];
+  const decision = document["decision"];
+  if (!memberOf(CHECK_VERDICTS, candidateDecision)) {
+    throw new ReceiptNotSelfDerivableError(
+      "candidate decision is not a published verdict",
+    );
+  }
+  if (!memberOf(CHECK_VERDICTS, decision)) {
+    throw new ReceiptNotSelfDerivableError(
+      "final decision is not a published verdict",
+    );
+  }
+  return {
+    receipt_version: CHECK_RECEIPT_V2_VERSION,
+    decision_rule_version: CHECK_DECISION_RULE_V2_VERSION,
+    checked_at: instant(document["checked_at"], "receipt checked_at").text,
+    candidate_decision: candidateDecision,
+    decision,
+    reason_codes: stringCodes(
+      document["reason_codes"],
+      CHECK_DECISION_V2_REASON_CODES,
+      "decision reason codes",
+    ),
+    action_classification: parseActionClassification(
+      document["action_classification"],
+    ),
+    policy_binding: parsePolicyBinding(document["policy_binding"]),
+    calibration_binding: parseCalibrationBinding(
+      document["calibration_binding"],
+    ),
+    gate: parseAllowGate(document["gate"]),
+  };
+}
+
+function sameOrderedCodes(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((code, index) => code === right[index])
+  );
+}
+
+function bindingModeMatches(
+  mode: CheckAllowGateMode,
+  demoOnly: boolean,
+): boolean {
+  return mode === "demo" ? demoOnly : !demoOnly;
+}
+
+function expectedAllowGate(fields: CheckReceiptV2DecisionFields): {
+  status: CheckAllowGateStatus;
+  reason_codes: CheckAllowGateReasonCode[];
+} {
+  if (fields.candidate_decision !== "ALLOW") {
+    return { status: "not_applicable", reason_codes: [] };
+  }
+  if (fields.gate.evaluation_status === "unavailable") {
+    return { status: "downgraded", reason_codes: ["ALLOW_GATE_UNAVAILABLE"] };
+  }
+  const actionClass = fields.action_classification.action_class;
+  if (
+    fields.action_classification.status !== "classified" ||
+    actionClass === null
+  ) {
+    return {
+      status: "downgraded",
+      reason_codes: ["ALLOW_ACTION_UNCLASSIFIED"],
+    };
+  }
+
+  const checkedAt = instant(
+    fields.checked_at,
+    "receipt checked_at",
+  ).nanoseconds;
+  const policy = fields.policy_binding;
+  const policyIsCurrent =
+    policy !== null &&
+    policy.action_class === actionClass &&
+    bindingModeMatches(fields.gate.mode, policy.demo_only) &&
+    instant(policy.valid_from, "policy valid_from").nanoseconds <= checkedAt &&
+    (policy.valid_until === null ||
+      checkedAt <
+        instant(policy.valid_until, "policy valid_until").nanoseconds);
+  if (!policyIsCurrent || policy === null) {
+    return { status: "downgraded", reason_codes: ["ALLOW_POLICY_UNBOUND"] };
+  }
+
+  const calibration = fields.calibration_binding;
+  const calibrationIsBound =
+    calibration !== null &&
+    calibration.action_class === actionClass &&
+    calibration.policy_id === policy.id &&
+    calibration.policy_version === policy.version &&
+    bindingModeMatches(fields.gate.mode, calibration.demo_only) &&
+    instant(calibration.evaluated_at, "calibration evaluated_at").nanoseconds <=
+      checkedAt;
+  if (!calibrationIsBound || calibration === null) {
+    return {
+      status: "downgraded",
+      reason_codes: ["ALLOW_CALIBRATION_UNBOUND"],
+    };
+  }
+
+  const reasons: CheckAllowGateReasonCode[] = [];
+  if (
+    calibration.sample_size < policy.minimum_sample_size ||
+    calibration.false_allow_upper_bound_bps >
+      policy.maximum_false_allow_upper_bound_bps
+  ) {
+    reasons.push("ALLOW_CALIBRATION_INSUFFICIENT");
+  }
+  if (
+    checkedAt >=
+    instant(calibration.expires_at, "calibration expires_at").nanoseconds
+  ) {
+    reasons.push("ALLOW_CALIBRATION_EXPIRED");
+  }
+  return reasons.length === 0
+    ? { status: "passed", reason_codes: [] }
+    : { status: "downgraded", reason_codes: reasons };
 }
 
 /**
@@ -386,7 +940,57 @@ export function checkDecisionInputFromReceipt(receipt: unknown): {
  * This never reads `receipt.decision` or `receipt.reason_codes`. Comparing the answer to those two
  * fields is the caller's job — and is what `verifyReceipt(..., { derive_verdict: true })` does.
  */
-export function deriveCheckDecision(receipt: unknown): CheckDecision {
+/** Derive and validate every rule-2 decision field from one signed receipt. */
+export function deriveCheckDecisionV2(receipt: unknown): CheckDecisionV2 {
+  const fields = parseCheckReceiptV2DecisionFields(receipt);
+  const { facts, options } = checkDecisionInputFromReceipt(receipt);
+  const candidate = decideCheck(facts, options);
+  if (candidate.verdict !== fields.candidate_decision) {
+    throw new ReceiptNotSelfDerivableError(
+      `it states candidate ${fields.candidate_decision} but its facts derive ${candidate.verdict}`,
+    );
+  }
+
+  const gate = expectedAllowGate(fields);
+  if (
+    fields.gate.status !== gate.status ||
+    !sameOrderedCodes(fields.gate.reason_codes, gate.reason_codes)
+  ) {
+    throw new ReceiptNotSelfDerivableError(
+      `it states gate ${fields.gate.status} [${fields.gate.reason_codes.join(", ")}] but its signed gate inputs derive ${gate.status} [${gate.reason_codes.join(", ")}]`,
+    );
+  }
+
+  const verdict: CheckVerdict =
+    gate.status === "downgraded" ? "REVIEW" : candidate.verdict;
+  const reasonCodes: CheckDecisionV2ReasonCode[] =
+    gate.status === "downgraded" ? gate.reason_codes : candidate.reason_codes;
+  if (fields.decision !== verdict) {
+    throw new ReceiptNotSelfDerivableError(
+      `it states final decision ${fields.decision} but rule 2 derives ${verdict}`,
+    );
+  }
+  if (!sameOrderedCodes(fields.reason_codes, reasonCodes)) {
+    throw new ReceiptNotSelfDerivableError(
+      `it states reason codes [${fields.reason_codes.join(", ")}] but rule 2 derives [${reasonCodes.join(", ")}]`,
+    );
+  }
+
+  return {
+    verdict,
+    reason_codes: reasonCodes,
+    decision_rule_version: CHECK_DECISION_RULE_V2_VERSION,
+    candidate_decision: candidate.verdict,
+    candidate_reason_codes: candidate.reason_codes,
+    gate,
+  };
+}
+
+export function deriveCheckDecision(receipt: unknown): DerivedCheckDecision {
+  const document = objectOrNull(receipt);
+  if (document?.["decision_rule_version"] === CHECK_DECISION_RULE_V2_VERSION) {
+    return deriveCheckDecisionV2(receipt);
+  }
   const { facts, options } = checkDecisionInputFromReceipt(receipt);
   return decideCheck(facts, options);
 }

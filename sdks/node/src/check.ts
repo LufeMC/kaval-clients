@@ -216,6 +216,8 @@ export interface WatchedSource {
   next_poll_at: string | null;
   last_success_at: string | null;
   content_sha256: string | null;
+  /** The `ExtractionSchema` id bound with `updateSource()`, or null if this source runs unbound. */
+  extraction_schema_id?: string | null;
   created_at: IsoTimestamp;
 }
 
@@ -358,7 +360,7 @@ export interface SourceEventResult {
 /* ---------------------------------- webhooks -------------------------------- */
 
 export type WebhookSubscriptionKind =
-  "belief_integrity" | "monitor" | "fact_state";
+  "belief_integrity" | "monitor" | "fact_state" | "policy_update";
 
 /** The only event a `fact_state` subscription accepts. */
 export const FACT_STATE_DELTA_EVENT_TYPE = "fact_state.delta";

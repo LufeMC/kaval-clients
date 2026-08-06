@@ -2,6 +2,46 @@
 
 All packages in this repo version in lockstep (`scripts/bump.mjs`).
 
+## 0.7.2 — unreleased
+
+### Added
+
+- **Policy-update provenance fields.** `PolicyUpdateDocumentSection` now optionally carries
+  normalized `page` / `bbox` from Parse layout. `policy_update.document` `extraction` may include
+  `record_evidence` (parallel to `records`). Documented that `extraction_run.period` is the
+  publication / newsletter month (`YYYY-MM`), not PA effective month; `result` may include
+  `document_period`, `period_basis`, and `payer_name`. `pdf_href` remains Kaval's durable
+  source-version document URL.
+- **Policy updates.** The schema-bound successor to free-text bulletins: register a JSON Schema
+  with `createExtractionSchema()` / `create_extraction_schema()`, bind it to a watched source with
+  `updateSource()` / `update_source()`, and get every document that lands on it extracted
+  automatically and delivered as a `policy_update.document` webhook — or request a one-off payer +
+  period run with `createPolicyUpdate()` / `create_policy_update()`. Monthly PDF + manifest rollups
+  arrive as `policy_update.monthly_package`. `getSourceVersionContent()` /
+  `get_source_version_content()` reads the canonical text (or pre-split `sections`) an extraction
+  ran against. New scopes `policy-update:read` and `policy-update:manage`; new webhook
+  `subscription_kind: "policy_update"` via `subscribePolicyUpdates()` / `subscribe_policy_updates()`.
+  Shipped in the Node SDK, the Python SDK, and eight new MCP tools (`create_extraction_schema`,
+  `list_extraction_schemas`, `create_policy_update`, `get_policy_update`, `list_policy_updates`,
+  `list_policy_update_packages`, `update_source`, `get_source_version_content`). The free-text
+  bulletin methods and tools are soft-deprecated but keep working.
+- **MCP portfolio surface.** Sixteen tools cover contracts, bulk imports, bulletins, extraction
+  failures, training status, feedback review, and consent. Eleven JSON resources expose read models.
+  Training execution, model promotion, and bulletin requeue remain internal.
+- **Node portfolio surface.** The SDK adds typed contract, claim-review, fact-import, bulletin, and
+  training methods. It also exposes extraction issues, bulletin attempts, pagination, and
+  `training:manage`. It validates consent and frozen limits before it sends a request.
+- **Python policy-updates surface.** Python now exposes extraction schemas, policy-update runs and
+  packages, `update_source`, `get_source_version_content`, and `subscribe_policy_updates`, alongside
+  checks, watched sources, webhooks, outcomes, and the deprecated verify alias. The broader
+  portfolio methods (contracts, fact imports, training) remain Node/MCP-only for now.
+- **Decision rule 2.0.0 verification.** The offline verifier re-derives the signed `ALLOW` gate.
+  It rejects altered, expired, incomplete, or incorrectly bound calibration fields.
+
+### Changed
+
+- All public package and MCP Registry versions now use 0.7.2. Version 0.7.1 already exists on npm.
+
 ## 0.7.1 — released 2026-08-05
 
 ### Added
@@ -68,10 +108,10 @@ See the migration tables in the [root README](README.md#migrating-from-05) and e
 ### Added
 
 - **`check()` / the `check` tool** — `POST /v1/check`. Takes `{action, context?, claims?, mode?,
-  max_wait_ms?, origin_urls?, materiality?, as_of?}`; returns `{decision, reason_codes, facts[],
-  receipt, latency_ms}`. Per-fact `status` (`holds` | `changed` | `unknown`) plus the sources each
-  fact rests on, so callers see *which* belief moved. Structured claims (`{subject, predicate,
-  object, scope}`) skip extraction entirely. A check is a read of current state, so it carries **no**
+max_wait_ms?, origin_urls?, materiality?, as_of?}`; returns `{decision, reason_codes, facts[],
+receipt, latency_ms}`. Per-fact `status` (`holds` | `changed` | `unknown`) plus the sources each
+  fact rests on, so callers see _which_ belief moved. Structured claims (`{subject, predicate,
+object, scope}`) skip extraction entirely. A check is a read of current state, so it carries **no**
   idempotency key — retrying recomputes rather than replays.
 - **`getReceipt(id)` / the `get_receipt` tool** — the signed check receipt exactly as signed.
   `check` returns only `{id, signature, signed_at}`; the per-fact basis, `decision_rule_version`,
@@ -85,7 +125,7 @@ See the migration tables in the [root README](README.md#migrating-from-05) and e
   decorative — a holder cannot know which artifact to hash. The label travels with the digest or the
   digest is absent. Each fact also carries `method` (`state` | `live` | `timeout`),
   `freshness_failure` (`stale` | `dormant` | `basis_superseded` | `source_unreachable` |
-  `ttl_expired`), `stale_pending` and `novel`, so a `REVIEW` says *why* in the signed document.
+  `ttl_expired`), `stale_pending` and `novel`, so a `REVIEW` says _why_ in the signed document.
 - **`@usekaval/kaval/verify`** — the Ed25519 receipt verifier now ships as a dependency-free subpath
   export of the Node SDK, with a `kaval-receipt-verify` CLI. It answers cryptographic validity, key
   lifecycle trust, and freshness as three separate results, verifies against an archived keyset
@@ -96,9 +136,9 @@ See the migration tables in the [root README](README.md#migrating-from-05) and e
   and one publish job instead of two, and it retires the package name 0.5.0 advertised (see below).
 - **Watched-source registry** — `addSource`, `listSources`, `getSource`, `pauseSource`,
   `resumeSource`, `deleteSource`, `recompileSource` (`add_source` / `list_sources` / `remove_source`
-  in MCP). Registering the *name* of an authority (`{kind:"entity", name:"Aetna", intent:"payer
-  policy bulletins"}`) resolves it to the pages that publish it and watches them. `remove_source` is
-  exposed to agents for a specific reason: a workspace watches a bounded number of *active* sources,
+  in MCP). Registering the _name_ of an authority (`{kind:"entity", name:"Aetna", intent:"payer
+policy bulletins"}`) resolves it to the pages that publish it and watches them. `remove_source` is
+  exposed to agents for a specific reason: a workspace watches a bounded number of _active_ sources,
   sources auto-registered from a check's citations count against that bound, and only deletion frees
   it — pausing does not. Without it, an agent that registers per task fills the registry, after which
   new citations are dropped and checks that used to be warm quietly go back to researching.
@@ -120,8 +160,12 @@ See the migration tables in the [root README](README.md#migrating-from-05) and e
 ### Changed
 
 - Tool descriptions rewritten for agent tool-selection: `check` states all three verdicts, spells out
-  that **REVIEW is never permission to act**, and says the warm path is ~50ms so calling it on every
-  consequential action is cheap. `verify` is explicitly marked DEPRECATED and names `check`.
+  that **REVIEW is never permission to act**, and says the warm path costs no model call and no
+  fetch so calling it on every consequential action is cheap. (That sentence originally quoted a
+  millisecond figure. Nothing in the server measures one — there is no histogram, no percentile and
+  no persisted latency column — so the number was withdrawn from every surface in both repositories.
+  What the server does count, per check, is work: supplier calls and origin requests, both zero on
+  the warm path.) `verify` is explicitly marked DEPRECATED and names `check`.
 - READMEs in both repos rewritten around `check` + watching + deltas, each with an old→new migration
   table.
 - **Client request deadlines now fit the call they wrap.** The Node and Python clients defaulted to
@@ -163,7 +207,7 @@ See the migration tables in the [root README](README.md#migrating-from-05) and e
   `@kaval/receipt-verifier`, a package that was never published to npm and returned 404 to anyone
   who tried it. The verifier is now folded into the Node SDK as `@usekaval/kaval/verify` (see
   **Added**), so the offline-verification claim these clients make is turnkey: `npm i
-  @usekaval/kaval` is the whole install.
+@usekaval/kaval` is the whole install.
 
 ## 0.5.0 — 2026-07-20
 

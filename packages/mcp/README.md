@@ -41,15 +41,61 @@ It speaks MCP over stdio. Point any MCP client at it.
 
 ## Tools
 
-| Tool             | What it does                                                                                                          |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `check`          | **The one that does the work.** Send the action you are about to take (or the claims it rests on) → `ALLOW` / `REVIEW` / `BLOCK`, per-fact status, and a signed receipt. |
-| `get_receipt`    | The full signed document behind a check's `receipt.id` — per-fact evidence basis, decision-rule version, signing key. What an agent attaches when it blocks. |
-| `add_source`     | Tell Kaval what to watch — a URL, a named authority to resolve, or a document you will push in.                        |
-| `list_sources`   | What Kaval currently watches for this workspace, including sources it auto-registered after a check cited them.        |
-| `remove_source`  | Stop watching a source and forget it. The only thing that frees registry capacity, which auto-registered sources also consume. |
-| `report_outcome` | Report what actually happened after a prior check (by `receipt.id`), so Kaval can calibrate.                           |
-| `verify`         | **Deprecated** pilot alias: one conclusion + explicit `evidence_refs` → a signed ProofPacket receipt. Use `check`.     |
+| Tool                                | What it does                                                                                                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `check`                             | **The one that does the work.** Send the action you are about to take (or the claims it rests on) → `ALLOW` / `REVIEW` / `BLOCK`, per-fact status, and a signed receipt. |
+| `get_receipt`                       | The full signed document behind a check's `receipt.id` — per-fact evidence basis, decision-rule version, signing key. What an agent attaches when it blocks.             |
+| `prepare_contract_upload`           | Create a private PDF upload target.                                                                                                                                      |
+| `ingest_contract`                   | Queue canonical text, an HTTPS document, or an uploaded PDF for extraction.                                                                                              |
+| `get_contract`                      | Get contract processing status, candidate counts, and extraction issue state.                                                                                            |
+| `list_contract_claims`              | List extracted candidates with exact evidence spans.                                                                                                                     |
+| `list_contract_extraction_issues`   | List deterministic extraction failures that need customer review.                                                                                                        |
+| `review_contract_claim`             | Approve, correct, or reject one candidate with immutable version control.                                                                                                |
+| `import_facts`                      | Queue up to 400 reviewed facts for warm checks.                                                                                                                          |
+| `get_fact_import`                   | Get one bulk import and every item result.                                                                                                                               |
+| `list_bulletins`                    | **Soft-deprecated** — filter structured bulletins by payer, policy, code, date, or status. Prefer `list_policy_updates` for new integrations.                            |
+| `get_bulletin`                      | **Soft-deprecated** — get one structured bulletin with field evidence. Prefer `get_policy_update`.                                                                       |
+| `list_bulletin_extraction_attempts` | **Soft-deprecated** — list customer-readable bulletin extraction status and failures. Prefer `list_policy_updates`.                                                       |
+| `get_bulletin_extraction_attempt`   | **Soft-deprecated** — get one bulletin extraction attempt by source-version id. Prefer `get_policy_update`.                                                              |
+| `list_training_jobs`                | List read-only training and evaluation status.                                                                                                                           |
+| `get_training_job`                  | Get one read-only training job.                                                                                                                                          |
+| `list_training_feedback`            | List reviewed feedback and its effective training-use state.                                                                                                             |
+| `record_training_feedback_consent`  | Record an explicit training-use decision for one reviewed feedback item.                                                                                                 |
+| `create_extraction_schema`          | Register a JSON Schema Kaval extracts structured records against. Requires `policy-update:manage`.                                                                       |
+| `list_extraction_schemas`           | List the extraction schemas registered in this workspace.                                                                                                                |
+| `create_policy_update`              | Request a one-off payer + period extraction run against a bound schema. Requires `policy-update:manage`.                                                                 |
+| `get_policy_update`                 | Get one extraction run ('policy update') by id — status, schema, and result once it succeeds.                                                                            |
+| `list_policy_updates`               | List extraction runs, optionally filtered by payer and/or publication-month `YYYY-MM` period.                                                                            |
+| `list_policy_update_packages`       | List the monthly PDF + manifest rollups extraction runs are packaged into.                                                                                               |
+| `add_source`                        | Tell Kaval what to watch — a URL, a named authority to resolve, or a document you will push in.                                                                          |
+| `list_sources`                      | What Kaval currently watches for this workspace, including sources it auto-registered after a check cited them.                                                          |
+| `remove_source`                     | Stop watching a source and forget it. The only thing that frees registry capacity, which auto-registered sources also consume.                                           |
+| `update_source`                     | Bind (or unbind) an extraction schema on a watched source, so every document that lands on it is extracted automatically. Requires `policy-update:manage`.               |
+| `get_source_version_content`        | Fetch the captured content of one fetched source version, as raw text or pre-split `sections`.                                                                           |
+| `report_outcome`                    | Report what actually happened after a prior check (by `receipt.id`), so Kaval can calibrate.                                                                             |
+| `verify`                            | **Deprecated** pilot alias: one conclusion + explicit `evidence_refs` → a signed ProofPacket receipt. Use `check`.                                                       |
+
+## Resources
+
+The server publishes these JSON resources:
+
+- `kaval://bulletins`
+- `kaval://bulletins/extraction-attempts`
+- `kaval://training-jobs`
+- `kaval://training-feedback`
+- `kaval://contracts/{contract_id}`
+- `kaval://contracts/{contract_id}/claims`
+- `kaval://contracts/{contract_id}/extraction-issues`
+- `kaval://bulletins/{source_version_id}`
+- `kaval://bulletins/extraction-attempts/{source_version_id}`
+- `kaval://fact-imports/{import_id}`
+- `kaval://training-jobs/{job_id}`
+
+The training resources are read-only. Feedback review and consent require `training:manage`.
+
+Bulletin extraction status is read-only. MCP does not expose the operator requeue control.
+
+MCP does not start training or promote a model.
 
 ## `check`
 
@@ -58,7 +104,7 @@ It speaks MCP over stdio. Point any MCP client at it.
 {
   "action": "Approve this prior-authorization request at the in-network rate",
   "context": "payer: Aetna; CPT 12345; plan HMO",
-  "materiality": "critical"
+  "materiality": "critical",
 }
 ```
 
@@ -67,23 +113,27 @@ Or skip extraction entirely by naming the facts:
 ```jsonc
 {
   "claims": [
-    { "subject": "Aetna", "predicate": "requires_prior_auth_for", "object": "CPT 12345",
-      "scope": { "plan": "HMO", "state": "CA" } },
-    "The 2024 IBC is the current edition"
+    {
+      "subject": "Aetna",
+      "predicate": "requires_prior_auth_for",
+      "object": "CPT 12345",
+      "scope": { "plan": "HMO", "state": "CA" },
+    },
+    "The 2024 IBC is the current edition",
   ],
-  "mode": "fast"
+  "mode": "fast",
 }
 ```
 
 The response:
 
-| field          | meaning                                                                                             |
-| -------------- | ---------------------------------------------------------------------------------------------------- |
+| field          | meaning                                                                                                                                                                                                                                                                             |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `decision`     | `ALLOW` — every material fact still holds on fresh evidence, proceed.<br>`REVIEW` — something is unknown, mid-re-evaluation, or changed at low/medium materiality. **REVIEW is never permission to act.**<br>`BLOCK` — a high/critical fact changed, or a critical fact is unknown. |
-| `reason_codes` | one or more of `ALL_FACTS_HOLD`, `FACT_CHANGED`, `FACT_EXPIRED`, `FACT_UNKNOWN`, `SOURCE_UPDATED_PENDING_REVIEW`, `SOURCE_UNREACHABLE`, `NEW_FACT_UNVERIFIED`, `COMPILATION_UNCERTAIN` |
-| `facts[]`      | `{ fingerprint, text, status: holds \| changed \| unknown, materiality, served_from_state, last_verified_at, sources[] }` — this is how you see *which* belief moved |
-| `receipt`      | `{ id, signature, signed_at }`. Pass `receipt.id` to `report_outcome`, or to `get_receipt` for the full signed document |
-| `latency_ms`   | `{ compile, lookup, live, total }`                                                                    |
+| `reason_codes` | one or more of `ALL_FACTS_HOLD`, `FACT_CHANGED`, `FACT_EXPIRED`, `FACT_UNKNOWN`, `SOURCE_UPDATED_PENDING_REVIEW`, `SOURCE_UNREACHABLE`, `NEW_FACT_UNVERIFIED`, `COMPILATION_UNCERTAIN`                                                                                              |
+| `facts[]`      | `{ fingerprint, text, status: holds \| changed \| unknown, materiality, served_from_state, last_verified_at, sources[] }` — this is how you see _which_ belief moved                                                                                                                |
+| `receipt`      | `{ id, signature, signed_at }`. Pass `receipt.id` to `report_outcome`, or to `get_receipt` for the full signed document                                                                                                                                                             |
+| `latency_ms`   | `{ compile, lookup, live, total }`                                                                                                                                                                                                                                                  |
 
 `mode: "fast"` answers only from stored state and reports anything unknown as `unknown`;
 `"standard"` (default) may research a stale or novel fact within `max_wait_ms`. A fact that misses
@@ -99,13 +149,13 @@ there, and gives its HTTP client a 55s deadline so the timeout fires here — as
 `mode: "fast"` does. Direct HTTP and SDK callers are not bound by any of this and get the full
 `100000`.
 
-A fact already backed by a watched source is answered from stored state in ~50ms with zero model
-calls and zero fetches, so calling `check` on every consequential action is cheap. A fact Kaval has
+A fact already backed by a watched source is answered from stored state with zero model calls and
+zero fetches, so calling `check` on every consequential action is cheap. A fact Kaval has
 never seen has to be researched first, and that takes seconds.
 
 ## Keeping checks warm
 
-`add_source` is what makes a check a database read instead of a research run. Registering the *name*
+`add_source` is what makes a check a database read instead of a research run. Registering the _name_
 of an authority is usually enough:
 
 ```jsonc
@@ -114,42 +164,62 @@ of an authority is usually enough:
 
 Kaval resolves that to the pages that publish it and watches them adaptively. `kind: "url"` watches
 one page; `kind: "push"` is a document your own system sends to `POST /v1/events`. Registering is
-optional — a source a check cites is auto-watched — but registering first is what makes the *first*
+optional — a source a check cites is auto-watched — but registering first is what makes the _first_
 check on a fact fast.
 
-That auto-watching is why `remove_source` exists. A workspace watches a bounded number of *active*
+That auto-watching is why `remove_source` exists. A workspace watches a bounded number of _active_
 sources (200), auto-registered sources count against the same bound, and only deletion frees it —
 pausing does not. An agent that registers per task and never removes will eventually fill the
 registry, after which new citations are dropped silently and checks that used to be warm go back to
 researching. Remove what a task registered when the task is done.
 
+## Policy updates
+
+`create_extraction_schema` registers a JSON Schema; bind its `id` to a watched source with
+`update_source({ id, extraction_schema_id })` and every document that lands on that source afterward
+is extracted against the schema automatically — no polling. For a one-off run against a payer +
+period instead of waiting for the next document, call `create_policy_update` directly. Either way,
+`get_policy_update` / `list_policy_updates` report the run's lifecycle
+(`processing` → `retry` → `succeeded` / `review_required` / `failed`), and
+`list_policy_update_packages` lists the monthly PDF + manifest rollups each payer/period is packaged
+into. `get_source_version_content` fetches the canonical text (or `format: "sections"`) an extraction
+run was computed from.
+
+This is the schema-bound successor to the free-text bulletin tools (`list_bulletins`, `get_bulletin`,
+`list_bulletin_extraction_attempts`, `get_bulletin_extraction_attempt`), which are soft-deprecated but
+keep working.
+
 ## Delta webhooks are not an agent tool
 
 Watched sources are only half the mechanism: when a source changes, Kaval re-evaluates the dependent
-facts and pushes a `fact_state.delta` webhook naming what flipped. **That subscription is
-deliberately not exposed as an MCP tool.** It is one-time deployment configuration — it mints a
-standing outbound callback bound to an https endpoint and a signing secret that must be stored, which
-is a deploy-time decision for a human or a service, not an in-loop choice for an agent that owns
-neither the endpoint nor the secret.
+facts and pushes a `fact_state.delta` webhook naming what flipped; a source with a bound extraction
+schema also pushes `policy_update.document` (and, monthly, `policy_update.monthly_package`) with the
+extracted records, optional section `page`/`bbox`, and `record_evidence` for PDF highlighting.
+`extraction_run.period` is the publication / newsletter month. **Those subscriptions are
+deliberately not exposed as MCP tools.** They are
+one-time deployment configuration — each mints a standing outbound callback bound to an https
+endpoint and a signing secret that must be stored, which is a deploy-time decision for a human or a
+service, not an in-loop choice for an agent that owns neither the endpoint nor the secret.
 
-Configure it once from the SDK (`kaval.subscribeFactStateDeltas({ callback_url })` in Node,
-`kaval.subscribe_fact_state_deltas(callback_url=…)` in Python), from `POST /v1/webhooks` with
-`subscription_kind: "fact_state"`, or from the dashboard. The agent then just calls `check`, and it
-is already fast and already current.
+Configure them once from the SDK (`kaval.subscribeFactStateDeltas({ callback_url })` /
+`kaval.subscribePolicyUpdates({ callback_url })` in Node, `kaval.subscribe_fact_state_deltas(…)` /
+`kaval.subscribe_policy_updates(…)` in Python), from `POST /v1/webhooks` with
+`subscription_kind: "fact_state"` or `"policy_update"`, or from the dashboard. The agent then just
+calls `check` (or reads `list_policy_updates`), and it is already fast and already current.
 
 ## Migrating from 0.5
 
-| 0.5 tool                        | 0.6                                                                                    |
-| ------------------------------- | --------------------------------------------------------------------------------------- |
-| `currentness_check`             | `check` — `{ action }` or `{ claims: ["…"] }`                                            |
+| 0.5 tool                        | 0.6                                                                                       |
+| ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `currentness_check`             | `check` — `{ action }` or `{ claims: ["…"] }`                                             |
 | `currentness_verify`            | `check` — branch on `decision === "ALLOW"` instead of `act === true`                      |
 | `currentness_extract_and_check` | `check` — pass the paragraph as `action`/`context`; Kaval compiles the facts itself       |
-| `currentness_scan_store`        | `check` — `{ claims: [...] }`, up to 20 per call                                         |
+| `currentness_scan_store`        | `check` — `{ claims: [...] }`, up to 20 per call                                          |
 | `currentness_monitor`           | `add_source` + a `fact_state` webhook subscription (see above) — deltas are pushed to you |
 | `proof_audit`                   | `check` — the receipt **is** the proof; `get_receipt` returns the signed document         |
-| `proof_gate`                    | `check` — the warm path re-checks in ~50ms, so there is nothing to re-apply separately   |
-| `report_outcome`                | `report_outcome` (unchanged; pass `receipt.id`)                                          |
-| `verify`                        | `verify`, now deprecated → move to `check`                                               |
+| `proof_gate`                    | `check` — the warm path re-checks from stored state, so there is nothing to re-apply      |
+| `report_outcome`                | `report_outcome` (unchanged; pass `receipt.id`)                                           |
+| `verify`                        | `verify`, now deprecated → move to `check`                                                |
 
 Status mapping: `current` + `act: true` → `decision: "ALLOW"` with every fact `holds`;
 `stale`/`contradicted` → a fact `changed` (`REVIEW` or `BLOCK` by materiality);
@@ -161,10 +231,9 @@ the check tool …","status":410}`.
 
 ## Idempotency
 
-`verify` is the only billable tool that carries an operation key: it attaches a unique
-`idempotency_key` automatically and reuses it for one bounded retry when the transport outcome is
-ambiguous or the API is still finalizing that operation. If both attempts stay ambiguous the tool
-error includes `idempotency_key` — pass that exact value back on a later retry.
+Contract uploads, contract creation, claim reviews, fact imports, `create_extraction_schema`,
+`create_policy_update`, and `verify` carry operation keys. The server creates a key when you omit
+one. Reuse the returned key after an ambiguous failure.
 
 `check` deliberately carries none: it is a read of current state, so a retry recomputes rather than
 replays and cannot double-bill.
@@ -174,13 +243,13 @@ replays and cannot double-bill.
 A failed tool call returns `isError: true` and a JSON body naming what happened, so an agent can
 branch on it rather than parse prose.
 
-| `error`                | what to do                                                              |
-| ---------------------- | ------------------------------------------------------------------------ |
-| any API code (`unauthorized`, `insufficient_balance`, `bad_request`, …) | returned verbatim with `status` and the API's `message` |
-| `tool_retired`         | 410 — the message names the route that replaced the one you called       |
-| `timeout`              | retry with `mode: "fast"` or a smaller `max_wait_ms`                     |
-| `network_unreachable`  | the API was never reached — check `KAVAL_BASE_URL` and network access    |
-| `request_ambiguous`    | a billable call whose outcome is unknown; retry with the returned `idempotency_key` |
+| `error`                                                                 | what to do                                                                          |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| any API code (`unauthorized`, `insufficient_balance`, `bad_request`, …) | returned verbatim with `status` and the API's `message`                             |
+| `tool_retired`                                                          | 410 — the message names the route that replaced the one you called                  |
+| `timeout`                                                               | retry with `mode: "fast"` or a smaller `max_wait_ms`                                |
+| `network_unreachable`                                                   | the API was never reached — check `KAVAL_BASE_URL` and network access               |
+| `request_ambiguous`                                                     | a billable call whose outcome is unknown; retry with the returned `idempotency_key` |
 
 ## Signed receipts
 

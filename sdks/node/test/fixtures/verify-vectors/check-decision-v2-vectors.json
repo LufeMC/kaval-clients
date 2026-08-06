@@ -1,0 +1,419 @@
+{
+  "contract_version": "1",
+  "receipt_version": "check-receipt/2.0.0",
+  "decision_rule_version": "check-decision/2.0.0",
+  "description": "Frozen receipt vectors for candidate-decision derivation and the signed ALLOW gate. Each patch applies recursively to base_receipt. Arrays and null values replace the base value.",
+  "base_receipt": {
+    "receipt_version": "check-receipt/2.0.0",
+    "decision_rule_version": "check-decision/2.0.0",
+    "checked_at": "2026-08-05T12:00:00.000Z",
+    "compilation_uncertain": false,
+    "facts": [
+      {
+        "materiality": "high",
+        "state": "holds",
+        "method": "state",
+        "temporal_state": "current",
+        "freshness_failure": null,
+        "stale_pending": false,
+        "novel": false,
+        "basis": []
+      }
+    ],
+    "candidate_decision": "ALLOW",
+    "decision": "ALLOW",
+    "reason_codes": ["ALL_FACTS_HOLD"],
+    "action_classification": {
+      "status": "classified",
+      "action_class": "medical_claim_submission",
+      "classifier_version": "action-classifier/1.0.0"
+    },
+    "policy_binding": {
+      "id": "policy-medical-claims",
+      "version": "2026-08",
+      "action_class": "medical_claim_submission",
+      "minimum_sample_size": 100,
+      "maximum_false_allow_upper_bound_bps": 100,
+      "valid_from": "2026-08-01T00:00:00.000Z",
+      "valid_until": null,
+      "demo_only": false
+    },
+    "calibration_binding": {
+      "id": "calibration-medical-claims-2026-08",
+      "policy_id": "policy-medical-claims",
+      "policy_version": "2026-08",
+      "action_class": "medical_claim_submission",
+      "sample_size": 250,
+      "false_allow_upper_bound_bps": 50,
+      "evaluated_at": "2026-08-04T00:00:00.000Z",
+      "expires_at": "2026-09-01T00:00:00.000Z",
+      "demo_only": false
+    },
+    "gate": {
+      "mode": "production",
+      "evaluation_status": "available",
+      "status": "passed",
+      "reason_codes": []
+    }
+  },
+  "signed_receipts": [
+    {
+      "id": "signed-allow-with-passing-bindings",
+      "patch": {},
+      "signature_base64url": "paeoYJLr_BBrQIwbAfceNKB6-Yl93GIjTRZpbdAWtVwR_OI0NaWdnmN4yP_B9tGXzn45ICD-YZChmj2K0yUYDg",
+      "expected_verdict": "ALLOW"
+    },
+    {
+      "id": "signed-review-with-missing-calibration",
+      "patch": {
+        "calibration_binding": null,
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_UNBOUND"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_UNBOUND"]
+        }
+      },
+      "signature_base64url": "1vp_uGYSQKBnhxj7yjk7UKi867VhzZKiRcM9NZJGItxSVFV3T9RgaTbCviTj8SpHIM9hEq5yBC46QvTdIZKICw",
+      "expected_verdict": "REVIEW"
+    }
+  ],
+  "derive": [
+    {
+      "id": "candidate-allow-passes-production-bindings",
+      "patch": {},
+      "expected": {
+        "verdict": "ALLOW",
+        "reason_codes": ["ALL_FACTS_HOLD"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": { "status": "passed", "reason_codes": [] }
+      }
+    },
+    {
+      "id": "candidate-allow-passes-demo-bindings",
+      "patch": {
+        "policy_binding": { "demo_only": true },
+        "calibration_binding": { "demo_only": true },
+        "gate": { "mode": "demo" }
+      },
+      "expected": {
+        "verdict": "ALLOW",
+        "reason_codes": ["ALL_FACTS_HOLD"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": { "status": "passed", "reason_codes": [] }
+      }
+    },
+    {
+      "id": "candidate-block-does-not-run-the-allow-gate",
+      "patch": {
+        "facts": [
+          {
+            "materiality": "high",
+            "state": "changed",
+            "method": "state",
+            "temporal_state": "superseded",
+            "freshness_failure": null,
+            "stale_pending": false,
+            "novel": false,
+            "basis": []
+          }
+        ],
+        "candidate_decision": "BLOCK",
+        "decision": "BLOCK",
+        "reason_codes": ["FACT_CHANGED"],
+        "policy_binding": null,
+        "calibration_binding": null,
+        "gate": { "status": "not_applicable", "reason_codes": [] }
+      },
+      "expected": {
+        "verdict": "BLOCK",
+        "reason_codes": ["FACT_CHANGED"],
+        "candidate_decision": "BLOCK",
+        "candidate_reason_codes": ["FACT_CHANGED"],
+        "gate": { "status": "not_applicable", "reason_codes": [] }
+      }
+    },
+    {
+      "id": "unclassified-action-downgrades-allow",
+      "patch": {
+        "action_classification": { "status": "unclassified", "action_class": null },
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_ACTION_UNCLASSIFIED"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_ACTION_UNCLASSIFIED"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_ACTION_UNCLASSIFIED"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_ACTION_UNCLASSIFIED"]
+        }
+      }
+    },
+    {
+      "id": "missing-policy-downgrades-allow",
+      "patch": {
+        "policy_binding": null,
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_POLICY_UNBOUND"],
+        "gate": { "status": "downgraded", "reason_codes": ["ALLOW_POLICY_UNBOUND"] }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_POLICY_UNBOUND"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": { "status": "downgraded", "reason_codes": ["ALLOW_POLICY_UNBOUND"] }
+      }
+    },
+    {
+      "id": "missing-calibration-downgrades-allow",
+      "patch": {
+        "calibration_binding": null,
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_UNBOUND"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_UNBOUND"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_UNBOUND"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_UNBOUND"]
+        }
+      }
+    },
+    {
+      "id": "small-calibration-sample-downgrades-allow",
+      "patch": {
+        "calibration_binding": { "sample_size": 99 },
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"]
+        }
+      }
+    },
+    {
+      "id": "high-false-allow-bound-downgrades-allow",
+      "patch": {
+        "calibration_binding": { "false_allow_upper_bound_bps": 101 },
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"]
+        }
+      }
+    },
+    {
+      "id": "expired-calibration-downgrades-allow",
+      "patch": {
+        "calibration_binding": { "expires_at": "2026-08-05T12:00:00.000Z" },
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_EXPIRED"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_EXPIRED"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_EXPIRED"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_EXPIRED"]
+        }
+      }
+    },
+    {
+      "id": "insufficient-and-expired-calibration-reports-both-causes",
+      "patch": {
+        "calibration_binding": {
+          "sample_size": 99,
+          "expires_at": "2026-08-05T12:00:00.000Z"
+        },
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT", "ALLOW_CALIBRATION_EXPIRED"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT", "ALLOW_CALIBRATION_EXPIRED"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT", "ALLOW_CALIBRATION_EXPIRED"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT", "ALLOW_CALIBRATION_EXPIRED"]
+        }
+      }
+    },
+    {
+      "id": "gate-store-failure-downgrades-allow",
+      "patch": {
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_GATE_UNAVAILABLE"],
+        "gate": {
+          "evaluation_status": "unavailable",
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_GATE_UNAVAILABLE"]
+        }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_GATE_UNAVAILABLE"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": { "status": "downgraded", "reason_codes": ["ALLOW_GATE_UNAVAILABLE"] }
+      }
+    },
+    {
+      "id": "demo-binding-cannot-pass-a-production-gate",
+      "patch": {
+        "policy_binding": { "demo_only": true },
+        "calibration_binding": { "demo_only": true },
+        "decision": "REVIEW",
+        "reason_codes": ["ALLOW_POLICY_UNBOUND"],
+        "gate": { "status": "downgraded", "reason_codes": ["ALLOW_POLICY_UNBOUND"] }
+      },
+      "expected": {
+        "verdict": "REVIEW",
+        "reason_codes": ["ALLOW_POLICY_UNBOUND"],
+        "candidate_decision": "ALLOW",
+        "candidate_reason_codes": ["ALL_FACTS_HOLD"],
+        "gate": { "status": "downgraded", "reason_codes": ["ALLOW_POLICY_UNBOUND"] }
+      }
+    }
+  ],
+  "refuse": [
+    {
+      "id": "candidate-does-not-match-facts",
+      "patch": { "candidate_decision": "REVIEW" },
+      "message_contains": "states candidate REVIEW but its facts derive ALLOW"
+    },
+    {
+      "id": "gate-status-does-not-match-bindings",
+      "patch": {
+        "calibration_binding": { "sample_size": 99 },
+        "gate": { "status": "passed", "reason_codes": [] }
+      },
+      "message_contains": "signed gate inputs derive downgraded"
+    },
+    {
+      "id": "final-decision-does-not-match-gate",
+      "patch": {
+        "calibration_binding": { "sample_size": 99 },
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"]
+        }
+      },
+      "message_contains": "states final decision ALLOW but rule 2 derives REVIEW"
+    },
+    {
+      "id": "top-level-reasons-do-not-match-gate",
+      "patch": {
+        "calibration_binding": { "sample_size": 99 },
+        "decision": "REVIEW",
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_CALIBRATION_INSUFFICIENT"]
+        }
+      },
+      "message_contains": "states reason codes [ALL_FACTS_HOLD]"
+    },
+    {
+      "id": "unknown-gate-field-is-refused",
+      "patch": { "gate": { "issuer_override": true } },
+      "message_contains": "allow gate has an invalid field set"
+    },
+    {
+      "id": "duplicate-gate-reason-is-refused",
+      "patch": {
+        "gate": {
+          "status": "downgraded",
+          "reason_codes": ["ALLOW_POLICY_UNBOUND", "ALLOW_POLICY_UNBOUND"]
+        }
+      },
+      "message_contains": "contains a duplicate code"
+    },
+    {
+      "id": "invalid-checked-at-is-refused",
+      "patch": { "checked_at": "2026-02-30T12:00:00Z" },
+      "message_contains": "checked_at is not an RFC 3339 instant"
+    },
+    {
+      "id": "out-of-range-calibration-bound-is-refused",
+      "patch": { "calibration_binding": { "false_allow_upper_bound_bps": 10001 } },
+      "message_contains": "is not a valid nonnegative integer"
+    },
+    {
+      "id": "unclassified-status-with-action-class-is-refused",
+      "patch": { "action_classification": { "status": "unclassified" } },
+      "message_contains": "status does not match its action class"
+    },
+    {
+      "id": "unknown-gate-reason-is-refused",
+      "patch": { "gate": { "reason_codes": ["ALLOW_MANUAL_OVERRIDE"] } },
+      "message_contains": "contains a code this contract does not define"
+    },
+    {
+      "id": "reversed-policy-validity-is-refused",
+      "patch": {
+        "policy_binding": {
+          "valid_from": "2026-08-05T12:00:00.000Z",
+          "valid_until": "2026-08-05T11:59:59.999Z"
+        }
+      },
+      "message_contains": "policy validity interval is empty or reversed"
+    },
+    {
+      "id": "reversed-calibration-validity-is-refused",
+      "patch": {
+        "calibration_binding": {
+          "evaluated_at": "2026-08-05T12:00:00.000Z",
+          "expires_at": "2026-08-05T11:59:59.999Z"
+        }
+      },
+      "message_contains": "calibration validity interval is empty or reversed"
+    }
+  ]
+}
