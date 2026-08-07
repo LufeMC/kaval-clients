@@ -44,14 +44,14 @@
   "engines": {
     "node": ">=18"
   },
-  "homepage": "https://github.com/LufeMC/kaval-clients/tree/main/sdks/node#readme",
+  "homepage": "https://github.com/usekaval/kaval-clients/tree/main/sdks/node#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LufeMC/kaval-clients.git",
+    "url": "git+https://github.com/usekaval/kaval-clients.git",
     "directory": "sdks/node"
   },
   "bugs": {
-    "url": "https://github.com/LufeMC/kaval-clients/issues"
+    "url": "https://github.com/usekaval/kaval-clients/issues"
   },
   "publishConfig": {
     "access": "public"
