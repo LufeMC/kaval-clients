@@ -1,11 +1,11 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.LufeMC/kaval",
+  "name": "io.github.usekaval/kaval",
   "title": "Kaval",
   "description": "Verify the facts an agent's action depends on before it acts \u2014 ALLOW, REVIEW, or BLOCK.",
   "websiteUrl": "https://usekaval.com",
   "repository": {
-    "url": "https://github.com/LufeMC/kaval-clients",
+    "url": "https://github.com/usekaval/kaval-clients",
     "source": "github",
     "subfolder": "packages/mcp"
   },

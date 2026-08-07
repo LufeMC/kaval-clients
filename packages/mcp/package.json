@@ -1,6 +1,6 @@
 {
   "name": "@usekaval/mcp",
-  "mcpName": "io.github.LufeMC/kaval",
+  "mcpName": "io.github.usekaval/kaval",
   "version": "0.7.2",
   "license": "Apache-2.0",
   "description": "MCP server for Kaval: before an AI agent acts, verify the facts the action depends on — ALLOW, REVIEW, or BLOCK, with a signed receipt.",
@@ -31,14 +31,14 @@
     "rag",
     "verification"
   ],
-  "homepage": "https://github.com/LufeMC/kaval-clients/tree/main/packages/mcp#readme",
+  "homepage": "https://github.com/usekaval/kaval-clients/tree/main/packages/mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LufeMC/kaval-clients.git",
+    "url": "git+https://github.com/usekaval/kaval-clients.git",
     "directory": "packages/mcp"
   },
   "bugs": {
-    "url": "https://github.com/LufeMC/kaval-clients/issues"
+    "url": "https://github.com/usekaval/kaval-clients/issues"
   },
   "publishConfig": {
     "access": "public"
