@@ -2,6 +2,14 @@
 
 All packages in this repo version in lockstep (`scripts/bump.mjs`).
 
+## 0.7.3 — unreleased
+
+### Changed
+
+- **Repository metadata follows the org move.** Package homepage / repository / issues URLs now
+  point at `usekaval/kaval-clients`, and the MCP registry identity is `io.github.usekaval/kaval`
+  (was `io.github.LufeMC/kaval`). No client API changes.
+
 ## 0.7.2 — released 2026-08-06
 
 ### Added
